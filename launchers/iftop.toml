@@ -1,0 +1,24 @@
+# iftop — interactive bandwidth monitor.
+#
+# Requires raw-socket privileges on macOS/Linux — user may need to
+# run mnml as root or grant CAP_NET_RAW to htop (depends on distro).
+# Launcher fires as-is; if iftop fails inside the Pty it's a system
+# permission issue, not an mnml one.
+id = "iftop"
+label = "iftop"
+description = "Interactive bandwidth monitor"
+category = "system"
+
+[chip]
+glyph = "6"
+fallback = "N"
+color = "cyan"
+enabled = false
+in_palette_bar = false
+
+[[commands]]
+id = "iftop.open"
+title = "iftop: open"
+group = "system"
+keys = ["<leader>iI"]
+run = ":term iftop"

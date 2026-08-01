@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    # 2026-08-01 (P7) — apps subdir is empty on scaffold. Sibling
+    # repos will be moved in under apps/<name>/ in a follow-up
+    # coordinated migration; each becomes a workspace member.
+]
+
+# Every member crate gets these shared dependency versions when it
+# writes `foo = { workspace = true }` in its own Cargo.toml. Keeps
+# versions locked across all apps in the monorepo.
+[workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+dirs = "5"
+mnml-bridge = { path = "../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+webbrowser = "1"
+
+# Shared release profile — every app in the monorepo inherits this.
+# Optimized for binary size (siblings are small utilities, not
+# perf-critical daemons).
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

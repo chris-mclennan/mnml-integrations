@@ -1,0 +1,22 @@
+# btop — resource monitor. cpu / mem / disk / net in one pane.
+#
+# The premium version of top / htop. Modern TUI with mouse support.
+# Ships in most package managers as `btop` or `btop++`.
+id = "btop"
+label = "btop"
+description = "Resource monitor (cpu / mem / disk / net)"
+category = "system"
+
+[chip]
+glyph = ""
+fallback = "B"
+color = "cyan"
+enabled = false
+in_palette_bar = false
+
+[[commands]]
+id = "btop.open"
+title = "btop: open"
+group = "system"
+keys = ["<leader>iB"]
+run = ":term btop"

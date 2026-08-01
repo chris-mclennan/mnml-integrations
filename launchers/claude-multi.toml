@@ -1,0 +1,34 @@
+# claude-multi — Claude Code launcher wrapper.
+#
+# Reference example of a template-based launcher path. The workspace
+# is expected to have a `bin/claude-multi.sh` script that wraps
+# `claude` with the required `--add-dir` flags for sibling-repo
+# access (see tattle-claude-workspace convention).
+#
+# Users who want to override claude_code's default binary put this
+# manifest at `<workspace>/.mnml/integrations/claude_code.toml`
+# (single-field short form: `launcher = "{{workspace}}/bin/claude-multi.sh"`).
+# The full manifest form (this file) is for user config or workspace
+# override with additional metadata.
+#
+# 2026-08-01 — this is a "workspace-override launcher" reference,
+# not a standalone chip. It doesn't add a new chip; it changes
+# how the existing claude_code chip launches.
+id = "claude_code"
+label = "Claude Code (multi-repo wrapper)"
+description = "Wrap claude with --add-dir flags for sibling-repo access"
+category = "ai"
+
+[chip]
+glyph = "0"
+fallback = "CC"
+color = "orange"
+enabled = false
+in_palette_bar = false
+
+[[commands]]
+id = "claude_code.open"
+title = "Claude Code: open"
+group = "ai"
+keys = ["<leader>ac"]
+run = ":term {{workspace}}/bin/claude-multi.sh"

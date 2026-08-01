@@ -1,0 +1,23 @@
+# htop — interactive process viewer.
+#
+# Data-only launcher (no binary field). Fires `:term htop` in an
+# mnml Pty pane. Requires the user to have `htop` installed on
+# PATH. mnml's chip renders with the baked htop glyph at U+F0AF5.
+id = "htop"
+label = "htop"
+description = "Interactive process viewer"
+category = "system"
+
+[chip]
+glyph = "5"
+fallback = "H"
+color = "green"
+enabled = false
+in_palette_bar = false
+
+[[commands]]
+id = "htop.open"
+title = "htop: open"
+group = "system"
+keys = ["<leader>iH"]
+run = ":term htop"
