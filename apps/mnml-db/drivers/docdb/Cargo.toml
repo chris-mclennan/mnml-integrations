@@ -1,0 +1,16 @@
+[package]
+name = "mnml-db-driver-docdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "DocumentDB / MongoDB driver crate for mnml-db — thin wrapper around the official mongodb driver exposing the driver-neutral document QueryResult / schema-introspection shape."
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+mongodb = "3"
+bson = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"

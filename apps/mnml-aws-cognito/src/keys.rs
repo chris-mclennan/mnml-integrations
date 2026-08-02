@@ -1,0 +1,103 @@
+//! Keyboard chord → action mapping. v0.1.
+
+use crate::app::App;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+pub enum Action {
+    Quit,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    OpenConsole,
+    YankId,
+    Refresh,
+    EnterSearch,
+    SearchChar(char),
+    SearchBackspace,
+    SearchCommit,
+    SearchCancel,
+    SwitchTab(usize),
+    NextTab,
+    PrevTab,
+}
+
+pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
+    // Search-input mode steals all keys until Enter (commit) or Esc
+    // (cancel).
+    if app.query_editing.is_some() {
+        return match key.code {
+            KeyCode::Enter => Some(Action::SearchCommit),
+            KeyCode::Esc => Some(Action::SearchCancel),
+            KeyCode::Backspace => Some(Action::SearchBackspace),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::SearchChar(c))
+            }
+            _ => None,
+        };
+    }
+
+    let m = key.modifiers;
+    match key.code {
+        // Esc used to quit on second press, but this runs as a Pty
+        // pane inside mnml — Esc is a strong "cancel" reflex that
+        // users hit expecting to back out, not to close the whole
+        // integration. Esc now only clears an active filter (never
+        // quits). `q` and Ctrl+C quit.
+        KeyCode::Esc if app.active_filter.is_some() => Some(Action::SearchCancel),
+        KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('c') if m.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+        KeyCode::Up | KeyCode::Char('k') => Some(Action::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(Action::Down),
+        KeyCode::PageUp => Some(Action::PageUp),
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::Home | KeyCode::Char('g') => Some(Action::Home),
+        KeyCode::End | KeyCode::Char('G') => Some(Action::End),
+        KeyCode::Char('o') | KeyCode::Enter => Some(Action::OpenConsole),
+        KeyCode::Char('y') => Some(Action::YankId),
+        KeyCode::Char('r') => Some(Action::Refresh),
+        KeyCode::Char('/') => Some(Action::EnterSearch),
+        KeyCode::Tab => Some(Action::NextTab),
+        KeyCode::BackTab => Some(Action::PrevTab),
+        KeyCode::Char(c @ '1'..='9') => Some(Action::SwitchTab((c as u8 - b'1') as usize)),
+        _ => None,
+    }
+}
+
+pub async fn apply(action: Action, app: &mut App) -> bool {
+    match action {
+        Action::Quit => return true,
+        Action::Up => app.move_selection(-1),
+        Action::Down => app.move_selection(1),
+        Action::PageUp => app.move_selection(-10),
+        Action::PageDown => app.move_selection(10),
+        Action::Home => app.move_selection(-(i32::MAX as isize)),
+        Action::End => app.move_selection(i32::MAX as isize),
+        Action::OpenConsole => app.open_console(),
+        Action::YankId => app.yank_id(),
+        Action::Refresh => app.refresh_active(),
+        Action::EnterSearch => app.enter_search_mode(),
+        Action::SearchChar(c) => app.search_input_char(c),
+        Action::SearchBackspace => app.search_input_backspace(),
+        Action::SearchCommit => app.search_commit(),
+        Action::SearchCancel => app.search_cancel(),
+        Action::NextTab => {
+            let next = (app.active_tab + 1) % app.tabs.len();
+            app.switch_tab(next);
+        }
+        Action::PrevTab => {
+            let prev = if app.active_tab == 0 {
+                app.tabs.len() - 1
+            } else {
+                app.active_tab - 1
+            };
+            app.switch_tab(prev);
+        }
+        Action::SwitchTab(i) => {
+            app.switch_tab(i);
+        }
+    }
+    false
+}

@@ -1,0 +1,20 @@
+[package]
+name = "mnml-db-driver-redshift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Redshift driver crate for mnml-db — thin wrapper around tokio-postgres (Redshift speaks Postgres wire protocol) with Redshift-specific catalog queries (svv_all_schemas / svv_all_tables / svv_all_columns)."
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-postgres = "0.7"
+serde_json = "1"
+# TLS to Redshift is basically mandatory for real clusters —
+# AWS-managed nodes ship with certificates from the AWS root CA
+# bundle. `rustls` + `webpki-roots` gives us the bundle without
+# native-tls's OpenSSL / macOS keychain dance.
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+webpki-roots = "0.26"

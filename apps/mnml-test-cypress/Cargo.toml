@@ -1,0 +1,44 @@
+[package]
+name = "mnml-test-cypress"
+version = "0.1.3"
+edition = "2024"
+license = "MIT"
+authors = ["Chris McLennan"]
+description = "Cypress test results viewer for mnml — terminal TUI for mochawesome JSON. Shows the pass/fail status of every test, filterable to failures, with spec file:line yank. Runs standalone or as an mnml-hosted pane. The test runner stays in mnml core."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-test-cypress"
+readme = "README.md"
+
+[package.metadata.wix]
+upgrade-guid = "76847AAE-D77B-4C20-BF1A-913AA3A1F9B2"
+path-guid = "6B77EB1F-ED0D-443B-B613-101CB3839A56"
+license = false
+eula = false
+
+[[bin]]
+name = "mnml-test-cypress"
+path = "src/main.rs"
+
+[dependencies]
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

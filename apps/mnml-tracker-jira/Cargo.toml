@@ -1,0 +1,58 @@
+[package]
+name = "mnml-tracker-jira"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chris McLennan"]
+description = "Jira ticket viewer for mnml — terminal TUI with configurable tabs (JQL or auto-resolved releases). Runs standalone or as an mnml-hosted pane."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-tracker-jira"
+readme = "README.md"
+
+[package.metadata.wix]
+upgrade-guid = "280E5ED1-3DE8-4B48-9CD0-3AC0134679BD"
+path-guid = "6E548618-E927-4EAC-819D-27607083C563"
+license = false
+eula = false
+
+[[bin]]
+name = "mnml-tracker-jira"
+path = "src/main.rs"
+
+[dependencies]
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# HTTP / async
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+
+# Config + serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utils
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+url = "2"
+webbrowser = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+
+# The profile that 'dist' will build with (cargo-dist).
+[profile.dist]
+inherits = "release"
+lto = "thin"

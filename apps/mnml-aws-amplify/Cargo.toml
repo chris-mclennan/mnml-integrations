@@ -1,0 +1,40 @@
+[package]
+name = "mnml-aws-amplify"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "AWS Amplify viewer for mnml — terminal TUI for Amplify apps, branches, and deploy jobs. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-aws-amplify"
+readme = "README.md"
+
+[[bin]]
+name = "mnml-aws-amplify"
+path = "src/main.rs"
+
+[dependencies]
+# 2026-07-31 — sibling-icons SDK requires mnml-bridge 0.4+ for the
+# ChipSpec::glyph_svg / glyph_codepoint fields. Path override
+# points at the mnml-sibling-icons worktree where 0.4.0 lives
+# during Stage 1; drop the `path =` once 0.4.0 is on crates.io.
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+webbrowser = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

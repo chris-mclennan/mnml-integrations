@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = [
+    "drivers/postgres",
+    "drivers/redis",
+    "drivers/mariadb",
+    "drivers/clickhouse",
+    "drivers/redshift",
+    "drivers/docdb",
+    "drivers/dynamodb",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chris McLennan"]
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-db"
+
+[package]
+name = "mnml-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Unified TUI database client for mnml — one integration, per-engine drivers (Postgres + Redis in v0.1)."
+readme = "README.md"
+
+[[bin]]
+name = "mnml-db"
+path = "src/main.rs"
+
+[features]
+# Keep the default lean — Postgres + Redis only. Extra engines are
+# opt-in so a `cargo build` doesn't drag in mysql_async + reqwest +
+# a second tokio-postgres for someone who only wants pg.
+default = ["postgres", "redis"]
+postgres   = ["dep:mnml-db-driver-postgres"]
+redis      = ["dep:mnml-db-driver-redis"]
+mariadb    = ["dep:mnml-db-driver-mariadb"]
+clickhouse = ["dep:mnml-db-driver-clickhouse"]
+redshift   = ["dep:mnml-db-driver-redshift"]
+docdb      = ["dep:mnml-db-driver-docdb"]
+dynamodb   = ["dep:mnml-db-driver-dynamodb"]
+all = ["postgres", "redis", "mariadb", "clickhouse", "redshift", "docdb", "dynamodb"]
+
+[dependencies]
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+dirs = "5"
+
+# Driver crates — each gated behind its own feature so a build can
+# skip an engine's transitive deps entirely.
+mnml-db-driver-postgres   = { path = "drivers/postgres",   optional = true }
+mnml-db-driver-redis      = { path = "drivers/redis",      optional = true }
+mnml-db-driver-mariadb    = { path = "drivers/mariadb",    optional = true }
+mnml-db-driver-clickhouse = { path = "drivers/clickhouse", optional = true }
+mnml-db-driver-redshift   = { path = "drivers/redshift",   optional = true }
+mnml-db-driver-docdb      = { path = "drivers/docdb",      optional = true }
+mnml-db-driver-dynamodb   = { path = "drivers/dynamodb",   optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

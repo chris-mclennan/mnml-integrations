@@ -1,0 +1,13 @@
+[package]
+name = "mnml-db-driver-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Redis driver crate for mnml-db — thin wrapper around the `redis` crate exposing the driver-neutral QueryResult / schema-introspection shape."
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-rustls-comp", "connection-manager"] }
+serde_json = "1"

@@ -1,0 +1,40 @@
+[package]
+name = "mnml-virt-docker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chris McLennan"]
+description = "Docker container browser for mnml — terminal TUI for containers, images, volumes, networks, and compose projects. Shells out to the docker CLI (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-virt-docker"
+readme = "README.md"
+
+[[bin]]
+name = "mnml-virt-docker"
+path = "src/main.rs"
+
+[dependencies]
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+webbrowser = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

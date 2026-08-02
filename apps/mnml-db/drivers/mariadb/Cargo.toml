@@ -1,0 +1,13 @@
+[package]
+name = "mnml-db-driver-mariadb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MariaDB / MySQL driver crate for mnml-db — thin wrapper around mysql_async exposing the driver-neutral QueryResult / schema-introspection shape."
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+mysql_async = { version = "0.36", default-features = false, features = ["minimal-rust", "default-rustls"] }
+serde_json = "1"

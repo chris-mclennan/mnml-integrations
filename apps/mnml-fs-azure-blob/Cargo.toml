@@ -1,0 +1,41 @@
+[package]
+name = "mnml-fs-azure-blob"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chris McLennan"]
+description = "Azure Blob Storage browser for mnml — terminal TUI for browsing storage accounts + containers + blobs, downloading + yanking URIs. Runs standalone or as an mnml-hosted pane. Shells out to the `az` CLI; no SDK dep."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-fs-azure-blob"
+readme = "README.md"
+
+[[bin]]
+name = "mnml-fs-azure-blob"
+path = "src/main.rs"
+
+[dependencies]
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+webbrowser = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

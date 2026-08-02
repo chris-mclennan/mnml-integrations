@@ -1,0 +1,35 @@
+# Injected by `dist` into every build job's `steps:` array, before
+# the actual build runs. Handles two things cargo-dist's default
+# workflow doesn't:
+#
+#  (1) Clones mnml's sibling crates to the layout that mnml's
+#      `Cargo.toml` path-deps expect (`../tmnl-protocol`,
+#      `../fim-engine`). Anonymous clone (sibling repos are public).
+#
+#  (2) Installs the Linux system libs that tree-sitter, fontconfig,
+#      and OpenSSL build-time depend on. macOS + Windows runners have
+#      these bundled already; only Linux needs the apt-get step.
+
+- name: Clone sibling repos
+  shell: bash
+  run: |
+    set -euo pipefail
+    cd ..
+    if [ ! -d tmnl-protocol ]; then
+      git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
+    fi
+    if [ ! -d fim-engine ]; then
+      git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
+    fi
+
+- name: Install Linux build deps
+  if: runner.os == 'Linux'
+  shell: bash
+  run: |
+    # cross-rs containers run as root without sudo; bare ubuntu runners
+    # need sudo. Detect either.
+    SUDO=
+    if command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi
+    $SUDO apt-get update
+    $SUDO apt-get install -y \
+      libfontconfig1-dev libssl-dev pkg-config

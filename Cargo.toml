@@ -1,14 +1,46 @@
 [workspace]
 resolver = "2"
 members = [
-    # 2026-08-01 (P7) — apps subdir is empty on scaffold. Sibling
-    # repos will be moved in under apps/<name>/ in a follow-up
-    # coordinated migration; each becomes a workspace member.
+    "apps/mnml-aws-amplify",
+    "apps/mnml-aws-cloudwatch-logs",
+    "apps/mnml-aws-codebuild",
+    "apps/mnml-aws-cognito",
+    "apps/mnml-aws-ecr",
+    "apps/mnml-aws-ecs",
+    "apps/mnml-aws-eventbridge",
+    "apps/mnml-aws-lambda",
+    "apps/mnml-aws-rds",
+    "apps/mnml-aws-sns",
+    "apps/mnml-aws-sqs",
+    "apps/mnml-cdn-cloudflare",
+    "apps/mnml-forge-azdevops",
+    "apps/mnml-forge-bitbucket",
+    "apps/mnml-forge-github",
+    "apps/mnml-forge-gitlab",
+    "apps/mnml-fs-azure-blob",
+    "apps/mnml-fs-s3",
+    "apps/mnml-msg-buttondown",
+    "apps/mnml-msg-gcal",
+    "apps/mnml-msg-gmail",
+    "apps/mnml-msg-mandrill",
+    "apps/mnml-msg-slack",
+    "apps/mnml-msg-teams",
+    "apps/mnml-obs-datadog",
+    "apps/mnml-test-cypress",
+    "apps/mnml-test-playwright",
+    "apps/mnml-tracker-jira",
+    "apps/mnml-virt-docker",
 ]
 
 # Every member crate gets these shared dependency versions when it
 # writes `foo = { workspace = true }` in its own Cargo.toml. Keeps
 # versions locked across all apps in the monorepo.
+exclude = [
+    # mnml-db has its own nested workspace (7 driver crates).
+    # Its own `cd apps/mnml-db && cargo build` handles it.
+    "apps/mnml-db",
+]
+
 [workspace.dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

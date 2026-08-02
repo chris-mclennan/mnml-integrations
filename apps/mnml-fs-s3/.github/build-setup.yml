@@ -1,0 +1,31 @@
+# Injected by `dist` into every build job's `steps:` array, before
+# the actual build runs. Handles two things cargo-dist's default
+# workflow doesn't:
+#
+#  (1) Clones the sibling `../tmnl-protocol` that this crate
+#      references by path. Anonymous clone (the sibling is public).
+#
+#  (2) Installs the Linux system libs that OpenSSL/fontconfig
+#      build-time depend on. macOS + Windows runners have these
+#      bundled already; only Linux needs the apt-get step.
+
+- name: Clone sibling repos
+  shell: bash
+  run: |
+    set -euo pipefail
+    cd ..
+    if [ ! -d tmnl-protocol ]; then
+      git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
+    fi
+
+- name: Install Linux build deps
+  if: runner.os == 'Linux'
+  shell: bash
+  run: |
+    # cross-rs containers run as root without sudo; bare ubuntu runners
+    # need sudo. Detect either.
+    SUDO=
+    if command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi
+    $SUDO apt-get update
+    $SUDO apt-get install -y \
+      libfontconfig1-dev libssl-dev pkg-config
