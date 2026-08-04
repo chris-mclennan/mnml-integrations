@@ -5,7 +5,9 @@ edition = "2024"
 license = "MIT"
 description = "Bitbucket Cloud pull-request viewer for mnml — terminal TUI with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
 homepage = "https://mnml.sh"
-repository = "https://github.com/chris-mclennan/mnml-forge-bitbucket"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml-integration"]
+categories = ["command-line-utilities"]
 readme = "README.md"
 
 [[bin]]
@@ -13,7 +15,7 @@ name = "mnml-forge-bitbucket"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.3" }
 ratatui = "0.29"
 crossterm = "0.28"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -24,7 +26,7 @@ serde_json = "1"
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.3", features = ["serde"] }
 dirs = "5"
 url = "2"
 webbrowser = "1"

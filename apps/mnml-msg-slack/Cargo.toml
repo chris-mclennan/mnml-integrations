@@ -5,7 +5,9 @@ edition = "2024"
 license = "MIT"
 description = "Slack browse + post for mnml — terminal TUI for channels, DMs, threads, search, and posting from the editor. Shells out to the Slack Web API (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."
 homepage = "https://mnml.sh"
-repository = "https://github.com/chris-mclennan/mnml-msg-slack"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml-integration"]
+categories = ["command-line-utilities"]
 readme = "README.md"
 authors = ["Chris McLennan"]
 
@@ -14,7 +16,7 @@ name = "mnml-msg-slack"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.3" }
 ratatui = "0.29"
 crossterm = "0.28"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
@@ -27,7 +29,7 @@ toml = "0.8"
 toml_edit = "0.22"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.3", features = ["serde"] }
 dirs = "5"
 arboard = "3"
 

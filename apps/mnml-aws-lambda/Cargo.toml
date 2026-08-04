@@ -26,7 +26,7 @@ dirs = "5"
 # 2026-08-01 — sibling-icons SDK requires mnml-bridge 0.4+ for the
 # `ChipSpec::glyph_svg` / `glyph_codepoint` fields (Stage 2 of the
 # sibling-owned icon migration — was baked into mnml core through 0.1.4).
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.3" }
 webbrowser = "1"
 
 [dev-dependencies]

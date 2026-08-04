@@ -6,7 +6,9 @@ license = "MIT"
 authors = ["Chris McLennan"]
 description = "Jira ticket viewer for mnml — terminal TUI with configurable tabs (JQL or auto-resolved releases). Runs standalone or as an mnml-hosted pane."
 homepage = "https://mnml.sh"
-repository = "https://github.com/chris-mclennan/mnml-tracker-jira"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml-integration"]
+categories = ["command-line-utilities"]
 readme = "README.md"
 
 [package.metadata.wix]
@@ -20,7 +22,7 @@ name = "mnml-tracker-jira"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.3" }
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
@@ -39,7 +41,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Utils
 anyhow = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.3", features = ["serde"] }
 dirs = "5"
 url = "2"
 webbrowser = "1"
