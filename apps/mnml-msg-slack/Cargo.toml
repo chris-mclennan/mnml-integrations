@@ -16,7 +16,7 @@ name = "mnml-msg-slack"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.3" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
 ratatui = "0.29"
 crossterm = "0.28"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
@@ -29,7 +29,7 @@ toml = "0.8"
 toml_edit = "0.22"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-chrono = { version = "0.3", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 arboard = "3"
 
