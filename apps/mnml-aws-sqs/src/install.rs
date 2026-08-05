@@ -68,7 +68,7 @@ pub fn install() -> Result<()> {
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: sqs_svg_path(),
+            glyph_svg_bytes: None,
             glyph_codepoint: Some("F1B05".into()),
         }),
         commands: vec![CommandSpec {
