@@ -5,14 +5,11 @@
 //! that shipped in mnml core through 0.1.4; from 0.2.0 onwards
 //! the sibling owns its own registration.
 //!
-//! 2026-08-01 — Stage 2 of the mnml-bridge 0.4 sibling-icons SDK.
-//! Instead of relying on mnml core baking `assets/glyphs/aws/codebuild.svg`
-//! into MnmlSymbols.ttf at a codepoint mnml chose, we now ship our
-//! own SVG in-repo (`assets/icons/codebuild.svg`) and declare it via
-//! `ChipSpec::glyph_svg`. `install_integration` copies the SVG to
-//! `~/.config/mnml/glyphs/codebuild.svg`; mnml discovers it on next
-//! startup + on the `integrations.refresh` palette command, and bakes
-//! it into the runtime font on `integrations.bake_sibling_glyphs`.
+//! 2026-08-04 — updated to mnml-bridge 0.5 `glyph_svg_bytes` API.
+//! The SVG is embedded in this binary via `include_bytes!`. Bridge
+//! writes bytes to `~/.cache/mnml/pending-glyphs/codebuild.svg`;
+//! mnml bakes at next startup + deletes the pending file — no
+//! permanent glyph SVG anywhere under `~/.config/mnml/`.
 //!
 //! `glyph_codepoint = "F1B0A"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
@@ -24,33 +21,8 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
-
 const INTEGRATION_ID: &str = "codebuild";
-
-fn codebuild_svg_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/codebuild.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/codebuild.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/codebuild.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
+const CODEBUILD_SVG: &[u8] = include_bytes!("../assets/icons/codebuild.svg");
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
@@ -70,7 +42,7 @@ pub fn install() -> Result<()> {
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: codebuild_svg_path(),
+            glyph_svg_bytes: Some(CODEBUILD_SVG.to_vec()),
             glyph_codepoint: Some("F1B0A".into()),
         }),
         commands: vec![CommandSpec {
@@ -86,7 +58,7 @@ pub fn install() -> Result<()> {
     println!("wrote manifest: {}", path.display());
     println!(
         "run mnml + `integrations.refresh` (or restart) to pick up the rail chip; \
-         then `integrations.bake_sibling_glyphs` to bake the SVG into MnmlSymbols.ttf"
+         then `integrations.bake_integration_glyphs` to bake the SVG into MnmlSymbols.ttf"
     );
     Ok(())
 }

@@ -77,7 +77,7 @@ See `src/launcher_template.rs` in mnml core for the supported variables
 Same as any sibling repo before the monorepo — see `apps/<any>/README.md`
 for the sibling authoring guide. Rough shape:
 
-- `Cargo.toml` with `mnml-bridge = "0.4"` as a dep
+- `Cargo.toml` with `mnml-bridge = "0.6"` as a dep
 - `src/install.rs` writing an `IntegrationSpec` via `install_integration`
 - `src/main.rs` with a `--install` and `--uninstall` subcommand
 - Its own `README.md`, own tests, own CI

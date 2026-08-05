@@ -1206,6 +1206,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-aws-amplify"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1274,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-aws-codebuild"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1350,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-aws-eventbridge"
-version = "0.3.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1445,10 +1454,11 @@ dependencies = [
 
 [[package]]
 name = "mnml-bridge"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
+ "uds_windows",
 ]
 
 [[package]]
@@ -2932,6 +2942,17 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "uds_windows"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+dependencies = [
+ "memoffset",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "unicode-ident"

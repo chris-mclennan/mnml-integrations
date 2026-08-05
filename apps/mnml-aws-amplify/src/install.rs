@@ -5,14 +5,14 @@
 //! that shipped in mnml core through 0.1.4; from 0.2.0 onwards
 //! the sibling owns its own registration.
 //!
-//! 2026-07-31 — this sibling is the first-mover for the mnml-bridge
-//! 0.4 sibling-icons SDK. Instead of picking a Nerd Font glyph out
-//! of the mnml-core-baked block, we ship our own SVG under
-//! `assets/icons/amplify.svg` and declare it via `ChipSpec::glyph_svg`.
-//! `install_integration` copies the SVG to
-//! `~/.config/mnml/glyphs/amplify.svg`; mnml discovers it on next
-//! startup + on the `integrations.refresh` palette command, and
-//! bakes it into the runtime font on `integrations.bake_sibling_glyphs`.
+//! 2026-08-04 — updated to mnml-bridge 0.5 `glyph_svg_bytes` API.
+//! The SVG is embedded in this binary via `include_bytes!`, so
+//! `--install` never needs to look up the SVG on disk (the old
+//! path-based lookup failed on `cargo install` where the assets/
+//! dir didn't ship). Bridge writes bytes to
+//! `~/.cache/mnml/pending-glyphs/amplify.svg`; mnml bakes at next
+//! startup + deletes the pending file — no permanent glyph SVG
+//! anywhere under `~/.config/mnml/`.
 //!
 //! `glyph_codepoint = "F1B00"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/icon_catalog.rs` in mnml),
@@ -23,45 +23,9 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
 
 const INTEGRATION_ID: &str = "amplify";
-
-/// Resolve `assets/icons/amplify.svg` to an absolute path. Looks
-/// next to the running binary first (release layout), then walks
-/// upward for the `assets/` dir (dev / cargo-install layout).
-/// Returns `None` if the SVG can't be found — in that case
-/// `install_integration` still writes the manifest, mnml just
-/// won't have an SVG to bake.
-fn amplify_svg_path() -> Option<PathBuf> {
-    // 1. Next to the running binary (typical `mnml-aws-amplify --install`
-    //    invocation on a released build).
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/amplify.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        // Walk ancestor dirs looking for a `assets/icons/amplify.svg`
-        // sibling — cargo-run's target/debug layout.
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/amplify.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    // 2. CWD — user might run `mnml-aws-amplify --install` from the
-    //    repo root during dev.
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/amplify.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
+const AMPLIFY_SVG: &[u8] = include_bytes!("../assets/icons/amplify.svg");
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
@@ -83,8 +47,11 @@ pub fn install() -> Result<()> {
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
-            // 2026-07-31 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: amplify_svg_path(),
+            // 2026-08-04 — mnml-bridge 0.5. Bytes are embedded in
+            // the binary; bridge writes them to
+            // `~/.cache/mnml/pending-glyphs/` for mnml to bake +
+            // delete on next startup.
+            glyph_svg_bytes: Some(AMPLIFY_SVG.to_vec()),
             // Pin to the codepoint mnml core used to bake amplify
             // at, so upgrading users don't see the chip move.
             glyph_codepoint: Some("F1B00".into()),
@@ -102,7 +69,7 @@ pub fn install() -> Result<()> {
     println!("wrote manifest: {}", path.display());
     println!(
         "run mnml + `integrations.refresh` (or restart) to pick up the rail chip; \
-         then `integrations.bake_sibling_glyphs` to bake the SVG into MnmlSymbols.ttf"
+         then `integrations.bake_integration_glyphs` to bake the SVG into MnmlSymbols.ttf"
     );
     Ok(())
 }
