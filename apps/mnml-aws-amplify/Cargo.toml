@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-amplify"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "AWS Amplify viewer for mnml — terminal TUI for Amplify apps, branches, and deploy jobs. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."
@@ -17,7 +17,7 @@ path = "src/main.rs"
 # ChipSpec::glyph_svg / glyph_codepoint fields. Path override
 # points at the mnml-sibling-icons worktree where 0.4.0 lives
 # during Stage 1; drop the `path =` once 0.4.0 is on crates.io.
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.5" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.6" }
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
