@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "DynamoDB driver crate for mnml-db — shells out to the `aws` CLI (no AWS SDK dep), exposes the driver-neutral document QueryResult / schema-introspection shape."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml", "mnml-integration", "database"]
+categories = ["database"]
 
 [dependencies]
 anyhow = "1"

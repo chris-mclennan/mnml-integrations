@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "MariaDB / MySQL driver crate for mnml-db — thin wrapper around mysql_async exposing the driver-neutral QueryResult / schema-introspection shape."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml", "mnml-integration", "database"]
+categories = ["database"]
 
 [dependencies]
 anyhow = "1"

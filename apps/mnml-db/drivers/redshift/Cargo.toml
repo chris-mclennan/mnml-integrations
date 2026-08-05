@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Redshift driver crate for mnml-db — thin wrapper around tokio-postgres (Redshift speaks Postgres wire protocol) with Redshift-specific catalog queries (svv_all_schemas / svv_all_tables / svv_all_columns)."
+homepage = "https://mnml.sh"
+repository = "https://github.com/chris-mclennan/mnml-integrations"
+keywords = ["mnml", "mnml-integration", "database"]
+categories = ["database"]
 
 [dependencies]
 anyhow = "1"

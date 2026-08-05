@@ -28,6 +28,8 @@ homepage.workspace = true
 repository.workspace = true
 description = "Unified TUI database client for mnml — one integration, per-engine drivers (Postgres + Redis in v0.1)."
 readme = "README.md"
+keywords = ["mnml", "mnml-integration"]
+categories = ["command-line-utilities", "database"]
 
 [[bin]]
 name = "mnml-db"
