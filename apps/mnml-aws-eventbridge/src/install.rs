@@ -41,7 +41,6 @@ pub fn install() -> Result<()> {
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: None,
             glyph_svg_bytes: Some(EVENTBRIDGE_SVG.to_vec()),
             // Pin to the codepoint mnml core used to bake
             // eventbridge at, so upgrading users don't see the chip

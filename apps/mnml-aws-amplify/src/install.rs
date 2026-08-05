@@ -51,7 +51,6 @@ pub fn install() -> Result<()> {
             // the binary; bridge writes them to
             // `~/.cache/mnml/pending-glyphs/` for mnml to bake +
             // delete on next startup.
-            glyph_svg: None,
             glyph_svg_bytes: Some(AMPLIFY_SVG.to_vec()),
             // Pin to the codepoint mnml core used to bake amplify
             // at, so upgrading users don't see the chip move.
