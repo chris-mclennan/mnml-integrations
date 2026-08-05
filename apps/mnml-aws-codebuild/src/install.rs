@@ -5,14 +5,11 @@
 //! that shipped in mnml core through 0.1.4; from 0.2.0 onwards
 //! the sibling owns its own registration.
 //!
-//! 2026-08-01 — Stage 2 of the mnml-bridge 0.4 sibling-icons SDK.
-//! Instead of relying on mnml core baking `assets/glyphs/aws/codebuild.svg`
-//! into MnmlSymbols.ttf at a codepoint mnml chose, we now ship our
-//! own SVG in-repo (`assets/icons/codebuild.svg`) and declare it via
-//! `ChipSpec::glyph_svg`. `install_integration` copies the SVG to
-//! `~/.config/mnml/glyphs/codebuild.svg`; mnml discovers it on next
-//! startup + on the `integrations.refresh` palette command, and bakes
-//! it into the runtime font on `integrations.bake_sibling_glyphs`.
+//! 2026-08-04 — updated to mnml-bridge 0.5 `glyph_svg_bytes` API.
+//! The SVG is embedded in this binary via `include_bytes!`. Bridge
+//! writes bytes to `~/.cache/mnml/pending-glyphs/codebuild.svg`;
+//! mnml bakes at next startup + deletes the pending file — no
+//! permanent glyph SVG anywhere under `~/.config/mnml/`.
 //!
 //! `glyph_codepoint = "F1B0A"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
@@ -62,7 +59,7 @@ pub fn install() -> Result<()> {
     println!("wrote manifest: {}", path.display());
     println!(
         "run mnml + `integrations.refresh` (or restart) to pick up the rail chip; \
-         then `integrations.bake_sibling_glyphs` to bake the SVG into MnmlSymbols.ttf"
+         then `integrations.bake_integration_glyphs` to bake the SVG into MnmlSymbols.ttf"
     );
     Ok(())
 }

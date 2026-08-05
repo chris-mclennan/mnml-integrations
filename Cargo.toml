@@ -47,7 +47,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "5"
-mnml-bridge = { path = "../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../mnml/crates/mnml-bridge", version = "0.5" }
 ratatui = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
