@@ -23,6 +23,7 @@ members = [
     "apps/mnml-msg-gcal",
     "apps/mnml-msg-gmail",
     "apps/mnml-msg-mandrill",
+    "apps/mnml-meta-stats",
     "apps/mnml-msg-slack",
     "apps/mnml-msg-teams",
     "apps/mnml-obs-datadog",
