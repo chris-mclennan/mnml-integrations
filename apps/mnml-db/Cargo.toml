@@ -63,13 +63,13 @@ dirs = "5"
 
 # Driver crates — each gated behind its own feature so a build can
 # skip an engine's transitive deps entirely.
-mnml-db-driver-postgres   = { path = "drivers/postgres",   optional = true }
-mnml-db-driver-redis      = { path = "drivers/redis",      optional = true }
-mnml-db-driver-mariadb    = { path = "drivers/mariadb",    optional = true }
-mnml-db-driver-clickhouse = { path = "drivers/clickhouse", optional = true }
-mnml-db-driver-redshift   = { path = "drivers/redshift",   optional = true }
-mnml-db-driver-docdb      = { path = "drivers/docdb",      optional = true }
-mnml-db-driver-dynamodb   = { path = "drivers/dynamodb",   optional = true }
+mnml-db-driver-postgres   = { path = "drivers/postgres",   version = "0.1", optional = true }
+mnml-db-driver-redis      = { path = "drivers/redis",      version = "0.1", optional = true }
+mnml-db-driver-mariadb    = { path = "drivers/mariadb",    version = "0.1", optional = true }
+mnml-db-driver-clickhouse = { path = "drivers/clickhouse", version = "0.1", optional = true }
+mnml-db-driver-redshift   = { path = "drivers/redshift",   version = "0.1", optional = true }
+mnml-db-driver-docdb      = { path = "drivers/docdb",      version = "0.1", optional = true }
+mnml-db-driver-dynamodb   = { path = "drivers/dynamodb",   version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
