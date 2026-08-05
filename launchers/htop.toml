@@ -9,7 +9,7 @@ description = "Interactive process viewer"
 category = "system"
 
 [chip]
-glyph = ""
+glyph = "󲀁"
 fallback = "H"
 color = "green"
 enabled = true

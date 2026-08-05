@@ -10,7 +10,7 @@ description = "Interactive bandwidth monitor"
 category = "system"
 
 [chip]
-glyph = ""
+glyph = "󲀂"
 fallback = "N"
 color = "cyan"
 enabled = true
