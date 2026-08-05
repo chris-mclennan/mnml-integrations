@@ -1,9 +1,11 @@
 [package]
 name = "mnml-aws-codebuild"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 description = "AWS CodeBuild + CloudWatch viewer for mnml — terminal TUI for recent builds and live log tail. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."
+keywords = ["mnml", "mnml-integration", "aws"]
+categories = ["command-line-utilities"]
 homepage = "https://mnml.sh"
 repository = "https://github.com/chris-mclennan/mnml-aws-codebuild"
 readme = "README.md"
