@@ -16,7 +16,7 @@ category = "editor"
 glyph = ""
 fallback = "VS"
 color = "blue"
-enabled = false
+enabled = true
 in_palette_bar = false
 
 [[commands]]

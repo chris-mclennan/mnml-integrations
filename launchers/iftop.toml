@@ -10,10 +10,10 @@ description = "Interactive bandwidth monitor"
 category = "system"
 
 [chip]
-glyph = "6"
+glyph = ""
 fallback = "N"
 color = "cyan"
-enabled = false
+enabled = true
 in_palette_bar = false
 
 [[commands]]

@@ -9,10 +9,10 @@ description = "Interactive process viewer"
 category = "system"
 
 [chip]
-glyph = "5"
+glyph = ""
 fallback = "H"
 color = "green"
-enabled = false
+enabled = true
 in_palette_bar = false
 
 [[commands]]

@@ -11,7 +11,7 @@ category = "system"
 glyph = ""
 fallback = "B"
 color = "cyan"
-enabled = false
+enabled = true
 in_palette_bar = false
 
 [[commands]]

@@ -20,10 +20,10 @@ description = "Wrap claude with --add-dir flags for sibling-repo access"
 category = "ai"
 
 [chip]
-glyph = "0"
+glyph = ""
 fallback = "CC"
 color = "orange"
-enabled = false
+enabled = true
 in_palette_bar = false
 
 [[commands]]
