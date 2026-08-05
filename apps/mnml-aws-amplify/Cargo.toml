@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-amplify"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "AWS Amplify viewer for mnml — terminal TUI for Amplify apps, branches, and deploy jobs. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."

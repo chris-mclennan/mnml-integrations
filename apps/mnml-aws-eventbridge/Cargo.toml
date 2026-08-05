@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-eventbridge"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "AWS EventBridge buses + rules browser for mnml — terminal TUI listing event buses or rules-per-bus, with event-pattern + targets detail panel, console open, ARN yank. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."
