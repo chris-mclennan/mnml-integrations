@@ -22,46 +22,9 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
 
 const INTEGRATION_ID: &str = "eventbridge";
-
-/// Resolve `assets/icons/eventbridge.svg` to an absolute path.
-/// Looks next to the running binary first (release layout), then
-/// walks upward for the `assets/` dir (dev / cargo-install layout).
-/// Returns `None` if the SVG can't be found — in that case
-/// `install_integration` still writes the manifest, mnml just
-/// won't have an SVG to bake.
-fn eventbridge_svg_path() -> Option<PathBuf> {
-    // 1. Next to the running binary (typical
-    //    `mnml-aws-eventbridge --install` invocation on a released
-    //    build).
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/eventbridge.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        // Walk ancestor dirs looking for a `assets/icons/eventbridge.svg`
-        // sibling — cargo-run's target/debug layout.
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/eventbridge.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    // 2. CWD — user might run `mnml-aws-eventbridge --install` from
-    //    the repo root during dev.
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/eventbridge.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
+const EVENTBRIDGE_SVG: &[u8] = include_bytes!("../assets/icons/eventbridge.svg");
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
@@ -81,7 +44,8 @@ pub fn install() -> Result<()> {
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: eventbridge_svg_path(),
+            glyph_svg: None,
+            glyph_svg_bytes: Some(EVENTBRIDGE_SVG.to_vec()),
             // Pin to the codepoint mnml core used to bake
             // eventbridge at, so upgrading users don't see the chip
             // move.

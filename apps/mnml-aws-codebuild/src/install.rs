@@ -24,33 +24,8 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
-
 const INTEGRATION_ID: &str = "codebuild";
-
-fn codebuild_svg_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/codebuild.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/codebuild.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/codebuild.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
+const CODEBUILD_SVG: &[u8] = include_bytes!("../assets/icons/codebuild.svg");
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
@@ -70,7 +45,8 @@ pub fn install() -> Result<()> {
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
-            glyph_svg: codebuild_svg_path(),
+            glyph_svg: None,
+            glyph_svg_bytes: Some(CODEBUILD_SVG.to_vec()),
             glyph_codepoint: Some("F1B0A".into()),
         }),
         commands: vec![CommandSpec {

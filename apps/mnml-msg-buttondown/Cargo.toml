@@ -14,7 +14,7 @@ name = "mnml-msg-buttondown"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.4" }
+mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.5" }
 ratatui = "0.29"
 unicode-width = "0.2"
 crossterm = "0.28"
