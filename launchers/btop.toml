@@ -8,12 +8,11 @@ description = "Resource monitor (cpu / mem / disk / net)"
 category = "system"
 
 [chip]
-# 2026-08-06 — user pref: just the letter B in red. Simple ASCII
-# glyph always renders (no font dependency). btop's real UI icon
-# (nf-md-monitor_dashboard U+F0A07) is what the previous glyph
-# was; kept in the fallback field so a `--ascii` render still
-# shows something recognizable.
-glyph = "B"
+# 2026-08-06 — user pref: red B, but at full-cell size.
+# nf-md-alpha_b (U+F0AEF) is a letter-B glyph designed to fill
+# the terminal cell, unlike a plain ASCII "B" which comes from
+# the primary font at standard text size (smaller).
+glyph = "\U000F0AEF"
 fallback = "B"
 color = "red"
 enabled = true
