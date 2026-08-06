@@ -9,7 +9,8 @@ description = "Interactive process viewer"
 category = "system"
 
 [chip]
-glyph = "󲀁"
+# nf-md-server_plus (U+F0AF5) — 2026-08-05 user pick.
+glyph = "\U000F0AF5"
 fallback = "H"
 color = "green"
 enabled = true

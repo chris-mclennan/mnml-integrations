@@ -10,7 +10,8 @@ description = "Interactive bandwidth monitor"
 category = "system"
 
 [chip]
-glyph = "󲀂"
+# nf-md-server_security (U+F0AF6) — 2026-08-05 user pick.
+glyph = "\U000F0AF6"
 fallback = "N"
 color = "cyan"
 enabled = true

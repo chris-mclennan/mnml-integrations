@@ -13,7 +13,9 @@ description = "Visual Studio Code (or fork)"
 category = "editor"
 
 [chip]
-glyph = ""
+# nf-cod-vscode (U+EC29) — 2026-08-05 user pick over a nonstandard
+# private-use glyph the previous value pointed at.
+glyph = ""
 fallback = "VS"
 color = "blue"
 enabled = true

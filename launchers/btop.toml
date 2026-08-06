@@ -8,7 +8,9 @@ description = "Resource monitor (cpu / mem / disk / net)"
 category = "system"
 
 [chip]
-glyph = "󲀀"
+# nf-md-server_network (U+F0AEF) — 2026-08-05 user pick over the
+# prior PUA-baked glyph so btop reads as a monitor at a glance.
+glyph = "\U000F0AEF"
 fallback = "B"
 color = "cyan"
 enabled = true
