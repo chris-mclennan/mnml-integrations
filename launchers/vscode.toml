@@ -13,9 +13,11 @@ description = "Visual Studio Code (or fork)"
 category = "editor"
 
 [chip]
-# nf-cod-vscode (U+EC29) — 2026-08-05 user pick over a nonstandard
-# private-use glyph the previous value pointed at.
-glyph = ""
+# nf-dev-vscode (U+E8DA) — swapped from cod-vscode (EC29) 2026-08-05
+# because ghostty 1.3.1 doesn't route EC29 even with the codicon
+# range extended past it. E8DA renders reliably in the Devicons
+# range; both are official VS Code glyphs.
+glyph = "\U0000E8DA"
 fallback = "VS"
 color = "blue"
 enabled = true
