@@ -12,7 +12,7 @@ category = "system"
 # prior PUA-baked glyph so btop reads as a monitor at a glance.
 glyph = "\U000F0AEF"
 fallback = "B"
-color = "cyan"
+color = "red"
 enabled = true
 in_palette_bar = false
 
