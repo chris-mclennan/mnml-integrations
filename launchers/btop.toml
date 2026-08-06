@@ -8,11 +8,12 @@ description = "Resource monitor (cpu / mem / disk / net)"
 category = "system"
 
 [chip]
-# nf-md-monitor_dashboard (U+F0A07) — matches btop's real UI
-# (multi-panel resource dashboard). Previous pick F0AEF was
-# md-alpha_b (letter "B" glyph) — misidentified in the Nerd Fonts
-# cheatsheet; corrected 2026-08-05 after inspecting the actual font.
-glyph = "\U000F0A07"
+# 2026-08-06 — user pref: just the letter B in red. Simple ASCII
+# glyph always renders (no font dependency). btop's real UI icon
+# (nf-md-monitor_dashboard U+F0A07) is what the previous glyph
+# was; kept in the fallback field so a `--ascii` render still
+# shows something recognizable.
+glyph = "B"
 fallback = "B"
 color = "red"
 enabled = true
