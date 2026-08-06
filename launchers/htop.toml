@@ -9,9 +9,15 @@ description = "Interactive process viewer"
 category = "system"
 
 [chip]
-# nf-md-monitor (U+F0379). Prior F0AF5 was md-alpha_h — corrected
-# 2026-08-05 after inspecting the actual font.
-glyph = "\U000F0379"
+# 2026-08-06 — swapped to a custom SVG glyph. mnml fetches
+# `htop.svg` from this same folder on install, bakes into
+# MnmlSymbols.ttf at U+F1D00 (pinned via `glyph_codepoint` so the
+# bake is stable across users), then renders it here. Falls back
+# to the "H" fallback letter if the user hasn't run
+# `integrations.bake_integration_glyphs` yet.
+glyph = "\U000F1D00"
+glyph_svg = "htop.svg"
+glyph_codepoint = "F1D00"
 fallback = "H"
 color = "green"
 enabled = true
