@@ -10,8 +10,9 @@ description = "Interactive bandwidth monitor"
 category = "system"
 
 [chip]
-# nf-md-server_security (U+F0AF6) — 2026-08-05 user pick.
-glyph = "\U000F0AF6"
+# nf-md-network (U+F06F3). Prior F0AF6 was md-alpha_i — corrected
+# 2026-08-05 after inspecting the actual font.
+glyph = "\U000F06F3"
 fallback = "N"
 color = "cyan"
 enabled = true

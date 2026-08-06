@@ -8,9 +8,11 @@ description = "Resource monitor (cpu / mem / disk / net)"
 category = "system"
 
 [chip]
-# nf-md-server_network (U+F0AEF) — 2026-08-05 user pick over the
-# prior PUA-baked glyph so btop reads as a monitor at a glance.
-glyph = "\U000F0AEF"
+# nf-md-monitor_dashboard (U+F0A07) — matches btop's real UI
+# (multi-panel resource dashboard). Previous pick F0AEF was
+# md-alpha_b (letter "B" glyph) — misidentified in the Nerd Fonts
+# cheatsheet; corrected 2026-08-05 after inspecting the actual font.
+glyph = "\U000F0A07"
 fallback = "B"
 color = "red"
 enabled = true

@@ -9,8 +9,9 @@ description = "Interactive process viewer"
 category = "system"
 
 [chip]
-# nf-md-server_plus (U+F0AF5) — 2026-08-05 user pick.
-glyph = "\U000F0AF5"
+# nf-md-monitor (U+F0379). Prior F0AF5 was md-alpha_h — corrected
+# 2026-08-05 after inspecting the actual font.
+glyph = "\U000F0379"
 fallback = "H"
 color = "green"
 enabled = true

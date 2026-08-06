@@ -1,0 +1,34 @@
+# Jira — open a ticket or the browser board.
+#
+# Reference launcher: takes an optional ticket key (e.g. "PROJ-123")
+# and opens the browser to that ticket, or to the project board if
+# no key is supplied. Requires `[jira]` config in the user's mnml
+# config for the domain.
+id = "jira"
+label = "Jira"
+description = "Jira ticket + board launcher"
+category = "project-management"
+
+[chip]
+# nf-md-jira (U+F0303) — verified against Symbols Nerd Font Mono.
+# The mnml-tracker-jira sibling registers three richer chips
+# (Work / Boards / Fix Versions) on install; this launcher is the
+# minimal browser-open shortcut for a single ticket or board.
+glyph = "\U000F0303"
+fallback = "J"
+color = "blue"
+enabled = false
+in_palette_bar = false
+
+[[commands]]
+id = "jira.open_board"
+title = "Jira: open board"
+group = "project-management"
+keys = ["<leader>ij"]
+run = ":browser open https://{{jira_domain}}/jira/your-work"
+
+[[commands]]
+id = "jira.open_ticket"
+title = "Jira: open ticket…"
+group = "project-management"
+run = ":browser open https://{{jira_domain}}/browse/{{prompt:Ticket key}}"
