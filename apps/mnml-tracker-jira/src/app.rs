@@ -349,12 +349,20 @@ impl App {
         let jql = match &team {
             Some(t) => {
                 let escaped = t.replace('"', "\\\"");
-                // OR across the 3 places teams live in Tattle: the
-                // "Tattle Team" custom field, the components list,
-                // and labels. Any match keeps the ticket.
-                format!(
-                    "({base_jql}) AND (\"Tattle Team\" = \"{escaped}\" OR component = \"{escaped}\" OR labels = \"{escaped}\")"
-                )
+                // Split off any trailing ORDER BY clause before wrapping
+                // in parens — Jira rejects `(... ORDER BY ...) AND ...`
+                // with "Expecting ')' but got 'ORDER'". Case-insensitive
+                // split on the last ORDER BY.
+                let (where_part, order_part) = split_order_by(&base_jql);
+                let team_clause = format!(
+                    "(\"Tattle Team\" = \"{escaped}\" OR component = \"{escaped}\" OR labels = \"{escaped}\")"
+                );
+                let mut out = format!("({where_part}) AND {team_clause}");
+                if !order_part.is_empty() {
+                    out.push(' ');
+                    out.push_str(&order_part);
+                }
+                out
             }
             None => base_jql,
         };
@@ -972,6 +980,38 @@ fn project_of(issue_key: &str) -> Option<String> {
         None
     } else {
         Some(project.to_string())
+    }
+}
+
+/// 2026-08-07 — split a JQL string into its `WHERE`-shaped prefix
+/// and its trailing `ORDER BY …` clause (empty when absent). Used
+/// to wrap the WHERE half in parens when adding an AND clause,
+/// since Jira rejects `(<where> ORDER BY <keys>) AND <extra>` with
+/// "Expecting ')' but got 'ORDER'". Case-insensitive; splits on the
+/// LAST occurrence of `ORDER BY` outside a quoted string.
+pub fn split_order_by(jql: &str) -> (String, String) {
+    // Walk from the end, respecting quoted strings, looking for a
+    // case-insensitive `ORDER BY`. Cheap: JQL is short, and this
+    // runs at most once per pane refresh.
+    let bytes = jql.as_bytes();
+    let mut in_quote = false;
+    let mut split_at: Option<usize> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'"' {
+            in_quote = !in_quote;
+        } else if !in_quote
+            && i + 8 <= bytes.len()
+            && jql[i..i + 8].eq_ignore_ascii_case("order by")
+        {
+            split_at = Some(i);
+        }
+        i += 1;
+    }
+    match split_at {
+        Some(idx) => (jql[..idx].trim().to_string(), jql[idx..].trim().to_string()),
+        None => (jql.trim().to_string(), String::new()),
     }
 }
 
