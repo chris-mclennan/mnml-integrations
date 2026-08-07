@@ -349,14 +349,25 @@ impl App {
         let jql = match &team {
             Some(t) => {
                 let escaped = t.replace('"', "\\\"");
-                // Split off any trailing ORDER BY clause before wrapping
-                // in parens — Jira rejects `(... ORDER BY ...) AND ...`
-                // with "Expecting ')' but got 'ORDER'". Case-insensitive
-                // split on the last ORDER BY.
                 let (where_part, order_part) = split_order_by(&base_jql);
-                let team_clause = format!(
-                    "(\"Tattle Team\" = \"{escaped}\" OR component = \"{escaped}\" OR labels = \"{escaped}\")"
-                );
+                // Include the configured team custom-field clause
+                // when the user set one. JQL accepts either the
+                // customfield_XXXXX id or the display name in quotes;
+                // we prefer the display name for legibility, falling
+                // back to the id.
+                let mut clauses = Vec::new();
+                if let Some(field_name) = self
+                    .cfg
+                    .team_field_name
+                    .as_ref()
+                    .filter(|s| !s.trim().is_empty())
+                    .or(self.cfg.team_field_id.as_ref().filter(|s| !s.trim().is_empty()))
+                {
+                    clauses.push(format!("\"{field_name}\" = \"{escaped}\""));
+                }
+                clauses.push(format!("component = \"{escaped}\""));
+                clauses.push(format!("labels = \"{escaped}\""));
+                let team_clause = format!("({})", clauses.join(" OR "));
                 let mut out = format!("({where_part}) AND {team_clause}");
                 if !order_part.is_empty() {
                     out.push(' ');
@@ -366,8 +377,17 @@ impl App {
             }
             None => base_jql,
         };
+        // Include the configured team custom-field id in the response
+        // fields so `team_value_of` can read it back off the issue.
+        let extra_fields: Vec<String> = self
+            .cfg
+            .team_field_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| vec![s.clone()])
+            .unwrap_or_default();
         self.status = format!("refreshing {}…", self.tabs[idx].name);
-        match self.client.search(&jql, 100).await {
+        match self.client.search(&jql, 100, &extra_fields).await {
             Ok(issues) => {
                 self.tabs[idx].issues = issues;
                 self.tabs[idx].last_fetched = Some(std::time::Instant::now());
@@ -702,7 +722,7 @@ impl App {
 
     /// 2026-07-25 — dispatch a ticket-level action (Implement /
     /// Fix / Triage) for the focused ticket. Uses the standard
-    /// tattle-claude-workspace paths for queue + IPC. No-op on
+    /// the configured dispatch_workspace paths for queue + IPC. No-op on
     /// non-tree tabs or when the cursor isn't on a Ticket row.
     ///
     /// `kind` should be one of "implement", "fix", "triage" —
@@ -716,7 +736,7 @@ impl App {
         let issue = self.active().issues[issue_idx].clone();
         let jira_url = self.client.issue_url(&issue.key);
         let d = crate::dispatch::Dispatch::for_ticket(kind, &issue, jira_url);
-        let (queue_dir, ipc_dir) = crate::dispatch::tattle_workspace_paths();
+        let (queue_dir, ipc_dir) = crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
         self.status = crate::dispatch::dispatch(&d, queue_dir.as_deref(), ipc_dir.as_deref());
     }
 
@@ -743,7 +763,7 @@ impl App {
         };
         let jira_url = self.client.issue_url(&issue.key);
         let d = crate::dispatch::Dispatch::for_pr(&issue, jira_url, pr_url);
-        let (queue_dir, ipc_dir) = crate::dispatch::tattle_workspace_paths();
+        let (queue_dir, ipc_dir) = crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
         self.status = crate::dispatch::dispatch(&d, queue_dir.as_deref(), ipc_dir.as_deref());
     }
 
@@ -783,7 +803,7 @@ impl App {
             self.status = format!("{issue_key}: no numeric id (was it re-fetched?)");
             return;
         };
-        // Bitbucket is the only connector Tattle uses; other tenants
+        // Bitbucket connector; other tenants
         // can extend this to try github/azure fallback if needed.
         match self.client.list_prs_for_issue(&issue_id, "bitbucket").await {
             Ok(prs) => {
@@ -1015,14 +1035,14 @@ pub fn split_order_by(jql: &str) -> (String, String) {
     }
 }
 
-/// 2026-08-07 — extract Tattle's "Tattle Team" custom field value
-/// from an issue. Tattle uses `customfield_10056` as a select field
-/// with values like `HeliOS`, `Atlas`, etc. The field ships as
+/// 2026-08-07 — extract the value of a select-type Jira custom
+/// field. The field id is caller-supplied (e.g. `customfield_10056`
+/// for a "Team" select). Jira ships select-field values as
 /// `{"self": "...", "value": "HeliOS", "id": "10725"}` — we only
-/// care about `.value`. Making the field id configurable per Jira
-/// instance is a v2 follow-up; hardcoded to Tattle's id for now.
-pub fn team_value_of(issue: &crate::jira::Issue) -> Option<String> {
-    let raw = issue.fields.extras.get("customfield_10056")?;
+/// care about `.value`. Returns None when the field isn't present
+/// or isn't a select (missing `.value`).
+pub fn team_value_of(issue: &crate::jira::Issue, field_id: &str) -> Option<String> {
+    let raw = issue.fields.extras.get(field_id)?;
     raw.get("value")?.as_str().map(|s| s.to_string())
 }
 
@@ -1207,10 +1227,17 @@ impl App {
                     seen.insert(l.clone());
                 }
             }
-            // 2026-08-07 — include the "Tattle Team" custom field
-            // value (HeliOS / Atlas / etc). See `team_value_of` +
-            // the customfield_10056 request in jira.rs.
-            if let Some(v) = team_value_of(issue)
+            // Include the configured team-select custom-field value
+            // (e.g. team names from a "Team" select field
+            // at customfield_10056 — user-configured via
+            // `team_field_id`). Silently skipped when no field is
+            // configured or the issue doesn't carry the field.
+            if let Some(id) = self
+                .cfg
+                .team_field_id
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                && let Some(v) = team_value_of(issue, id)
                 && !v.trim().is_empty()
             {
                 seen.insert(v);
@@ -1866,7 +1893,7 @@ async fn resolve_tab_jql(tab: &Tab, client: &Client) -> Result<String> {
     // 2026-07-26 — apply the version_name_contains filter FIRST so
     // "current"/"next" picks from the filtered subset. Without
     // this, projects with multiple parallel release tracks (like
-    // Tattle: "Mobile - 1.6.X", "10.31.4", "13.15.0", …) pick
+    // e.g. "Mobile - 1.6.X", "10.31.4", "13.15.0", …) pick
     // whichever version has the earliest startDate — often not
     // the one the user actually cares about.
     if let Some(needle) = &tab.version_name_contains
