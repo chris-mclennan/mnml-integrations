@@ -50,6 +50,13 @@ impl Client {
                 "summary", "status", "assignee", "reporter",
                 "priority", "issuetype", "updated", "created",
                 "fixVersions", "components", "labels",
+                // 2026-08-07 — Tattle uses `customfield_10056`
+                // ("Tattle Team") as the team-selector. Ask for it
+                // by id so `Fields.extras` picks it up + the team
+                // picker can offer HeliOS / Atlas / etc as options.
+                // Making this configurable per Jira instance (via
+                // tab.team_field or top-level cfg) is a v2 follow-up.
+                "customfield_10056",
             ],
         });
         let resp = self
@@ -749,6 +756,13 @@ pub struct Fields {
     /// requires `labels` in the requested field list.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// 2026-08-07 — extra fields for the team filter, keyed by the
+    /// custom-field id the caller requested (e.g. `customfield_10056`
+    /// for Tattle's "Tattle Team" select). Value is the option's
+    /// `value` string ("HeliOS", "Atlas", etc). Populated by the
+    /// custom flatten below when the response includes those keys.
+    #[serde(flatten, default)]
+    pub extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
