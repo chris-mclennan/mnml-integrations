@@ -14,7 +14,16 @@
 # 2026-08-01 — this is a "workspace-override launcher" reference,
 # not a standalone chip. It doesn't add a new chip; it changes
 # how the existing claude_code chip launches.
-id = "claude_code"
+#
+# 2026-08-07 — id renamed from "claude_code" → "claude_multi" so
+# the marketplace list stops mis-flagging it as "installed" every
+# time the built-in Claude Code chip is present. Users who want the
+# multi-repo wrapper on the SAME `claude_code` chip should copy
+# this file to `<workspace>/.mnml/integrations/claude_code.toml`
+# (the workspace-scope filename wins over the built-in default);
+# users who want the wrapper as its OWN chip alongside the built-in
+# install it as-is under the "claude_multi" id.
+id = "claude_multi"
 label = "Claude Code (multi-repo wrapper)"
 description = "Wrap claude with --add-dir flags for sibling-repo access"
 category = "ai"
@@ -27,8 +36,8 @@ enabled = true
 in_palette_bar = false
 
 [[commands]]
-id = "claude_code.open"
-title = "Claude Code: open"
+id = "claude_multi.open"
+title = "Claude Code (multi-repo): open"
 group = "ai"
-keys = ["<leader>ac"]
+keys = ["<leader>am"]
 run = ":term {{workspace}}/bin/claude-multi.sh"
