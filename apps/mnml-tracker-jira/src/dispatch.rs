@@ -351,6 +351,9 @@ mod tests {
                 updated: None,
                 created: None,
                 fix_versions: Vec::new(),
+                components: Vec::new(),
+                labels: Vec::new(),
+                extras: std::collections::BTreeMap::new(),
             },
         }
     }

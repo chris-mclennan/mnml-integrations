@@ -53,6 +53,133 @@ pub struct Config {
     /// (the buttons still render but no-op with a toast).
     #[serde(default)]
     pub dispatch_workspace: Option<PathBuf>,
+    /// 2026-08-07 — detail-modal customization. Which fields to
+    /// show + a friendly-name alias map for `customfield_XXXXX`
+    /// ids. Unset ⇒ use the built-in default list.
+    #[serde(default)]
+    pub detail_modal: DetailModalConfig,
+}
+
+/// 2026-08-07 — governs what appears in the large ticket-detail
+/// modal that pops open on card-click / `D`. Fields render in the
+/// declared order; unknown / missing fields quietly skip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetailModalConfig {
+    /// Ordered list. Each entry is either a bare string (canonical
+    /// name — e.g. "assignee", "description") or an inline table
+    /// `{ id = "customfield_10101", label = "What is the problem" }`
+    /// for custom fields. Unknown canonical names silently skip.
+    #[serde(default = "DetailModalConfig::default_fields")]
+    pub fields: Vec<FieldSpec>,
+    /// v2 (2026-08-07) — friendly-name → canonical/customfield id
+    /// map. Lets the user write `"problem"` in `fields` instead of
+    /// `customfield_10101`. Also acts as a display label for
+    /// canonical fields (`"parent" = "Parent ticket"`).
+    #[serde(default)]
+    pub field_alias: std::collections::HashMap<String, String>,
+}
+
+impl Default for DetailModalConfig {
+    fn default() -> Self {
+        Self {
+            fields: Self::default_fields(),
+            field_alias: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl DetailModalConfig {
+    /// The out-of-the-box field ordering — mirrors Jira's own detail
+    /// panel. Users override with `[detail_modal] fields = [...]`.
+    pub fn default_fields() -> Vec<FieldSpec> {
+        [
+            "title",
+            "status",
+            "type",
+            "priority",
+            "assignee",
+            "reporter",
+            "labels",
+            "components",
+            "fix_version",
+            "sprint",
+            "parent",
+            "description",
+        ]
+        .into_iter()
+        .map(|s| FieldSpec::Named(s.to_string()))
+        .collect()
+    }
+}
+
+/// One entry in `[detail_modal] fields = [...]`. TOML shapes:
+///   `"assignee"`                      → FieldSpec::Named
+///   `{ id = "customfield_10101" }`    → FieldSpec::Custom { label = None }
+///   `{ id = "customfield_10101", label = "What is the problem" }`
+///                                      → FieldSpec::Custom
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FieldSpec {
+    /// Canonical field name (`"summary"`, `"assignee"`, etc.) OR an
+    /// alias key resolved through `field_alias`.
+    Named(String),
+    /// Inline custom-field spec.
+    Custom {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+    },
+}
+
+impl FieldSpec {
+    /// The Jira field key this spec ultimately points at (after
+    /// alias resolution). E.g. `"customfield_10101"` or `"assignee"`.
+    pub fn resolve_id(&self, alias: &std::collections::HashMap<String, String>) -> String {
+        match self {
+            FieldSpec::Named(n) => alias.get(n).cloned().unwrap_or_else(|| n.clone()),
+            FieldSpec::Custom { id, .. } => id.clone(),
+        }
+    }
+    /// The human label to show next to the value.
+    pub fn resolve_label(&self, alias: &std::collections::HashMap<String, String>) -> String {
+        match self {
+            FieldSpec::Named(n) => {
+                // If the alias map has an entry whose VALUE == n
+                // (reverse lookup), prefer the alias key as the
+                // label. Otherwise Title-Case the name.
+                for (k, v) in alias {
+                    if v == n {
+                        return k.clone();
+                    }
+                }
+                default_label_for(n)
+            }
+            FieldSpec::Custom {
+                label: Some(l), ..
+            } => l.clone(),
+            FieldSpec::Custom { id, .. } => id.clone(),
+        }
+    }
+}
+
+fn default_label_for(name: &str) -> String {
+    match name {
+        "title" | "summary" => "Title".into(),
+        "status" => "Status".into(),
+        "type" | "issuetype" => "Type".into(),
+        "priority" => "Priority".into(),
+        "assignee" => "Assignee".into(),
+        "reporter" => "Reporter".into(),
+        "labels" => "Labels".into(),
+        "components" => "Components".into(),
+        "fix_version" | "fixversions" => "Fix version".into(),
+        "sprint" => "Sprint".into(),
+        "parent" => "Parent".into(),
+        "description" => "Description".into(),
+        "environment" => "Environment".into(),
+        "severity" => "Severity".into(),
+        other => other.to_string(),
+    }
 }
 
 fn default_refresh() -> u64 {
@@ -391,6 +518,31 @@ project = "TE"
 name = "Backlog"
 kind = "board_backlog"
 project = "TE"
+
+# ── Detail modal ─────────────────────────────────────────────────
+# Click a card on the kanban board (or press `D`) to open a large
+# modal with the ticket's full field set. Configure which fields
+# appear and in what order here. Unknown fields silently skip.
+#
+# Bare strings ⇒ canonical Jira field names (assignee, description,
+# fix_version, sprint, parent, labels, components, priority, type,
+# status). Inline `{ id = "customfield_10101", label = "..." }`
+# entries pull custom fields. Use `[detail_modal.field_alias]` to
+# name custom fields in one place, then just reference the alias
+# by name in `fields`.
+#
+# [detail_modal]
+# fields = [
+#   "assignee", "priority", "labels", "components",
+#   "fix_version", "sprint", "parent", "description",
+#   { id = "customfield_10101", label = "What is the problem" },
+#   { id = "customfield_10102", label = "Expected behavior" },
+#   { id = "customfield_10103", label = "Steps to reproduce" },
+# ]
+#
+# Alias map — write `"problem"` in `fields` instead of the id:
+# [detail_modal.field_alias]
+# problem = "customfield_10101"
 
 # ── Legacy shape (still supported) ────────────────────────────────
 # The pre-2026-07-25 `jql = "..."` and `mode = "..."` forms still
