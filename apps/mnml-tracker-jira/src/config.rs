@@ -124,6 +124,18 @@ pub struct Tab {
     /// Ignored on non-board kinds.
     #[serde(default)]
     pub team: Option<String>,
+    /// 2026-08-07 — Board tabs: back this tab with a Jira-defined
+    /// board's data. When set, the tracker fetches from
+    /// `/rest/agile/1.0/board/{id}/…` instead of composing JQL, so
+    /// the kanban shows whatever the board's saved filter + active
+    /// sprint contains — matching what someone would see in Jira's
+    /// own UI at `.../boards/{id}`. Team filter still layers on top
+    /// as an extra AND clause.
+    ///
+    /// Unset → falls back to synthetic JQL (`sprint in openSprints()
+    /// AND project=X`), the pre-2026-08-07 behavior.
+    #[serde(default)]
+    pub board_id: Option<u64>,
 }
 
 /// 2026-07-25 — new TabKind enum. Powers the split rail chips

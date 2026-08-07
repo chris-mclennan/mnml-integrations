@@ -349,6 +349,89 @@ impl Client {
             .collect())
     }
 
+    /// 2026-08-07 — issues in the board's active sprint (or all
+    /// board issues when no sprint is active). Mirrors what Jira's
+    /// own UI shows for `.../boards/{id}`. Extra jql AND-clauses are
+    /// appended via the `?jql=` query param (Jira Agile API supports
+    /// this). `extra_fields` matches `search()`'s param.
+    pub async fn fetch_board_issues(
+        &self,
+        board_id: u64,
+        extra_jql: Option<&str>,
+        extra_fields: &[String],
+    ) -> Result<Vec<Issue>> {
+        let mut fields: Vec<String> = [
+            "summary",
+            "status",
+            "assignee",
+            "reporter",
+            "priority",
+            "issuetype",
+            "updated",
+            "created",
+            "fixVersions",
+            "components",
+            "labels",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        fields.extend(extra_fields.iter().cloned());
+        let fields_csv = fields.join(",");
+        let url = format!("{}/rest/agile/1.0/board/{board_id}/issue", self.base);
+        let mut req = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("fields", fields_csv.as_str()), ("maxResults", "100")]);
+        if let Some(j) = extra_jql
+            && !j.trim().is_empty()
+        {
+            req = req.query(&[("jql", j)]);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("board {board_id} issues fetch"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("board {board_id} issues fetch: {status}: {text}"));
+        }
+        let sr: SearchResult = resp
+            .json()
+            .await
+            .context("parsing board issues response")?;
+        Ok(sr.issues)
+    }
+
+    /// 2026-08-07 — list boards visible to the current user for a
+    /// project. Used by the board-selector chip. Board.type is
+    /// "scrum" | "kanban" | "simple".
+    pub async fn fetch_boards_for_project(&self, project_key: &str) -> Result<Vec<Board>> {
+        let url = format!("{}/rest/agile/1.0/board", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("projectKeyOrId", project_key), ("maxResults", "100")])
+            .send()
+            .await
+            .with_context(|| format!("fetching boards for project {project_key}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("board list fetch: {status}: {text}"));
+        }
+        let br: BoardListResponse = resp
+            .json()
+            .await
+            .context("parsing board list response")?;
+        Ok(br.values)
+    }
+
     /// Fetch every version of `project_key` (released + unreleased,
     /// archived skipped). Sorted by startDate desc then name — the
     /// most-recent / next-up versions show up first.
@@ -909,6 +992,22 @@ struct UserWithId {
     display_name: String,
     #[serde(rename = "accountId")]
     account_id: String,
+}
+
+/// 2026-08-07 — one Jira Software board (scrum / kanban / simple).
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct Board {
+    pub id: u64,
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub board_type: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct BoardListResponse {
+    #[serde(default)]
+    values: Vec<Board>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -386,8 +386,42 @@ impl App {
             .filter(|s| !s.trim().is_empty())
             .map(|s| vec![s.clone()])
             .unwrap_or_default();
+        // 2026-08-07 — board_id-backed mode. When the tab has
+        // `board_id = N`, fetch what Jira's own UI shows for that
+        // board (respecting its saved filter + active sprint) via
+        // the Agile REST API. Team filter still layers on top as
+        // an extra `?jql=...` clause. Overrides synthetic JQL.
         self.status = format!("refreshing {}…", self.tabs[idx].name);
-        match self.client.search(&jql, 100, &extra_fields).await {
+        let board_id = self.cfg.tabs.get(idx).and_then(|t| t.board_id);
+        let fetch_result = match board_id {
+            Some(id) => {
+                let extra_jql = team.as_ref().map(|_| {
+                    // The team clause was already built above; extract
+                    // just the AND-clause portion by re-building it from
+                    // the parts. Simpler than parsing the full jql back
+                    // apart: recompute from the team string alone.
+                    let escaped = team.as_ref().unwrap().replace('"', "\\\"");
+                    let mut clauses = Vec::new();
+                    if let Some(field_name) = self
+                        .cfg
+                        .team_field_name
+                        .as_ref()
+                        .filter(|s| !s.trim().is_empty())
+                        .or(self.cfg.team_field_id.as_ref().filter(|s| !s.trim().is_empty()))
+                    {
+                        clauses.push(format!("\"{field_name}\" = \"{escaped}\""));
+                    }
+                    clauses.push(format!("component = \"{escaped}\""));
+                    clauses.push(format!("labels = \"{escaped}\""));
+                    format!("({})", clauses.join(" OR "))
+                });
+                self.client
+                    .fetch_board_issues(id, extra_jql.as_deref(), &extra_fields)
+                    .await
+            }
+            None => self.client.search(&jql, 100, &extra_fields).await,
+        };
+        match fetch_result {
             Ok(issues) => {
                 self.tabs[idx].issues = issues;
                 self.tabs[idx].last_fetched = Some(std::time::Instant::now());
