@@ -91,10 +91,13 @@ impl Default for DetailModalConfig {
 impl DetailModalConfig {
     /// The out-of-the-box field ordering — mirrors Jira's own detail
     /// panel. Users override with `[detail_modal] fields = [...]`.
+    ///
+    /// 2026-08-07 (design-critic r1 #7) — dropped `title` + `status`
+    /// from the default list. The renderer bakes them into the modal
+    /// header regardless of config order, so listing them here was
+    /// dead weight that couldn't be reordered or removed.
     pub fn default_fields() -> Vec<FieldSpec> {
         [
-            "title",
-            "status",
             "type",
             "priority",
             "assignee",
