@@ -150,6 +150,13 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
             _ => None,
         };
     }
+    let is_fix_version_tree_tab = |app: &App| -> bool {
+        app.cfg
+            .tabs
+            .get(app.active_tab)
+            .and_then(|t| t.kind)
+            .is_some_and(|k| matches!(k, crate::config::TabKind::FixVersionTree))
+    };
     match key.code {
         KeyCode::Char('q') => Some(Action::Quit),
         // Esc cascade: clear selection → clear filter → close
@@ -214,12 +221,20 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         // avoid stealing common lowercase chords (`i` = insert on
         // future editor modes, etc.). Route through the dispatch
         // layer; TicketButton kind() strings match here.
-        KeyCode::Char('I') if app.active().tree.is_some() => {
+        // 2026-08-06 — gated to FixVersionTree only. Was: any tab
+        // with `tree.is_some()`, which since board tabs got trees
+        // stole `T` / `V` from the team / tab-view-fixVersion
+        // pickers those tabs need.
+        KeyCode::Char('I') if is_fix_version_tree_tab(app) => {
             Some(Action::DispatchTicket("implement"))
         }
-        KeyCode::Char('X') if app.active().tree.is_some() => Some(Action::DispatchTicket("fix")),
-        KeyCode::Char('T') if app.active().tree.is_some() => Some(Action::DispatchTicket("triage")),
-        KeyCode::Char('V') if app.active().tree.is_some() => Some(Action::DispatchReview),
+        KeyCode::Char('X') if is_fix_version_tree_tab(app) => {
+            Some(Action::DispatchTicket("fix"))
+        }
+        KeyCode::Char('T') if is_fix_version_tree_tab(app) => {
+            Some(Action::DispatchTicket("triage"))
+        }
+        KeyCode::Char('V') if is_fix_version_tree_tab(app) => Some(Action::DispatchReview),
         // `a` opens the assignee picker; `f` the fixVersion picker.
         // Both work on selection if non-empty, else focused row.
         KeyCode::Char('a') => Some(Action::OpenAssigneePicker),
