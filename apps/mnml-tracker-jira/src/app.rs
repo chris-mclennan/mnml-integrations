@@ -945,6 +945,17 @@ fn project_of(issue_key: &str) -> Option<String> {
     }
 }
 
+/// 2026-08-07 — extract Tattle's "Tattle Team" custom field value
+/// from an issue. Tattle uses `customfield_10056` as a select field
+/// with values like `HeliOS`, `Atlas`, etc. The field ships as
+/// `{"self": "...", "value": "HeliOS", "id": "10725"}` — we only
+/// care about `.value`. Making the field id configurable per Jira
+/// instance is a v2 follow-up; hardcoded to Tattle's id for now.
+pub fn team_value_of(issue: &crate::jira::Issue) -> Option<String> {
+    let raw = issue.fields.extras.get("customfield_10056")?;
+    raw.get("value")?.as_str().map(|s| s.to_string())
+}
+
 /// How `close_filter` should treat the in-progress buffer.
 #[derive(Debug, Clone, Copy)]
 pub enum FilterClose {
@@ -1125,6 +1136,14 @@ impl App {
                 if !l.trim().is_empty() {
                     seen.insert(l.clone());
                 }
+            }
+            // 2026-08-07 — include the "Tattle Team" custom field
+            // value (HeliOS / Atlas / etc). See `team_value_of` +
+            // the customfield_10056 request in jira.rs.
+            if let Some(v) = team_value_of(issue)
+                && !v.trim().is_empty()
+            {
+                seen.insert(v);
             }
         }
         let items: Vec<(String, String)> =

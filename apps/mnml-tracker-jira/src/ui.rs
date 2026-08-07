@@ -433,7 +433,13 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
             .labels
             .iter()
             .any(|l| l.to_ascii_lowercase().contains(needle));
-        comp_hit || label_hit
+        // 2026-08-07 — also probe the "Tattle Team" custom field
+        // (customfield_10056) which is where Tattle keeps HeliOS /
+        // Atlas / etc. Value shape is `{"value":"HeliOS", ...}`.
+        let custom_hit = crate::app::team_value_of(issue)
+            .map(|v| v.to_ascii_lowercase().contains(needle))
+            .unwrap_or(false);
+        comp_hit || label_hit || custom_hit
     };
     if tab.issues.is_empty() {
         let p = Paragraph::new("(no issues in this sprint)")
