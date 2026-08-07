@@ -250,6 +250,19 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(p, area);
         return;
     }
+    // 2026-08-06 — Board tabs render as a 3-column kanban (To Do /
+    // In Progress / Done). Fix-version + work tabs stay in the
+    // status-grouped tree table below.
+    if let Some(tab_cfg) = app.cfg.tabs.get(app.active_tab)
+        && matches!(
+            tab_cfg.kind,
+            Some(crate::config::TabKind::BoardActiveSprint)
+                | Some(crate::config::TabKind::BoardBacklog)
+        )
+    {
+        draw_kanban_board(f, area, app);
+        return;
+    }
     // 2026-07-25 — FixVersionTree tabs render as a grouped tree:
     // status headers with counts, indented tickets, expandable
     // linked-PR sub-rows. Any other tab kind (Work, Boards, or
@@ -376,6 +389,193 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
 /// Down move by 1 through it; every row type is cursor-visitable
 /// (headers, tickets, PR rows). Enter / Space / click actions
 /// route by variant — implemented in Phase 4.
+/// 2026-08-06 — Kanban view for board tabs. Three vertical columns
+/// (To Do / In Progress / Done). Each column renders a Paragraph of
+/// its tickets (key + summary), scrollable via the shared cursor.
+/// Assignee shows on line 2 of each card if present.
+///
+/// Column bucketing: exact match on status name first (case-insensitive
+/// against a stable synonym table); anything unrecognized falls into
+/// the "In Progress" middle column so it's visible rather than hidden.
+///
+/// Cursor: the shared `tab.selected` still points at an issue index;
+/// the column that contains it gets the highlight border. Left/Right
+/// on a keyboard tick moves the cursor across columns (v1 uses the
+/// existing MoveSelection actions — no per-column cursor yet).
+fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.active();
+    if tab.issues.is_empty() {
+        let p = Paragraph::new("(no issues in this sprint)")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(p, area);
+        return;
+    }
+    // Bucket every issue.
+    #[derive(Copy, Clone)]
+    enum Col {
+        Todo,
+        InProgress,
+        Done,
+    }
+    fn bucket_of(status: Option<&str>) -> Col {
+        let s = status.unwrap_or("").to_ascii_lowercase();
+        match s.as_str() {
+            "to do" | "backlog" | "open" | "reopened" | "selected for development" => Col::Todo,
+            "done" | "closed" | "resolved" | "released" => Col::Done,
+            _ => Col::InProgress,
+        }
+    }
+    let mut todo: Vec<usize> = Vec::new();
+    let mut in_prog: Vec<usize> = Vec::new();
+    let mut done: Vec<usize> = Vec::new();
+    for (i, issue) in tab.issues.iter().enumerate() {
+        let status = issue.fields.status.as_ref().map(|s| s.name.as_str());
+        match bucket_of(status) {
+            Col::Todo => todo.push(i),
+            Col::InProgress => in_prog.push(i),
+            Col::Done => done.push(i),
+        }
+    }
+    let selected_col = if todo.contains(&tab.selected) {
+        Col::Todo
+    } else if done.contains(&tab.selected) {
+        Col::Done
+    } else {
+        Col::InProgress
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(area);
+    let title_todo = format!(" To Do ({}) ", todo.len());
+    let title_prog = format!(" In Progress ({}) ", in_prog.len());
+    let title_done = format!(" Done ({}) ", done.len());
+    draw_kanban_column(
+        f,
+        cols[0],
+        &title_todo,
+        &todo,
+        tab,
+        app,
+        matches!(selected_col, Col::Todo),
+    );
+    draw_kanban_column(
+        f,
+        cols[1],
+        &title_prog,
+        &in_prog,
+        tab,
+        app,
+        matches!(selected_col, Col::InProgress),
+    );
+    draw_kanban_column(
+        f,
+        cols[2],
+        &title_done,
+        &done,
+        tab,
+        app,
+        matches!(selected_col, Col::Done),
+    );
+}
+
+/// One kanban column. Highlighted border when it contains the cursor.
+fn draw_kanban_column(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    issue_indices: &[usize],
+    tab: &crate::app::TabState,
+    app: &App,
+    is_active: bool,
+) {
+    use ratatui::text::{Line, Span};
+    let border_color = if is_active {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(if is_active { Color::Cyan } else { Color::White })
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for &i in issue_indices {
+        let issue = &tab.issues[i];
+        let is_focused = i == tab.selected;
+        let bulk_selected = app.selection.contains(&issue.key);
+        let key_color = if bulk_selected {
+            Color::Magenta
+        } else if is_focused {
+            Color::Cyan
+        } else {
+            Color::White
+        };
+        let key_style = if is_focused {
+            Style::default()
+                .fg(key_color)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+                .fg(key_color)
+                .add_modifier(Modifier::BOLD)
+        };
+        let summary = issue.fields.summary.as_str();
+        // Card = 2 lines: KEY + wrapped summary
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", issue.key), key_style),
+        ]));
+        // Wrap summary to inner width - 2 for padding.
+        let wrap_w = (inner.width as usize).saturating_sub(2).max(10);
+        let s: String = summary.chars().take(wrap_w * 2).collect();
+        let mut chunk = String::new();
+        for word in s.split_whitespace() {
+            if chunk.len() + word.len() + 1 > wrap_w {
+                lines.push(Line::from(Span::styled(
+                    format!("  {chunk}"),
+                    Style::default().fg(Color::Gray),
+                )));
+                chunk.clear();
+            }
+            if !chunk.is_empty() {
+                chunk.push(' ');
+            }
+            chunk.push_str(word);
+        }
+        if !chunk.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("  {chunk}"),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        // Assignee line (dim).
+        if let Some(a) = &issue.fields.assignee {
+            lines.push(Line::from(Span::styled(
+                format!("  · {}", a.display_name),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+        }
+        // Blank separator line between cards.
+        lines.push(Line::from(""));
+    }
+    let text = ratatui::text::Text::from(lines);
+    f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+}
+
 fn draw_tree_table(f: &mut Frame, area: Rect, app: &App, tab_cfg: &crate::config::Tab) {
     let tab = app.active();
     let rows = tab.tree_rows(tab_cfg, &app.cfg).unwrap_or_default();
