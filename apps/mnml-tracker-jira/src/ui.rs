@@ -426,12 +426,12 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
         app.visible_indices().into_iter().collect();
     let tab = app.active();
     // 2026-08-06 — added Testing column (In PR Review + Testing + QA
-    // statuses) between In Progress and Done. Tattle's status_order
+    // statuses) between In Progress and Done. the default status_order
     // default is "Testing, In PR Review, In Progress, To Do, Done" so
     // "in-flight-but-not-live" is a real bucket worth its own column.
     // Also added `team` config filter: `[[tabs]] team = "web"` narrows
     // to issues whose component name OR label contains the string
-    // (case-insensitive substring — flexible for Tattle's
+    // (case-insensitive substring — flexible for common Jira
     // `component=web-team` and `label=team:web` conventions).
     let team_filter: Option<String> = app
         .cfg
@@ -454,10 +454,16 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
             .labels
             .iter()
             .any(|l| l.to_ascii_lowercase().contains(needle));
-        // 2026-08-07 — also probe the "Tattle Team" custom field
-        // (customfield_10056) which is where Tattle keeps HeliOS /
-        // Atlas / etc. Value shape is `{"value":"HeliOS", ...}`.
-        let custom_hit = crate::app::team_value_of(issue)
+        // Also probe the configured team custom-field (a
+        // select-type field id set via `team_field_id` in
+        // `~/.config/mnml-tracker-jira.toml`). Value shape is
+        // `{"value":"...", ...}`. No-op when unset.
+        let custom_hit = app
+            .cfg
+            .team_field_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|id| crate::app::team_value_of(issue, id))
             .map(|v| v.to_ascii_lowercase().contains(needle))
             .unwrap_or(false);
         comp_hit || label_hit || custom_hit
@@ -620,7 +626,7 @@ fn draw_kanban_column(
         // Bug/Story/Task read at a glance (Jira Cloud convention).
         // Nerd Font glyphs (nf-fa-bug / oct-book / md-checkbox-marked
         // / md-lightning-bolt); the terminal falls back to text if
-        // the font lacks them. Colors match Tattle Jira: red bugs,
+        // the font lacks them. Colors match common Jira conventions: red bugs,
         // green stories, blue tasks, purple epics.
         let (type_glyph, type_color) = match issue
             .fields

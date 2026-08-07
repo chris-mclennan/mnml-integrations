@@ -41,23 +41,40 @@ impl Client {
     /// `total` field (was deprecated anyway) and adds
     /// `isLast` / `nextPageToken`; we only read `issues` so
     /// SearchResult is unchanged.
-    pub async fn search(&self, jql: &str, max_results: u32) -> Result<Vec<Issue>> {
+    /// `extra_fields` — additional Jira field ids to include in the
+    /// response (e.g. a custom-field id like `"customfield_10056"`
+    /// for a team-selector). Emitted alongside the fixed default set.
+    pub async fn search(
+        &self,
+        jql: &str,
+        max_results: u32,
+        extra_fields: &[String],
+    ) -> Result<Vec<Issue>> {
         let url = format!("{}/rest/api/3/search/jql", self.base);
+        let mut fields: Vec<String> = [
+            "summary",
+            "status",
+            "assignee",
+            "reporter",
+            "priority",
+            "issuetype",
+            "updated",
+            "created",
+            "fixVersions",
+            "components",
+            "labels",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Caller-supplied field ids (e.g. a team custom-field from the
+        // tracker config). Lands in `Fields.extras` via
+        // `#[serde(flatten)]`.
+        fields.extend(extra_fields.iter().cloned());
         let body = serde_json::json!({
             "jql": jql,
             "maxResults": max_results,
-            "fields": [
-                "summary", "status", "assignee", "reporter",
-                "priority", "issuetype", "updated", "created",
-                "fixVersions", "components", "labels",
-                // 2026-08-07 — Tattle uses `customfield_10056`
-                // ("Tattle Team") as the team-selector. Ask for it
-                // by id so `Fields.extras` picks it up + the team
-                // picker can offer HeliOS / Atlas / etc as options.
-                // Making this configurable per Jira instance (via
-                // tab.team_field or top-level cfg) is a v2 follow-up.
-                "customfield_10056",
-            ],
+            "fields": fields,
         });
         let resp = self
             .http
@@ -134,7 +151,7 @@ impl Client {
     /// isn't supported. Downstream callers render "no linked PRs".
     ///
     /// `application_type` is the connector kind — `"bitbucket"`,
-    /// `"github"`, `"stash"`, `"azure"`. Tattle is on bitbucket.
+    /// `"github"`, `"stash"`, `"azure"`. Bitbucket is a common choice.
     pub async fn list_prs_for_issue(
         &self,
         issue_id: &str,
@@ -758,7 +775,7 @@ pub struct Fields {
     pub labels: Vec<String>,
     /// 2026-08-07 — extra fields for the team filter, keyed by the
     /// custom-field id the caller requested (e.g. `customfield_10056`
-    /// for Tattle's "Tattle Team" select). Value is the option's
+    /// for a select custom field (e.g. "Team")). Value is the option's
     /// `value` string ("HeliOS", "Atlas", etc). Populated by the
     /// custom flatten below when the response includes those keys.
     #[serde(flatten, default)]

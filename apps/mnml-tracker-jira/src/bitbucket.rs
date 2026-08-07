@@ -353,12 +353,12 @@ mod tests {
 
     #[test]
     fn parse_pr_url_extracts_workspace_repo_and_id() {
-        let out = parse_pr_url("https://bitbucket.org/tattle/tattle-api/pull-requests/2023");
+        let out = parse_pr_url("https://bitbucket.org/acme/acme-api/pull-requests/2023");
         assert_eq!(
             out,
             Some((
-                "tattle".to_string(),
-                "tattle-api".to_string(),
+                "acme".to_string(),
+                "acme-api".to_string(),
                 "2023".to_string()
             ))
         );

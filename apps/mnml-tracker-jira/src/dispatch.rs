@@ -6,7 +6,7 @@
 //! implemented here (dual-write with fallback):
 //!
 //! 1. **Queue file** (preferred): append a JSONL line to
-//!    `~/Projects/tattle-claude-workspace/.claude/queue.jsonl`.
+//!    `~/Projects/the configured dispatch_workspace/.claude/queue.jsonl`.
 //!    A watcher agent in that workspace picks it up and dispatches
 //!    to the appropriate `/agents:*` command. This is the "async,
 //!    goes into someone's queue" path.
@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// One dispatched action. Fields chosen to match what the Tattle
+/// One dispatched action. Fields chosen to match what a downstream
 /// workspace's `/agents:*` commands expect on stdin.
 #[derive(Debug, Clone, Serialize)]
 pub struct Dispatch {
@@ -224,21 +224,22 @@ fn iso_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-/// Convenience: the standard tattle-claude-workspace paths that
-/// the caller wants. Both are `Some(...)` only when the workspace
-/// exists on disk — a fresh clone / different user gets `None`
-/// and dispatch falls back to whichever channel resolved.
-pub fn tattle_workspace_paths() -> (Option<PathBuf>, Option<PathBuf>) {
-    let home = dirs::home_dir();
-    let workspace = home.map(|h| h.join("Projects").join("tattle-claude-workspace"));
-    let queue_dir = workspace
-        .as_ref()
-        .map(|w| w.join(".claude"))
-        .filter(|p| p.exists());
-    let ipc_dir = workspace
-        .as_ref()
-        .map(|w| w.join(".mnml").join("ipc"))
-        .filter(|p| p.exists());
+/// Given a `dispatch_workspace` root, return the `(queue_dir,
+/// ipc_dir)` pair the dispatcher should write into: `<root>/.claude`
+/// for the JSONL queue and `<root>/.mnml/ipc` for live IPC events.
+/// Each is `Some(...)` only when the sub-directory exists on disk —
+/// so a fresh clone / different user gets `None` and dispatch
+/// falls back to whichever channel resolved.
+///
+/// Path is caller-supplied — usually from `Config::dispatch_workspace`
+/// (top-level TOML key in `~/.config/mnml-tracker-jira.toml`).
+/// Returns `(None, None)` when passed `None`.
+pub fn workspace_dispatch_paths(root: Option<&Path>) -> (Option<PathBuf>, Option<PathBuf>) {
+    let Some(root) = root else {
+        return (None, None);
+    };
+    let queue_dir = Some(root.join(".claude")).filter(|p| p.exists());
+    let ipc_dir = Some(root.join(".mnml").join("ipc")).filter(|p| p.exists());
     (queue_dir, ipc_dir)
 }
 
@@ -396,7 +397,7 @@ mod tests {
         let d = Dispatch::for_ticket(
             "implement",
             &iss,
-            "https://tattle.atlassian.net/browse/TE-14337".to_string(),
+            "https://example.atlassian.net/browse/PROJ-123".to_string(),
         );
         assert_eq!(d.kind, "implement");
         assert_eq!(d.issue_key, "TE-14337");
@@ -410,7 +411,7 @@ mod tests {
         let d = Dispatch::for_ticket(
             "implement",
             &iss,
-            "https://tattle.atlassian.net/browse/TE-14337".to_string(),
+            "https://example.atlassian.net/browse/PROJ-123".to_string(),
         );
         let p = d.prompt();
         assert!(p.starts_with("/agents:developer TE-14337"));
@@ -423,12 +424,12 @@ mod tests {
         let iss = issue("TE-14337", "In PR Review", "Story", "s");
         let d = Dispatch::for_pr(
             &iss,
-            "https://tattle.atlassian.net/browse/TE-14337".to_string(),
-            "https://bitbucket.org/tattle/foo/pull-requests/2023".to_string(),
+            "https://example.atlassian.net/browse/PROJ-123".to_string(),
+            "https://bitbucket.org/acme/foo/pull-requests/2023".to_string(),
         );
         assert!(
             d.prompt().starts_with(
-                "/agents:reviewer https://bitbucket.org/tattle/foo/pull-requests/2023"
+                "/agents:reviewer https://bitbucket.org/acme/foo/pull-requests/2023"
             )
         );
     }

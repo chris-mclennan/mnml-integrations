@@ -29,6 +29,30 @@ pub struct Config {
     /// branch?"). Persisted to config file when toggled.
     #[serde(default)]
     pub release_cut: bool,
+    /// 2026-08-07 — Jira "team" custom-field id used by the `T`
+    /// team-picker on board tabs. Set to the customfield id your
+    /// instance uses (e.g. `"customfield_10056"`) so the picker
+    /// includes its select values in the filter menu AND the
+    /// server-side JQL filter can `AND "<display>" = "..."`.
+    ///
+    /// Leave unset if your Jira only uses components/labels for
+    /// team-scoping — the picker falls back to those alone.
+    #[serde(default)]
+    pub team_field_id: Option<String>,
+    /// The DISPLAY NAME of the custom field above (Jira JQL accepts
+    /// either the customfield_XXXXX id or the human name in quotes;
+    /// the human name is more legible in error messages). Only used
+    /// when `team_field_id` is set. If unset, we fall back to the id.
+    #[serde(default)]
+    pub team_field_name: Option<String>,
+    /// 2026-08-07 — path to a checkout the tracker's
+    /// dispatch-ticket action writes its JSONL queue + IPC event
+    /// files into. Used by the `.`/`I`/`X`/`T`/`V` action buttons
+    /// so a background worker can pick up the request. Typically a
+    /// `.claude` workspace root; leave unset to disable dispatch
+    /// (the buttons still render but no-op with a toast).
+    #[serde(default)]
+    pub dispatch_workspace: Option<PathBuf>,
 }
 
 fn default_refresh() -> u64 {
@@ -86,7 +110,7 @@ pub struct Tab {
     /// versions the `mode = current_release / next_release`
     /// resolver considers. Substring match (case-insensitive) on
     /// version name. Useful when a project has multiple parallel
-    /// release tracks (e.g. Tattle has "Mobile - 1.6.X", "N/A",
+    /// release tracks (e.g. has multiple like "Mobile - 1.6.X", "N/A",
     /// "13.15.0", "IE.3.5.0") — set `version_name_contains = "."`
     /// or `= "13."` to constrain to a single track. Ignored on
     /// non-fix_version_tree kinds.
@@ -94,7 +118,7 @@ pub struct Tab {
     pub version_name_contains: Option<String>,
     /// 2026-08-06 — Board tabs: filter kanban issues by team. A
     /// case-insensitive substring match against each issue's
-    /// components AND labels — either hit keeps the ticket. Tattle
+    /// components AND labels — either hit keeps the ticket. Common
     /// splits teams via `component=web-team`/`mobile-team`/etc AND
     /// via `label=team:web`, so this handles both conventions.
     /// Ignored on non-board kinds.
