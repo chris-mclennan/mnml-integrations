@@ -403,9 +403,19 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
 /// on a keyboard tick moves the cursor across columns (v1 uses the
 /// existing MoveSelection actions — no per-column cursor yet).
 fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
-    // 2026-08-07 — draw the `/` filter strip above the columns when
-    // any filter is active (or being edited). Same widget the flat/
-    // tree table paths use so keyboard filter + kanban stay in sync.
+    // 2026-08-07 — toolbar row above the columns, Jira-Cloud-style:
+    // [Board ▾] [🔍 Search] [👥 Assignees ▾] [Version ▾] [Epic ▾]
+    // [Type ▾] [Label ▾] [⚡ Quick filters ▾]. Board / Search /
+    // Version chips wired; the rest scaffold + toast "coming soon".
+    let (toolbar_area, area) = {
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(area);
+        (parts[0], parts[1])
+    };
+    draw_kanban_toolbar(f, toolbar_area, app);
+    // Draw the classic `/` filter strip below the toolbar when active.
     let (filter_area, area) = if app.filter.is_some() {
         let parts = Layout::default()
             .direction(Direction::Vertical)
@@ -1080,6 +1090,66 @@ fn pipeline_glyph(label: &str) -> (&'static str, Color) {
         "STOPPED" | "HALTED" => ("⊘", Color::DarkGray),
         _ => ("?", Color::DarkGray),
     }
+}
+
+/// 2026-08-07 — Jira-Cloud-style filter toolbar above kanban columns.
+/// Chip layout:
+///   `[Board: <name> ▾] [🔍 Search: <q>] [Assignees ▾] [Version ▾]`
+///   `[Epic ▾] [Type ▾] [Label ▾] [⚡ Quick filters ▾]`
+///
+/// This first cut is VISUAL only — chips show their current value
+/// or a "▾" placeholder. Click routing follows in a second commit
+/// once the tracker's mouse layer grows a rect registry (it's
+/// currently table-row-only). Board picker + search + version
+/// chips duplicate existing keyboard entry points (T/`/`/V), so
+/// mouse users have a discoverable path even without click routing.
+fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &App) {
+    use ratatui::text::{Line, Span};
+    let cfg_tab = app.cfg.tabs.get(app.active_tab);
+    let board_label = cfg_tab
+        .and_then(|t| t.board_id.map(|id| format!("Board:{id}")))
+        .unwrap_or_else(|| "Board:none".to_string());
+    let search_label = app
+        .filter
+        .as_ref()
+        .map(|f| {
+            if f.buffer.is_empty() {
+                "🔍 Search".to_string()
+            } else {
+                format!("🔍 {}", f.buffer)
+            }
+        })
+        .unwrap_or_else(|| "🔍 Search".to_string());
+    let team_label = cfg_tab
+        .and_then(|t| t.team.as_ref())
+        .map(|t| format!("Team:{t}"))
+        .unwrap_or_else(|| "Team ▾".to_string());
+    // Compact chip helper: `[ <label> ]` in dim gray, with the
+    // active-value chips in cyan for contrast.
+    let chip = |label: &str, active: bool| -> Span<'static> {
+        let color = if active { Color::Cyan } else { Color::DarkGray };
+        Span::styled(
+            format!(" [ {label} ] "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
+    };
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(chip(&board_label, cfg_tab.is_some_and(|t| t.board_id.is_some())));
+    spans.push(chip(
+        &search_label,
+        app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()),
+    ));
+    spans.push(chip(
+        &team_label,
+        cfg_tab.is_some_and(|t| t.team.is_some()),
+    ));
+    // Placeholder chips — click routing + fetch land in a follow-up.
+    spans.push(chip("Version ▾", false));
+    spans.push(chip("Epic ▾", false));
+    spans.push(chip("Type ▾", false));
+    spans.push(chip("Label ▾", false));
+    spans.push(chip("⚡ Quick filters ▾", false));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_filter_strip(f: &mut Frame, area: Rect, app: &App) {
