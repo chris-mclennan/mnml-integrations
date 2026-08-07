@@ -46,7 +46,7 @@ const SPLITS: &[SplitChip] = &[
         id: "bitbucket_prs",
         description: "Bitbucket: open + merged pull requests across the workspace",
         fallback: "BP",
-        label: "Bitbucket PRs — open + merged",
+        label: "Bitbucket PRs",
         color: "blue",
         only_flag: "prs",
         leader_keys: "<leader>ibp",
@@ -57,7 +57,7 @@ const SPLITS: &[SplitChip] = &[
         id: "bitbucket_pipelines",
         description: "Bitbucket: recent pipeline runs per repo/branch",
         fallback: "BL",
-        label: "Bitbucket Pipelines — build health",
+        label: "Bitbucket Pipelines",
         color: "green",
         only_flag: "pipelines",
         leader_keys: "<leader>ibl",
@@ -68,7 +68,7 @@ const SPLITS: &[SplitChip] = &[
         id: "bitbucket_branches",
         description: "Bitbucket: branch tree per repo",
         fallback: "BB",
-        label: "Bitbucket Branches — repo topology",
+        label: "Bitbucket Branches",
         color: "magenta",
         only_flag: "branches",
         leader_keys: "<leader>ibb",
@@ -97,7 +97,7 @@ pub fn install() -> Result<()> {
                 // nf-dev-bitbucket glyph everywhere — the three chips
                 // are one family; the label / fallback letters split
                 // them apart.
-                glyph: "\u{E703}".into(),
+                glyph: "\u{F00A8}".into(),
                 fallback: chip.fallback.into(),
                 color: chip.color.into(),
                 enabled: true,
