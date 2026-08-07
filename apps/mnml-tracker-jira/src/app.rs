@@ -104,6 +104,13 @@ pub enum FieldKind {
     /// instead of assigning the picked version to the focused ticket.
     /// Bound to `V` (capital) on fix_version_tree tabs.
     TabFixVersion,
+    /// 2026-08-07 — Actions picker for the focused ticket. Items are
+    /// `dispatch::buttons_for_ticket` (Implement / Fix / Triage).
+    /// Bound to `.` on any tab. Commit fires
+    /// `dispatch_ticket_action` — same handoff the on-card buttons
+    /// use. Mouse users click the buttons directly; keyboard users
+    /// press `.` to pick.
+    TicketAction,
 }
 
 impl FieldPicker {
@@ -1184,6 +1191,49 @@ impl App {
         });
     }
 
+    /// 2026-08-07 — Actions picker (`.` key). Lists whichever
+    /// action buttons `dispatch::buttons_for_ticket` recommends for
+    /// the focused ticket (Implement / Fix / Triage). No items ⇒
+    /// toast a hint instead of opening an empty picker.
+    pub fn open_action_picker(&mut self) {
+        let Some(issue) = self.active().issues.get(self.active().selected) else {
+            return;
+        };
+        let buttons = crate::dispatch::buttons_for_ticket(issue);
+        if buttons.is_empty() {
+            self.status = format!(
+                ". actions: no ticket-level actions for {} ({} · {})",
+                issue.key,
+                issue
+                    .fields
+                    .issuetype
+                    .as_ref()
+                    .map(|t| t.name.as_str())
+                    .unwrap_or("?"),
+                issue
+                    .fields
+                    .status
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?"),
+            );
+            return;
+        }
+        let items: Vec<(String, String)> = buttons
+            .iter()
+            .map(|b| (b.kind().to_string(), b.label().to_string()))
+            .collect();
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::TicketAction,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+        });
+    }
+
     /// Commit handler for the Team picker. Writes the value onto the
     /// active tab config; the kanban render reads from there on next
     /// paint. `""` clears the filter.
@@ -1363,6 +1413,13 @@ impl App {
             self.commit_tab_fix_version_picker(id.clone()).await;
             return;
         }
+        // Action picker: fire the ticket-level dispatch (Implement /
+        // Fix / Triage). Same handoff the on-card buttons use.
+        if kind == FieldKind::TicketAction {
+            self.field_picker = None;
+            self.dispatch_ticket_action(Box::leak(id.clone().into_boxed_str()));
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -1391,7 +1448,9 @@ impl App {
                     };
                     self.client.set_fix_versions(key, &versions).await
                 }
-                FieldKind::Team | FieldKind::TabFixVersion => unreachable!("routed above"),
+                FieldKind::Team | FieldKind::TabFixVersion | FieldKind::TicketAction => {
+                    unreachable!("routed above")
+                }
             };
             match result {
                 Ok(()) => {
@@ -1406,7 +1465,9 @@ impl App {
             let field = match kind {
                 FieldKind::Assignee => "assignee",
                 FieldKind::FixVersion => "fixVersion",
-                FieldKind::Team | FieldKind::TabFixVersion => unreachable!("routed above"),
+                FieldKind::Team | FieldKind::TabFixVersion | FieldKind::TicketAction => {
+                    unreachable!("routed above")
+                }
             };
             self.status = format!("{} ticket(s) · {field} = {label}", ok);
             self.selection.clear();
