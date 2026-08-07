@@ -1384,6 +1384,12 @@ fn pipeline_glyph(label: &str) -> (&'static str, Color) {
 fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
     use ratatui::text::{Line, Span};
     let cfg_tab = app.cfg.tabs.get(app.active_tab);
+    // 2026-08-07 — standardized chip grammar (design-critic r1 #3):
+    //   set:   "<Label>: <value> ▾"
+    //   unset: "<Label> ▾"
+    // Applies to Board / Team / Version consistently. Search keeps
+    // its emoji-prefix + free-text convention (its "value" IS the
+    // text the user is typing, no label needed).
     let board_label = cfg_tab
         .and_then(|t| {
             t.board_id.map(|id| {
@@ -1391,12 +1397,12 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                 // fall back to the numeric id while the fetch is in
                 // flight (or if it failed and we cached the fallback).
                 match app.board_name_cache.get(&id) {
-                    Some(name) => format!("Board: {name}"),
-                    None => format!("Board:{id}"),
+                    Some(name) => format!("Board: {name} ▾"),
+                    None => format!("Board: {id} ▾"),
                 }
             })
         })
-        .unwrap_or_else(|| "Board: none".to_string());
+        .unwrap_or_else(|| "Board ▾".to_string());
     let search_label = app
         .filter
         .as_ref()
@@ -1410,8 +1416,24 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         .unwrap_or_else(|| "🔍 Search".to_string());
     let team_label = cfg_tab
         .and_then(|t| t.team.as_ref())
-        .map(|t| format!("Team:{t}"))
+        .map(|t| format!("Team: {t} ▾"))
         .unwrap_or_else(|| "Team ▾".to_string());
+    // 2026-08-07 — design-critic r1 #2 SEV-high: `Version ▾` was
+    // rendered pixel-identical to the four inert "coming soon"
+    // placeholders even though it's fully wired to the same picker
+    // as `V`. Extract the currently-filtered fixVersion from the
+    // tab's JQL (reuse `extract_fix_version`, the same helper the
+    // tree-table title uses) and reflect it in the chip label so
+    // it reads as an active filter, not vaporware.
+    let version_label = cfg_tab
+        .and_then(|t| t.jql.as_ref())
+        .and_then(|jql| extract_fix_version(jql))
+        .map(|v| format!("Version: {v} ▾"))
+        .unwrap_or_else(|| "Version ▾".to_string());
+    let version_active = cfg_tab
+        .and_then(|t| t.jql.as_ref())
+        .and_then(|jql| extract_fix_version(jql))
+        .is_some();
     // Compact chip helper: `[ <label> ]` in dim gray, with the
     // active-value chips in cyan for contrast.
     let chip = |label: &str, active: bool| -> Span<'static> {
@@ -1428,7 +1450,7 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         (board_label, cfg_tab.is_some_and(|t| t.board_id.is_some()), ChipKind::Board),
         (search_label, app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()), ChipKind::Search),
         (team_label, cfg_tab.is_some_and(|t| t.team.is_some()), ChipKind::Team),
-        ("Version ▾".to_string(), false, ChipKind::Version),
+        (version_label, version_active, ChipKind::Version),
         ("Epic ▾".to_string(), false, ChipKind::Epic),
         ("Type ▾".to_string(), false, ChipKind::Type),
         ("Label ▾".to_string(), false, ChipKind::Label),
@@ -2180,7 +2202,18 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::Team => app.open_team_picker(),
         ChipKind::Version => app.open_tab_fix_version_picker().await,
         ChipKind::Epic | ChipKind::Type | ChipKind::Label | ChipKind::QuickFilters => {
-            app.status = format!("{kind:?} filter — coming soon");
+            // 2026-08-07 — design-critic r1 #3: was `{kind:?}` which
+            // leaked Debug-formatted PascalCase ("QuickFilters filter
+            // — coming soon"). Explicit copy per chip matches the
+            // chip label text exactly.
+            let name = match kind {
+                ChipKind::Epic => "Epic",
+                ChipKind::Type => "Type",
+                ChipKind::Label => "Label",
+                ChipKind::QuickFilters => "Quick filters",
+                _ => "?",
+            };
+            app.status = format!("{name} filter — coming soon");
         }
     }
 }

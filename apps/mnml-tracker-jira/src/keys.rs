@@ -287,9 +287,13 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         // card. New in 2026-08-07; distinct from `d` so daily-driver
         // muscle memory for the side pane stays intact.
         KeyCode::Char('D') => Some(Action::OpenDetailModal),
-        // `x` on kanban tabs: toggle the expand-chevron for the
+        // `>` on kanban tabs: toggle the expand-chevron for the
         // focused card. Cheap peek without opening the modal.
-        KeyCode::Char('x') if app.active_is_kanban() => Some(Action::KanbanToggleExpand),
+        // 2026-08-07 — was `x`, but that collides with the Bitbucket
+        // sibling's `x = hide row` convention (design-critic r1
+        // SEV-high). `>` visually pairs with the `▸`/`▾` chevron and
+        // is otherwise unbound.
+        KeyCode::Char('>') if app.active_is_kanban() => Some(Action::KanbanToggleExpand),
         KeyCode::Char(c @ '1'..='9') => Some(Action::SwitchTab((c as u8 - b'1') as usize)),
         _ => None,
     }
