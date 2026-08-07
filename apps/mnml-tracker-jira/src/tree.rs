@@ -47,6 +47,12 @@ pub struct TreeState {
     /// state so a failed fetch renders as PrPipelineError with the
     /// original message rather than spinning forever.
     pub pipeline_errors: HashMap<(String, String), String>,
+    /// 2026-08-07 — per-ticket PR visibility cap. When a ticket has
+    /// more than 3 linked PRs (common for long-running work), the
+    /// first 3 render + a "▸ show 3 more" affordance stands in for
+    /// the rest. Clicking that row bumps this count by 3.
+    /// Absent = default of 3.
+    pub pr_show_counts: HashMap<String, usize>,
 }
 
 /// One rendered row in a FixVersionTree tab. The renderer walks
@@ -100,6 +106,11 @@ pub enum VisibleRow {
         pr_idx: usize,
         pipeline_idx: usize,
     },
+    /// 2026-08-07 — "show more PRs" affordance when a ticket has
+    /// more linked PRs than `pr_show_counts[issue.key]`. `hidden`
+    /// is the count of PRs currently NOT rendered. Click bumps the
+    /// visibility by 3 (see App::pr_show_more_focused).
+    PrShowMore { issue_idx: usize, hidden: usize },
 }
 
 /// Compute the visible-row layout from a tab's issues + tree state.
@@ -231,9 +242,35 @@ pub fn expand_ticket_sub_rows(
     match tree.pr_cache.get(&issue.key) {
         None => vec![VisibleRow::PrLoading { issue_idx }],
         Some(prs) if prs.is_empty() => vec![VisibleRow::PrEmpty { issue_idx }],
-        Some(prs) => (0..prs.len())
-            .map(|pr_idx| VisibleRow::LinkedPr { issue_idx, pr_idx })
-            .collect(),
+        Some(prs) => {
+            // 2026-08-07 — cap at pr_show_counts[key] (default 3). PRs
+            // arrive from Jira's dev-status API in whatever order the
+            // repo returned them; we render newest-first by grabbing
+            // the tail so long-running tickets don't drown the tree.
+            let cap = tree
+                .pr_show_counts
+                .get(&issue.key)
+                .copied()
+                .unwrap_or(3);
+            if prs.len() <= cap {
+                (0..prs.len())
+                    .map(|pr_idx| VisibleRow::LinkedPr { issue_idx, pr_idx })
+                    .collect()
+            } else {
+                // Show the LAST `cap` PRs (newest = most recently
+                // fetched, at the end of the vec). Then a "show more"
+                // affordance for the older ones on top.
+                let start = prs.len() - cap;
+                let mut out: Vec<VisibleRow> = (start..prs.len())
+                    .map(|pr_idx| VisibleRow::LinkedPr { issue_idx, pr_idx })
+                    .collect();
+                out.push(VisibleRow::PrShowMore {
+                    issue_idx,
+                    hidden: prs.len() - cap,
+                });
+                out
+            }
+        }
     }
 }
 
@@ -855,6 +892,7 @@ mod tests {
                 VisibleRow::PrPipelineEmpty { .. } => "e",
                 VisibleRow::PrPipelineError { .. } => "x",
                 VisibleRow::PrPipeline { .. } => "p",
+                VisibleRow::PrShowMore { .. } => "M",
             })
             .collect();
         // Header, Ticket, PR, pipeline, PR, pipeline. Adjacency

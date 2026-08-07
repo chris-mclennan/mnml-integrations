@@ -384,9 +384,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     // linked-PR sub-rows. Any other tab kind (Work, Boards, or
     // legacy no-kind) falls through to the flat-table path below.
     if tab.tree.is_some()
-        && let Some(tab_cfg) = app.cfg.tabs.get(app.active_tab)
+        && let Some(tab_cfg) = app.cfg.tabs.get(app.active_tab).cloned()
     {
-        draw_tree_table(f, area, app, tab_cfg);
+        draw_tree_table(f, area, app, &tab_cfg);
         return;
     }
 
@@ -964,9 +964,25 @@ fn draw_kanban_column(
     }
 }
 
-fn draw_tree_table(f: &mut Frame, area: Rect, app: &App, tab_cfg: &crate::config::Tab) {
+fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::config::Tab) {
+    // Snapshot the row list + per-row issue-key so we can register
+    // rects (needs `&mut app`) after the table body is drawn.
+    let rows = app
+        .active()
+        .tree_rows(tab_cfg, &app.cfg)
+        .unwrap_or_default();
+    // Compute PrShowMore issue-keys parallel to `rows` — used post-
+    // render to register mouse rects on the "show N more" rows.
+    let show_more_keys: Vec<Option<String>> = rows
+        .iter()
+        .map(|r| match r {
+            crate::tree::VisibleRow::PrShowMore { issue_idx, .. } => Some(
+                app.active().issues[*issue_idx].key.clone(),
+            ),
+            _ => None,
+        })
+        .collect();
     let tab = app.active();
-    let rows = tab.tree_rows(tab_cfg, &app.cfg).unwrap_or_default();
     if rows.is_empty() {
         let p = Paragraph::new("(no issues)").style(Style::default().fg(Color::DarkGray));
         f.render_widget(p, area);
@@ -1038,6 +1054,25 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &App, tab_cfg: &crate::config
     let mut state = TableState::default();
     state.select(Some(tab.selected.min(rows.len().saturating_sub(1))));
     f.render_stateful_widget(table, area, &mut state);
+
+    // 2026-08-07 — register mouse rects for "show N more" rows.
+    // Row 0 sits at area.y + 2 (border top + header). Ratatui may
+    // auto-scroll if the selection is off-screen; for the tree tab
+    // that's rare in practice (short trees). Rects are approximate.
+    for (i, maybe_key) in show_more_keys.iter().enumerate() {
+        if let Some(key) = maybe_key {
+            let y = area.y + 2 + i as u16;
+            if y < area.y + area.height {
+                let r = Rect {
+                    x: area.x + 1,
+                    y,
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                };
+                app.rects.pr_show_more.push((r, key.clone()));
+            }
+        }
+    }
 }
 
 /// Build one ratatui Row for a single `VisibleRow`. Styling reflects
@@ -1315,6 +1350,10 @@ fn tree_row_for<'a>(
             ]);
             Row::new(vec![Cell::from(line)])
         }
+        VisibleRow::PrShowMore { hidden, .. } => Row::new(vec![
+            Cell::from(format!("        ▸ show {} more PR{}", hidden, if *hidden == 1 { "" } else { "s" }))
+                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
     }
 }
 
