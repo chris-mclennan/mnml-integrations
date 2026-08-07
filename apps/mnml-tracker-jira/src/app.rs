@@ -98,6 +98,12 @@ pub enum FieldKind {
     /// to `tab.team` in-memory + re-buckets the kanban immediately;
     /// persistence to config.toml is a follow-up.
     Team,
+    /// 2026-08-06 — Fix Versions tab-view picker. Same source data as
+    /// `FixVersion` (project versions from Jira), but committing
+    /// rewrites `tab.jql` to filter the whole tab to that version
+    /// instead of assigning the picked version to the focused ticket.
+    /// Bound to `V` (capital) on fix_version_tree tabs.
+    TabFixVersion,
 }
 
 impl FieldPicker {
@@ -1151,6 +1157,81 @@ impl App {
         self.field_picker = None;
     }
 
+    /// 2026-08-06 — Fix Versions tab-view picker. Opens on `V`. Same
+    /// item source as the ticket-field picker (`f`), but committing
+    /// rewrites the tab's JQL to filter the whole tab to that version
+    /// (vs. `f` which POSTs the assignment to Jira for the focused
+    /// ticket). Only meaningful on fix_version_tree tabs.
+    pub async fn open_tab_fix_version_picker(&mut self) {
+        let Some(tab_cfg) = self.cfg.tabs.get(self.active_tab) else {
+            return;
+        };
+        let Some(project) = tab_cfg.project.clone() else {
+            self.status = "V: tab has no `project`".to_string();
+            return;
+        };
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::TabFixVersion,
+            items: Vec::new(),
+            loaded: false,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+        });
+        match self.client.fetch_versions(&project).await {
+            Ok(versions) => {
+                let items: Vec<(String, String)> = versions
+                    .into_iter()
+                    .map(|v| {
+                        let label = if v.released {
+                            format!("{} (released)", v.name)
+                        } else {
+                            v.name.clone()
+                        };
+                        (v.name, label)
+                    })
+                    .collect();
+                if let Some(p) = self.field_picker.as_mut() {
+                    p.items = items;
+                    p.loaded = true;
+                }
+            }
+            Err(e) => {
+                if let Some(p) = self.field_picker.as_mut() {
+                    p.error = Some(e.to_string());
+                    p.loaded = true;
+                }
+            }
+        }
+    }
+
+    /// Commit for the TabFixVersion picker — rewrite the current
+    /// tab's jql to filter on this version + refresh.
+    pub async fn commit_tab_fix_version_picker(&mut self, version: String) {
+        let idx = self.active_tab;
+        if let Some(tab) = self.cfg.tabs.get_mut(idx) {
+            let Some(project) = tab.project.clone() else {
+                self.status = "V: tab has no `project`".to_string();
+                self.field_picker = None;
+                return;
+            };
+            // Escape any `"` in the version name (Jira allows them though
+            // rare). JQL uses `\"` inside a double-quoted string.
+            let escaped = version.replace('"', "\\\"");
+            let jql = format!("project = {project} AND fixVersion = \"{escaped}\" ORDER BY rank");
+            tab.jql = Some(jql.clone());
+            // Also mirror to the runtime TabState.jql so the resolver
+            // sees it without a full reload.
+            if let Some(state) = self.tabs.get_mut(idx) {
+                state.jql = jql;
+            }
+        }
+        self.field_picker = None;
+        self.status = format!("tab view: fixVersion = {version}");
+        self.refresh_active().await;
+    }
+
     pub fn field_picker_filter_insert(&mut self, c: char) {
         if let Some(p) = self.field_picker.as_mut() {
             let byte = p
@@ -1229,6 +1310,12 @@ impl App {
             self.status = format!("team filter: {display}");
             return;
         }
+        // TabFixVersion picker rewrites the tab's JQL — not a per-
+        // ticket assignment. Route before the bulk-write loop.
+        if kind == FieldKind::TabFixVersion {
+            self.commit_tab_fix_version_picker(id.clone()).await;
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -1257,7 +1344,7 @@ impl App {
                     };
                     self.client.set_fix_versions(key, &versions).await
                 }
-                FieldKind::Team => unreachable!("team routed above"),
+                FieldKind::Team | FieldKind::TabFixVersion => unreachable!("routed above"),
             };
             match result {
                 Ok(()) => {
@@ -1272,7 +1359,7 @@ impl App {
             let field = match kind {
                 FieldKind::Assignee => "assignee",
                 FieldKind::FixVersion => "fixVersion",
-                FieldKind::Team => unreachable!("team routed above"),
+                FieldKind::Team | FieldKind::TabFixVersion => unreachable!("routed above"),
             };
             self.status = format!("{} ticket(s) · {field} = {label}", ok);
             self.selection.clear();

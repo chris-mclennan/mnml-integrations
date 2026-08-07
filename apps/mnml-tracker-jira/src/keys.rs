@@ -53,6 +53,11 @@ pub enum Action {
     /// `T` — open team picker (board tabs only). Filters kanban
     /// to issues whose component or label matches.
     OpenTeamPicker,
+    /// `V` — open tab-view fixVersion picker (fix_version_tree tabs
+    /// only). Rewrites the tab's JQL to filter to the chosen version,
+    /// changing WHICH release the tab displays. Distinct from `f`
+    /// which assigns the picked version to the focused ticket.
+    OpenTabFixVersionPicker,
     FieldPickerInsert(char),
     FieldPickerBackspace,
     FieldPickerUp,
@@ -220,6 +225,7 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('a') => Some(Action::OpenAssigneePicker),
         KeyCode::Char('f') => Some(Action::OpenFixVersionPicker),
         KeyCode::Char('T') => Some(Action::OpenTeamPicker),
+        KeyCode::Char('V') => Some(Action::OpenTabFixVersionPicker),
         // `d` (lowercase, no modifiers) toggles the detail pane.
         // Ctrl+d above takes precedence for scroll-down.
         KeyCode::Char('d') => Some(Action::ToggleDetails),
@@ -312,6 +318,7 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::OpenAssigneePicker => app.open_assignee_picker().await,
         Action::OpenFixVersionPicker => app.open_fix_version_picker().await,
         Action::OpenTeamPicker => app.open_team_picker(),
+        Action::OpenTabFixVersionPicker => app.open_tab_fix_version_picker().await,
         Action::FieldPickerInsert(c) => app.field_picker_filter_insert(c),
         Action::FieldPickerBackspace => app.field_picker_filter_backspace(),
         Action::FieldPickerUp => app.field_picker_move(-1),

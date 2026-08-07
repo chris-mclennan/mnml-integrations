@@ -1497,6 +1497,7 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         crate::app::FieldKind::Assignee => "assignee",
         crate::app::FieldKind::FixVersion => "fixVersion",
         crate::app::FieldKind::Team => "team",
+        crate::app::FieldKind::TabFixVersion => "tab fixVersion",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -1505,6 +1506,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
     };
     let title = if matches!(picker.kind, crate::app::FieldKind::Team) {
         " filter kanban by team ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::TabFixVersion) {
+        " switch tab view to fixVersion ".to_string()
     } else if target_count == 1 {
         format!(" set {field_label} ")
     } else {
