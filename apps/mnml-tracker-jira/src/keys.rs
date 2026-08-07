@@ -89,10 +89,42 @@ pub enum Action {
     /// 2026-07-25 — dispatch a Review action for the focused
     /// LinkedPr row.
     DispatchReview,
+    /// 2026-08-07 — open the big card-detail modal for the focused
+    /// card. Bound to `D` (uppercase — lowercase `d` still toggles
+    /// the right-side detail pane).
+    OpenDetailModal,
+    /// 2026-08-07 — close the detail modal. Bound to Esc when the
+    /// modal is open (highest priority in the Esc cascade).
+    CloseDetailModal,
+    /// 2026-08-07 — scroll the detail modal's long-text pane.
+    DetailModalScroll(i32),
+    /// 2026-08-07 — kanban column vertical scroll (delta = ±1).
+    /// Bound to j/k when on a kanban tab (the arrow-key path still
+    /// moves the cursor). Column index is derived from
+    /// `App::kanban_selected_col()`.
+    KanbanColScroll(i32),
+    /// 2026-08-07 — kanban card expand chevron toggle (via
+    /// keyboard). Bound to `x` on a kanban tab. Applies to the
+    /// focused card's key.
+    KanbanToggleExpand,
 }
 
 pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
     let m = key.modifiers;
+    // 2026-08-07 — detail modal is the top-priority greedy modal.
+    // Esc closes; j/k/PageUp/PageDown scroll; every other key is
+    // absorbed so it doesn't bleed through to the kanban below.
+    if app.detail_modal.is_some() {
+        return match key.code {
+            KeyCode::Esc => Some(Action::CloseDetailModal),
+            KeyCode::Char('q') => Some(Action::CloseDetailModal),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::DetailModalScroll(2)),
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::DetailModalScroll(-2)),
+            KeyCode::PageDown => Some(Action::DetailModalScroll(10)),
+            KeyCode::PageUp => Some(Action::DetailModalScroll(-10)),
+            _ => None,
+        };
+    }
     // Comment editor is a greedy modal — printable text inserts.
     // Ctrl+S posts; Esc cancels; Enter inserts a newline (multi-line).
     if app.comment_editor.is_some() {
@@ -251,6 +283,13 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         // `d` (lowercase, no modifiers) toggles the detail pane.
         // Ctrl+d above takes precedence for scroll-down.
         KeyCode::Char('d') => Some(Action::ToggleDetails),
+        // `D` (uppercase) opens the big detail modal for the focused
+        // card. New in 2026-08-07; distinct from `d` so daily-driver
+        // muscle memory for the side pane stays intact.
+        KeyCode::Char('D') => Some(Action::OpenDetailModal),
+        // `x` on kanban tabs: toggle the expand-chevron for the
+        // focused card. Cheap peek without opening the modal.
+        KeyCode::Char('x') if app.active_is_kanban() => Some(Action::KanbanToggleExpand),
         KeyCode::Char(c @ '1'..='9') => Some(Action::SwitchTab((c as u8 - b'1') as usize)),
         _ => None,
     }
@@ -353,6 +392,22 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::TreeCollapse => app.tree_collapse_focused(),
         Action::DispatchTicket(kind) => app.dispatch_ticket_action(kind),
         Action::DispatchReview => app.dispatch_review_focused_pr(),
+        Action::OpenDetailModal => {
+            if let Some(k) = app.focused_key() {
+                app.open_detail_modal(k).await;
+            }
+        }
+        Action::CloseDetailModal => app.close_detail_modal(),
+        Action::DetailModalScroll(d) => app.detail_modal_scroll(d),
+        Action::KanbanColScroll(d) => {
+            let col = app.kanban_selected_col();
+            app.kanban_scroll_col(col, d);
+        }
+        Action::KanbanToggleExpand => {
+            if let Some(k) = app.focused_key() {
+                app.toggle_kanban_expanded(&k);
+            }
+        }
     }
     // After a navigation action, if the focused key changed and the
     // detail pane is open, fetch the new ticket's detail. Reset the

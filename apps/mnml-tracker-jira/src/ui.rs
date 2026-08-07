@@ -85,6 +85,11 @@ async fn event_loop(
 ) -> Result<()> {
     let mut last_refresh = Instant::now();
     loop {
+        // 2026-08-07 — pre-draw hook: fetch friendly board names for
+        // the active kanban tab so the toolbar chip shows
+        // `[Board: HeliOS]` on the very first frame instead of
+        // `[Board:200]` until the user does something.
+        app.ensure_board_names_for_active().await;
         terminal.draw(|f| draw(f, app))?;
 
         // Auto-refresh on interval.
@@ -109,13 +114,64 @@ async fn event_loop(
                     }
                 }
                 Event::Mouse(m) => match m.kind {
-                    // 2026-07-26 — left-click on a row: focus it,
-                    // then activate. Activation semantics come from
-                    // App::tree_activate_focused: toggle group /
-                    // expand ticket (fetches linked PRs on first
-                    // expand) / open PR URL. On non-tree tabs, we
-                    // just move the cursor to the clicked row.
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // 2026-08-07 — modal + kanban rects take
+                        // priority over the flat-table row model.
+                        // Modal wins over everything.
+                        if app.detail_modal.is_some() {
+                            if let Some(r) = app.rects.modal_close
+                                && rect_hit(r, m.column, m.row)
+                            {
+                                app.close_detail_modal();
+                            }
+                            // Any click outside the modal panel
+                            // dismisses too — click-away UX.
+                            // (Modal rect itself is registered as
+                            //  the close area's parent; clicks INSIDE
+                            //  the modal body are ignored so users
+                            //  don't accidentally close it while
+                            //  clicking a link inside.)
+                            continue;
+                        }
+                        if app.active_is_kanban() {
+                            // Chevron first — it's a 1-cell target
+                            // inside the card, so precedence matters.
+                            if let Some(key) = app
+                                .rects
+                                .kanban_chevrons
+                                .iter()
+                                .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                                .map(|(_, k)| k.clone())
+                            {
+                                app.toggle_kanban_expanded(&key);
+                                continue;
+                            }
+                            // Toolbar chips.
+                            if let Some(kind) = app
+                                .rects
+                                .kanban_chips
+                                .iter()
+                                .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                                .map(|(_, k)| *k)
+                            {
+                                handle_chip_click(app, kind).await;
+                                continue;
+                            }
+                            // Card body → focus + open detail modal.
+                            let hit_idx = app
+                                .rects
+                                .kanban_cards
+                                .iter()
+                                .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                                .map(|(_, i)| *i);
+                            if let Some(idx) = hit_idx {
+                                app.active_mut().selected = idx;
+                                let key = app.active().issues[idx].key.clone();
+                                app.open_detail_modal(key).await;
+                            }
+                            continue;
+                        }
+                        // Non-kanban tabs: original flat/tree row model.
                         let Some(row_idx) = table_row_at(m.row, app) else {
                             continue;
                         };
@@ -130,20 +186,65 @@ async fn event_loop(
                         if vis == 0 || row_idx >= vis {
                             continue;
                         }
+                        // Show-more PR row click.
+                        if let Some(key) = app
+                            .rects
+                            .pr_show_more
+                            .iter()
+                            .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                            .map(|(_, k)| k.clone())
+                        {
+                            app.pr_show_more(&key);
+                            continue;
+                        }
                         if app.active().tree.is_some() {
                             app.active_mut().selected = row_idx;
                             app.tree_activate_focused().await;
                         } else {
-                            // Flat-tab click: map visible row →
-                            // issue index and focus.
                             let visible = app.visible_indices();
                             if let Some(&idx) = visible.get(row_idx) {
                                 app.active_mut().selected = idx;
                             }
                         }
                     }
-                    MouseEventKind::ScrollUp => app.move_selection(-3),
-                    MouseEventKind::ScrollDown => app.move_selection(3),
+                    MouseEventKind::ScrollUp => {
+                        // Modal: scroll description pane.
+                        if app.detail_modal.is_some() {
+                            app.detail_modal_scroll(-3);
+                            continue;
+                        }
+                        // Kanban: scroll the column under the cursor.
+                        if app.active_is_kanban() {
+                            for (i, r) in app.rects.kanban_cols.iter().enumerate() {
+                                if let Some(r) = r
+                                    && rect_hit(*r, m.column, m.row)
+                                {
+                                    app.kanban_scroll_col(i, -3);
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        app.move_selection(-3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if app.detail_modal.is_some() {
+                            app.detail_modal_scroll(3);
+                            continue;
+                        }
+                        if app.active_is_kanban() {
+                            for (i, r) in app.rects.kanban_cols.iter().enumerate() {
+                                if let Some(r) = r
+                                    && rect_hit(*r, m.column, m.row)
+                                {
+                                    app.kanban_scroll_col(i, 3);
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        app.move_selection(3);
+                    }
                     _ => {}
                 },
                 Event::Resize(_, _) => { /* terminal handles re-draw */ }
@@ -154,7 +255,16 @@ async fn event_loop(
     Ok(())
 }
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
+    // 2026-08-07 — reset the per-frame rect registry. Draw code
+    // below repopulates whichever entries apply to the current
+    // pane so the click handler sees fresh coordinates every frame.
+    app.rects.kanban_cards.clear();
+    app.rects.kanban_chevrons.clear();
+    app.rects.kanban_chips.clear();
+    app.rects.kanban_cols = [None; 4];
+    app.rects.modal_close = None;
+    app.rects.pr_show_more.clear();
     let size = f.area();
     // 2026-07-25 — hide the tab strip entirely when the caller
     // passed `--only` OR there's only one tab (the strip becomes
@@ -202,6 +312,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.field_picker.is_some() {
         draw_field_picker(f, size, app);
     }
+    // 2026-08-07 — ticket-detail modal (the big one). Sits on top of
+    // the picker modals so a click on the modal's close button never
+    // dispatches to a lower widget.
+    if app.detail_modal.is_some() {
+        draw_detail_modal(f, size, app);
+    }
 }
 
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -231,7 +347,7 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(tabs, area);
 }
 
-fn draw_table(f: &mut Frame, area: Rect, app: &App) {
+fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let tab = app.active();
     if let Some(err) = &tab.last_error {
         let p = Paragraph::new(format!("error: {err}\n\nPress `r` to retry."))
@@ -402,7 +518,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
 /// the column that contains it gets the highlight border. Left/Right
 /// on a keyboard tick moves the cursor across columns (v1 uses the
 /// existing MoveSelection actions — no per-column cursor yet).
-fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
+fn draw_kanban_board(f: &mut Frame, area: Rect, app: &mut App) {
     // 2026-08-07 — toolbar row above the columns, Jira-Cloud-style:
     // [Board ▾] [🔍 Search] [👥 Assignees ▾] [Version ▾] [Epic ▾]
     // [Type ▾] [Label ▾] [⚡ Quick filters ▾]. Board / Search /
@@ -540,57 +656,43 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Ratio(1, 4),
         ])
         .split(area);
-    let title_todo = format!(" To Do ({}) ", todo.len());
-    let title_prog = format!(" In Progress ({}) ", in_prog.len());
-    let title_testing = format!(" Testing ({}) ", testing.len());
-    let title_done = format!(" Done ({}) ", done.len());
-    draw_kanban_column(
-        f,
-        cols[0],
-        &title_todo,
-        &todo,
-        tab,
-        app,
+    let titles = [
+        format!(" To Do ({}) ", todo.len()),
+        format!(" In Progress ({}) ", in_prog.len()),
+        format!(" Testing ({}) ", testing.len()),
+        format!(" Done ({}) ", done.len()),
+    ];
+    let buckets: [Vec<usize>; 4] = [todo, in_prog, testing, done];
+    let active_flags = [
         matches!(selected_col, Col::Todo),
-    );
-    draw_kanban_column(
-        f,
-        cols[1],
-        &title_prog,
-        &in_prog,
-        tab,
-        app,
         matches!(selected_col, Col::InProgress),
-    );
-    draw_kanban_column(
-        f,
-        cols[2],
-        &title_testing,
-        &testing,
-        tab,
-        app,
         matches!(selected_col, Col::Testing),
-    );
-    draw_kanban_column(
-        f,
-        cols[3],
-        &title_done,
-        &done,
-        tab,
-        app,
         matches!(selected_col, Col::Done),
-    );
+    ];
+    for i in 0..4 {
+        app.rects.kanban_cols[i] = Some(cols[i]);
+        draw_kanban_column(f, cols[i], &titles[i], &buckets[i], i, active_flags[i], app);
+    }
 }
 
 /// One kanban column. Highlighted border when it contains the cursor.
+///
+/// 2026-08-07 — now also:
+///   - registers per-card mouse rects in `app.rects.kanban_cards` so
+///     a click opens the detail modal (instead of missing by ~1 row);
+///   - registers per-card chevron rects so `▸` toggles inline expand;
+///   - renders expanded-card extras (first line of description, labels)
+///     when the key is in `app.kanban_expanded`;
+///   - applies `app.kanban_col_scroll[col_idx]` as a top skip so the
+///     column scrolls independently.
 fn draw_kanban_column(
     f: &mut Frame,
     area: Rect,
     title: &str,
     issue_indices: &[usize],
-    tab: &crate::app::TabState,
-    app: &App,
+    col_idx: usize,
     is_active: bool,
+    app: &mut App,
 ) {
     use ratatui::text::{Line, Span};
     let border_color = if is_active {
@@ -610,11 +712,60 @@ fn draw_kanban_column(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Snapshot only what we need from `app` so we can build lines
+    // AND push to `app.rects` without borrow conflict. Selection +
+    // selected + issues live behind `app.active()`, cloned here.
+    let selected_idx = app.active().selected;
+    let selection: std::collections::BTreeSet<String> = app.selection.clone();
+    let expanded: std::collections::HashSet<String> = app.kanban_expanded.clone();
+    let scroll_off = app.kanban_col_scroll[col_idx];
+    // Build a working snapshot of the per-card fields we render.
+    struct CardSnap {
+        key: String,
+        summary: String,
+        issuetype_lc: String,
+        assignee: Option<String>,
+        labels: Vec<String>,
+        actions: Vec<(String, String)>, // (label, color_slot)
+    }
+    let snaps: Vec<(usize, CardSnap)> = issue_indices
+        .iter()
+        .map(|&i| {
+            let issue = &app.active().issues[i];
+            let buttons = crate::dispatch::buttons_for_ticket(issue);
+            (
+                i,
+                CardSnap {
+                    key: issue.key.clone(),
+                    summary: issue.fields.summary.clone(),
+                    issuetype_lc: issue
+                        .fields
+                        .issuetype
+                        .as_ref()
+                        .map(|t| t.name.to_ascii_lowercase())
+                        .unwrap_or_default(),
+                    assignee: issue.fields.assignee.as_ref().map(|a| a.display_name.clone()),
+                    labels: issue.fields.labels.clone(),
+                    actions: buttons
+                        .into_iter()
+                        .map(|b| (b.label().to_string(), b.color_slot().to_string()))
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+
+    // Walk cards, track absolute Y so we can register card + chevron
+    // rects at the correct screen position after subtracting scroll.
     let mut lines: Vec<Line> = Vec::new();
-    for &i in issue_indices {
-        let issue = &tab.issues[i];
-        let is_focused = i == tab.selected;
-        let bulk_selected = app.selection.contains(&issue.key);
+    // Line records: (issue_index, key, height_in_lines). Used post-hoc
+    // to compute per-card rects after we know how many lines each took.
+    let mut card_line_map: Vec<(usize, String, usize)> = Vec::new();
+
+    for (issue_idx, s) in &snaps {
+        let is_focused = *issue_idx == selected_idx;
+        let bulk_selected = selection.contains(&s.key);
+        let is_expanded = expanded.contains(&s.key);
         let key_color = if bulk_selected {
             Color::Magenta
         } else if is_focused {
@@ -631,21 +782,7 @@ fn draw_kanban_column(
                 .fg(key_color)
                 .add_modifier(Modifier::BOLD)
         };
-        let summary = issue.fields.summary.as_str();
-        // 2026-08-07 — small colored type badge before the KEY so
-        // Bug/Story/Task read at a glance (Jira Cloud convention).
-        // Nerd Font glyphs (nf-fa-bug / oct-book / md-checkbox-marked
-        // / md-lightning-bolt); the terminal falls back to text if
-        // the font lacks them. Colors match common Jira conventions: red bugs,
-        // green stories, blue tasks, purple epics.
-        let (type_glyph, type_color) = match issue
-            .fields
-            .issuetype
-            .as_ref()
-            .map(|t| t.name.to_ascii_lowercase())
-            .unwrap_or_default()
-            .as_str()
-        {
+        let (type_glyph, type_color) = match s.issuetype_lc.as_str() {
             "bug" => ("\u{F188}", Color::Red),
             "story" => ("\u{F02D}", Color::Green),
             "task" => ("\u{F0139}", Color::Blue),
@@ -654,24 +791,33 @@ fn draw_kanban_column(
             "spike" => ("\u{F0EB}", Color::Yellow),
             _ => ("\u{F02B}", Color::DarkGray),
         };
-        // Card = 2 lines: KEY + wrapped summary
+        // Chevron (▸/▾) as a clickable widget on the KEY line.
+        let chevron_char = if is_expanded { "▾" } else { "▸" };
+        let mut card_lines_here = 0;
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {type_glyph} "),
+                format!("{chevron_char} "),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{type_glyph} "),
                 Style::default().fg(type_color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{} ", issue.key), key_style),
+            Span::styled(format!("{} ", s.key), key_style),
         ]));
+        card_lines_here += 1;
+
         // Wrap summary to inner width - 2 for padding.
-        let wrap_w = (inner.width as usize).saturating_sub(2).max(10);
-        let s: String = summary.chars().take(wrap_w * 2).collect();
+        let wrap_w = (inner.width as usize).saturating_sub(4).max(10);
+        let summary: String = s.summary.chars().take(wrap_w * 2).collect();
         let mut chunk = String::new();
-        for word in s.split_whitespace() {
-            if chunk.len() + word.len() + 1 > wrap_w {
+        for word in summary.split_whitespace() {
+            if chunk.chars().count() + word.chars().count() + 1 > wrap_w {
                 lines.push(Line::from(Span::styled(
-                    format!("  {chunk}"),
+                    format!("    {chunk}"),
                     Style::default().fg(Color::Gray),
                 )));
+                card_lines_here += 1;
                 chunk.clear();
             }
             if !chunk.is_empty() {
@@ -681,28 +827,56 @@ fn draw_kanban_column(
         }
         if !chunk.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("  {chunk}"),
+                format!("    {chunk}"),
                 Style::default().fg(Color::Gray),
             )));
+            card_lines_here += 1;
         }
-        // Assignee line (dim).
-        if let Some(a) = &issue.fields.assignee {
+        if let Some(name) = &s.assignee {
             lines.push(Line::from(Span::styled(
-                format!("  · {}", a.display_name),
+                format!("    · {name}"),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
             )));
+            card_lines_here += 1;
         }
-        // 2026-08-07 — action button strip. Same source-of-truth as
-        // the fix_version_tree card buttons (dispatch::buttons_for_ticket).
-        // Colored per TicketButton::color_slot. User asked to have
-        // [Implement] / [Fix] / [Triage] visible on kanban cards too.
-        let buttons = crate::dispatch::buttons_for_ticket(issue);
-        if !buttons.is_empty() {
-            let mut spans: Vec<Span> = vec![Span::raw("  ")];
-            for (i, b) in buttons.iter().enumerate() {
-                let color = match b.color_slot() {
+        // Expanded — show label chips + a description hint. Description
+        // isn't in `Fields` yet, so we just note it's collapsed.
+        if is_expanded && !s.labels.is_empty() {
+            let mut spans: Vec<Span> = vec![Span::raw("    ")];
+            for (li, l) in s.labels.iter().take(4).enumerate() {
+                if li > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    format!("#{l}"),
+                    Style::default().fg(Color::Blue),
+                ));
+            }
+            if s.labels.len() > 4 {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    format!("+{}", s.labels.len() - 4),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            lines.push(Line::from(spans));
+            card_lines_here += 1;
+        }
+        if is_expanded {
+            lines.push(Line::from(Span::styled(
+                "    (click card for full details)",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC | Modifier::DIM),
+            )));
+            card_lines_here += 1;
+        }
+        if !s.actions.is_empty() {
+            let mut spans: Vec<Span> = vec![Span::raw("    ")];
+            for (i, (label, slot)) in s.actions.iter().enumerate() {
+                let color = match slot.as_str() {
                     "green" => Color::Green,
                     "red" => Color::Red,
                     "yellow" => Color::Yellow,
@@ -712,17 +886,82 @@ fn draw_kanban_column(
                     spans.push(Span::raw(" "));
                 }
                 spans.push(Span::styled(
-                    b.label().to_string(),
+                    label.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
             lines.push(Line::from(spans));
+            card_lines_here += 1;
         }
-        // Blank separator line between cards.
+        // Blank separator.
         lines.push(Line::from(""));
+        card_lines_here += 1;
+
+        card_line_map.push((*issue_idx, s.key.clone(), card_lines_here));
     }
-    let text = ratatui::text::Text::from(lines);
+
+    // Apply per-column scroll.
+    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll_off as usize).collect();
+    let has_more_below = {
+        let total_lines: usize = card_line_map.iter().map(|(_, _, h)| h).sum();
+        total_lines.saturating_sub(scroll_off as usize) > inner.height as usize
+    };
+    let text = ratatui::text::Text::from(visible_lines);
     f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+
+    // 2026-08-07 — compute per-card screen rects post-render. We know
+    // each card's height in lines; walk the map, tracking absolute Y.
+    // Register both the whole-card rect (click opens modal) and the
+    // 1-cell chevron rect (click toggles expand).
+    let mut y_line: i32 = -(scroll_off as i32);
+    for (issue_idx, key, height) in &card_line_map {
+        let start_y = inner.y as i32 + y_line;
+        let end_y = start_y + *height as i32;
+        // Register whole-card rect if any part is visible.
+        if end_y > inner.y as i32 && start_y < (inner.y + inner.height) as i32 {
+            let clamped_y = start_y.max(inner.y as i32) as u16;
+            let clamped_end = (end_y.min((inner.y + inner.height) as i32)) as u16;
+            let visible_h = clamped_end.saturating_sub(clamped_y);
+            if visible_h > 0 {
+                let card_rect = Rect {
+                    x: inner.x,
+                    y: clamped_y,
+                    width: inner.width,
+                    height: visible_h,
+                };
+                app.rects.kanban_cards.push((card_rect, *issue_idx));
+                // Chevron sits on the KEY line (first row of the card).
+                if start_y >= inner.y as i32 && start_y < (inner.y + inner.height) as i32 {
+                    let chev_rect = Rect {
+                        x: inner.x,
+                        y: start_y as u16,
+                        width: 1,
+                        height: 1,
+                    };
+                    app.rects.kanban_chevrons.push((chev_rect, key.clone()));
+                }
+            }
+        }
+        y_line += *height as i32;
+    }
+
+    // Bottom-of-column "↓ more" hint when there's off-screen content.
+    if has_more_below && inner.height >= 1 {
+        let hint_y = inner.y + inner.height - 1;
+        let hint_rect = Rect {
+            x: inner.x,
+            y: hint_y,
+            width: inner.width,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  ↓ more · j/k scroll ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+            ))),
+            hint_rect,
+        );
+    }
 }
 
 fn draw_tree_table(f: &mut Frame, area: Rect, app: &App, tab_cfg: &crate::config::Tab) {
@@ -1103,12 +1342,22 @@ fn pipeline_glyph(label: &str) -> (&'static str, Color) {
 /// currently table-row-only). Board picker + search + version
 /// chips duplicate existing keyboard entry points (T/`/`/V), so
 /// mouse users have a discoverable path even without click routing.
-fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &App) {
+fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
     use ratatui::text::{Line, Span};
     let cfg_tab = app.cfg.tabs.get(app.active_tab);
     let board_label = cfg_tab
-        .and_then(|t| t.board_id.map(|id| format!("Board:{id}")))
-        .unwrap_or_else(|| "Board:none".to_string());
+        .and_then(|t| {
+            t.board_id.map(|id| {
+                // Prefer the cached friendly name when we have one;
+                // fall back to the numeric id while the fetch is in
+                // flight (or if it failed and we cached the fallback).
+                match app.board_name_cache.get(&id) {
+                    Some(name) => format!("Board: {name}"),
+                    None => format!("Board:{id}"),
+                }
+            })
+        })
+        .unwrap_or_else(|| "Board: none".to_string());
     let search_label = app
         .filter
         .as_ref()
@@ -1133,22 +1382,39 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     };
+    // Register each chip's rect so the click handler can dispatch.
+    // We measure widths inline so the register-order matches render-order.
+    use crate::app::ChipKind;
+    let entries: Vec<(String, bool, ChipKind)> = vec![
+        (board_label, cfg_tab.is_some_and(|t| t.board_id.is_some()), ChipKind::Board),
+        (search_label, app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()), ChipKind::Search),
+        (team_label, cfg_tab.is_some_and(|t| t.team.is_some()), ChipKind::Team),
+        ("Version ▾".to_string(), false, ChipKind::Version),
+        ("Epic ▾".to_string(), false, ChipKind::Epic),
+        ("Type ▾".to_string(), false, ChipKind::Type),
+        ("Label ▾".to_string(), false, ChipKind::Label),
+        ("⚡ Quick filters ▾".to_string(), false, ChipKind::QuickFilters),
+    ];
+    app.rects.kanban_chips.clear();
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(chip(&board_label, cfg_tab.is_some_and(|t| t.board_id.is_some())));
-    spans.push(chip(
-        &search_label,
-        app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()),
-    ));
-    spans.push(chip(
-        &team_label,
-        cfg_tab.is_some_and(|t| t.team.is_some()),
-    ));
-    // Placeholder chips — click routing + fetch land in a follow-up.
-    spans.push(chip("Version ▾", false));
-    spans.push(chip("Epic ▾", false));
-    spans.push(chip("Type ▾", false));
-    spans.push(chip("Label ▾", false));
-    spans.push(chip("⚡ Quick filters ▾", false));
+    let mut cursor_x: u16 = area.x;
+    for (label, active, kind) in &entries {
+        let s = chip(label, *active);
+        let w = s.content.chars().count() as u16;
+        if cursor_x + w <= area.x + area.width {
+            app.rects.kanban_chips.push((
+                Rect {
+                    x: cursor_x,
+                    y: area.y,
+                    width: w,
+                    height: 1,
+                },
+                *kind,
+            ));
+        }
+        cursor_x = cursor_x.saturating_add(w);
+        spans.push(s);
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -1853,4 +2119,376 @@ fn status_color(name: &str) -> Style {
         "blocked" | "blocker" => Style::default().fg(Color::Red),
         _ => Style::default().fg(Color::Gray),
     }
+}
+
+/// 2026-08-07 — point-in-rect test in absolute terminal coords.
+fn rect_hit(r: Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// 2026-08-07 — kanban toolbar chip click dispatch. Most chips route
+/// to the existing keyboard-triggered pickers; the placeholder ones
+/// toast a friendly "coming soon" so the user knows it registered.
+async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
+    use crate::app::ChipKind;
+    match kind {
+        ChipKind::Board => {
+            // v1: no picker yet — clicking cycles a toast reminding
+            // the user how to switch (config-driven for now).
+            app.status = "Board selection is config-driven — edit `board_id` in mnml-tracker-jira.toml".into();
+        }
+        ChipKind::Search => app.open_filter(),
+        ChipKind::Team => app.open_team_picker(),
+        ChipKind::Version => app.open_tab_fix_version_picker().await,
+        ChipKind::Epic | ChipKind::Type | ChipKind::Label | ChipKind::QuickFilters => {
+            app.status = format!("{kind:?} filter — coming soon");
+        }
+    }
+}
+
+/// 2026-08-07 — big card detail modal. Opens on card-click (or `D`
+/// on the focused card). Content is configured via
+/// `[detail_modal] fields = [...]` in the TOML config; unset ⇒ the
+/// built-in default field list.
+///
+/// Layout: 80% width × 80% height, centered. Header row shows the
+/// key + status + close chip. Below: two columns — left is compact
+/// labeled fields (assignee, priority, etc.), right is long text
+/// (description + long custom fields), scrollable via j/k or wheel.
+fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
+    use ratatui::text::{Line, Span};
+    let Some(modal) = app.detail_modal.as_ref() else {
+        return;
+    };
+    // 80% × 80% centered.
+    let w = (screen.width as u32 * 8 / 10) as u16;
+    let h = (screen.height as u32 * 8 / 10) as u16;
+    let x = screen.x + (screen.width.saturating_sub(w)) / 2;
+    let y = screen.y + (screen.height.saturating_sub(h)) / 2;
+    let area = Rect { x, y, width: w, height: h };
+    // Dim backdrop with a filled block so nothing bleeds through.
+    f.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            format!(" {} ", modal.key),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Close × in the top-right of the header row.
+    if inner.width >= 4 {
+        let close_x = inner.x + inner.width - 4;
+        let close_rect = Rect {
+            x: close_x,
+            y: inner.y,
+            width: 3,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " × ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ))),
+            close_rect,
+        );
+        app.rects.modal_close = Some(close_rect);
+    }
+
+    // Loading / error state before we have JSON data.
+    if let Some(err) = &modal.error {
+        let p = Paragraph::new(format!("Failed to load {}:\n{err}\n\nEsc to close.", modal.key))
+            .style(Style::default().fg(Color::Red))
+            .wrap(ratatui::widgets::Wrap { trim: false });
+        f.render_widget(p, inner);
+        return;
+    }
+    let Some(data) = &modal.data else {
+        let p = Paragraph::new(format!("loading {}…", modal.key))
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(p, inner);
+        return;
+    };
+
+    // Two-column split under the header. Header takes 1 row.
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
+    let two = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(content_area);
+
+    // Header row — key · summary · status.
+    let summary = data
+        .pointer("/fields/summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no summary)");
+    let status = data
+        .pointer("/fields/status/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let header = Line::from(vec![
+        Span::styled(
+            format!(" {} · ", modal.key),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(summary.to_string(), Style::default().fg(Color::Gray)),
+        Span::raw("  "),
+        Span::styled(
+            format!("[{status}]"),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let header_rect = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width.saturating_sub(4),
+        height: 1,
+    };
+    f.render_widget(Paragraph::new(header), header_rect);
+
+    // Left column: labeled short fields, one per configured entry.
+    let alias = app.cfg.detail_modal.field_alias.clone();
+    let fields = app.cfg.detail_modal.fields.clone();
+    let mut left_lines: Vec<Line> = Vec::new();
+    let mut long_text_lines: Vec<Line> = Vec::new();
+    for spec in &fields {
+        let id = spec.resolve_id(&alias);
+        let label = spec.resolve_label(&alias);
+        // Fields that live on the right (long text).
+        let is_long = matches!(
+            id.as_str(),
+            "description" | "environment"
+        );
+        // Skip fields already in the header.
+        if matches!(id.as_str(), "title" | "summary" | "status") {
+            continue;
+        }
+        let value = resolve_field_value(data, &id);
+        if is_long {
+            long_text_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{label}"),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            for line in value.lines() {
+                long_text_lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+            long_text_lines.push(Line::from(""));
+        } else {
+            left_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{label:<12}: "),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(value, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+    f.render_widget(
+        Paragraph::new(ratatui::text::Text::from(left_lines))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        two[0],
+    );
+    // Right pane: scrollable long text. Apply modal.scroll as skip.
+    let visible: Vec<Line> = long_text_lines
+        .into_iter()
+        .skip(modal.scroll as usize)
+        .collect();
+    f.render_widget(
+        Paragraph::new(ratatui::text::Text::from(visible))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        two[1],
+    );
+}
+
+/// 2026-08-07 — extract a human-readable value for a Jira field id
+/// from the raw JSON returned by `/rest/api/3/issue/{key}`. Handles
+/// the common shapes: string, {name}, [{name}], user (displayName),
+/// ADF description, custom-field {value}.
+fn resolve_field_value(data: &serde_json::Value, field_id: &str) -> String {
+    // Header-only fields have their own render paths.
+    let raw = if field_id == "summary" || field_id == "title" {
+        data.pointer("/fields/summary")
+    } else if field_id == "status" {
+        data.pointer("/fields/status/name")
+    } else if field_id == "type" || field_id == "issuetype" {
+        data.pointer("/fields/issuetype/name")
+    } else if field_id == "priority" {
+        data.pointer("/fields/priority/name")
+    } else if field_id == "assignee" {
+        data.pointer("/fields/assignee/displayName")
+    } else if field_id == "reporter" {
+        data.pointer("/fields/reporter/displayName")
+    } else if field_id == "labels" {
+        return join_string_array(data.pointer("/fields/labels"));
+    } else if field_id == "components" {
+        return join_named_array(data.pointer("/fields/components"));
+    } else if field_id == "fix_version" || field_id == "fixversions" {
+        return join_named_array(data.pointer("/fields/fixVersions"));
+    } else if field_id == "sprint" {
+        return sprint_label(data.pointer("/fields/customfield_10020"))
+            .unwrap_or_else(|| "—".into());
+    } else if field_id == "parent" {
+        return data
+            .pointer("/fields/parent/fields/summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "—".into());
+    } else if field_id == "description" {
+        return adf_to_plain(data.pointer("/fields/description"));
+    } else if field_id == "environment" {
+        return adf_to_plain(data.pointer("/fields/environment"));
+    } else {
+        // Custom fields — check /fields/{id}
+        let v = data.pointer(&format!("/fields/{field_id}"));
+        return json_to_display(v);
+    };
+    match raw {
+        Some(v) if v.is_string() => v.as_str().unwrap_or("").to_string(),
+        Some(v) if v.is_null() => "—".into(),
+        Some(v) => v.to_string(),
+        None => "—".into(),
+    }
+}
+
+fn join_string_array(v: Option<&serde_json::Value>) -> String {
+    let Some(arr) = v.and_then(|v| v.as_array()) else {
+        return "—".into();
+    };
+    if arr.is_empty() {
+        return "—".into();
+    }
+    arr.iter()
+        .filter_map(|x| x.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_named_array(v: Option<&serde_json::Value>) -> String {
+    let Some(arr) = v.and_then(|v| v.as_array()) else {
+        return "—".into();
+    };
+    if arr.is_empty() {
+        return "—".into();
+    }
+    arr.iter()
+        .filter_map(|x| x.pointer("/name").and_then(|n| n.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sprint_label(v: Option<&serde_json::Value>) -> Option<String> {
+    let arr = v?.as_array()?;
+    let names: Vec<String> = arr
+        .iter()
+        .filter_map(|s| {
+            // Sprint entries come back as strings (legacy) or
+            // objects with `name` (new shape). Handle both.
+            s.as_str()
+                .and_then(|raw| {
+                    // Legacy: `com.atlassian.greenhopper...[id=1,rapidViewId=…,state=ACTIVE,name=Sprint 3,...]`
+                    if let Some(start) = raw.find("name=") {
+                        let tail = &raw[start + 5..];
+                        Some(tail.split(',').next().unwrap_or("").to_string())
+                    } else {
+                        Some(raw.to_string())
+                    }
+                })
+                .or_else(|| {
+                    s.pointer("/name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
+        })
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join(", "))
+    }
+}
+
+fn adf_to_plain(v: Option<&serde_json::Value>) -> String {
+    let Some(v) = v else {
+        return "—".into();
+    };
+    // Older Jira responses use a plain string; newer use ADF JSON.
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    // Depth-first walk of the ADF tree, concatenating any `text`
+    // leaves. Paragraphs become blank-line-separated.
+    fn walk(n: &serde_json::Value, out: &mut String) {
+        if let Some(t) = n.get("text").and_then(|v| v.as_str()) {
+            out.push_str(t);
+        }
+        if let Some(content) = n.get("content").and_then(|c| c.as_array()) {
+            for child in content {
+                walk(child, out);
+            }
+        }
+        // Paragraph-level nodes get a newline break.
+        if let Some(t) = n.get("type").and_then(|v| v.as_str())
+            && matches!(t, "paragraph" | "heading" | "listItem")
+        {
+            out.push('\n');
+        }
+    }
+    let mut out = String::new();
+    walk(v, &mut out);
+    if out.trim().is_empty() {
+        "—".into()
+    } else {
+        out
+    }
+}
+
+fn json_to_display(v: Option<&serde_json::Value>) -> String {
+    let Some(v) = v else { return "—".into() };
+    if v.is_null() {
+        return "—".into();
+    }
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    if let Some(inner) = v.pointer("/value").and_then(|s| s.as_str()) {
+        return inner.to_string();
+    }
+    if let Some(inner) = v.pointer("/name").and_then(|s| s.as_str()) {
+        return inner.to_string();
+    }
+    // Object with `content` (ADF): render like description.
+    if v.is_object() && v.get("content").is_some() {
+        return adf_to_plain(Some(v));
+    }
+    if let Some(arr) = v.as_array() {
+        return arr
+            .iter()
+            .filter_map(|x| {
+                x.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| x.pointer("/name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .or_else(|| x.pointer("/value").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+    v.to_string()
 }

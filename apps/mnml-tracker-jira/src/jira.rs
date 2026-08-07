@@ -406,6 +406,69 @@ impl Client {
         Ok(sr.issues)
     }
 
+    /// 2026-08-07 — fetch a single board's metadata by id. Used by
+    /// the toolbar to render a friendly `[Board: HeliOS]` chip
+    /// instead of the numeric `[Board:200]`.
+    pub async fn fetch_board(&self, board_id: u64) -> Result<Board> {
+        let url = format!("{}/rest/agile/1.0/board/{board_id}", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .with_context(|| format!("fetching board {board_id}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("board {board_id} fetch: {status}: {text}"));
+        }
+        let board: Board = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing board {board_id} metadata"))?;
+        Ok(board)
+    }
+
+    /// 2026-08-07 — fetch one issue with the caller-specified field
+    /// list (any mix of canonical + `customfield_XXXXX`). Used by
+    /// the detail modal to pull whatever the user's `[detail_modal]
+    /// fields = [...]` config asks for. Returns a raw JSON blob so
+    /// the caller can render fields it doesn't have serde structs
+    /// for (custom fields, environment, sprint sub-structs).
+    pub async fn fetch_issue_full(
+        &self,
+        key: &str,
+        fields: &[String],
+    ) -> Result<serde_json::Value> {
+        let fields_csv = if fields.is_empty() {
+            "*all".to_string()
+        } else {
+            fields.join(",")
+        };
+        let url = format!("{}/rest/api/3/issue/{key}", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("fields", fields_csv.as_str())])
+            .send()
+            .await
+            .with_context(|| format!("fetching issue {key} full"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("issue {key} full fetch: {status}: {text}"));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing issue {key} full"))?;
+        Ok(v)
+    }
+
     /// 2026-08-07 — list boards visible to the current user for a
     /// project. Used by the board-selector chip. Board.type is
     /// "scrum" | "kanban" | "simple".

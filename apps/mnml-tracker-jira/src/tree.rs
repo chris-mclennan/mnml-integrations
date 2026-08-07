@@ -429,6 +429,9 @@ mod tests {
                 updated: None,
                 created: None,
                 fix_versions: Vec::new(),
+                components: Vec::new(),
+                labels: Vec::new(),
+                extras: std::collections::BTreeMap::new(),
             },
         }
     }
@@ -465,6 +468,8 @@ mod tests {
             status_order: None,
             bumps: None,
             version_name_contains: None,
+            team: None,
+            board_id: None,
         }
     }
 
@@ -475,6 +480,10 @@ mod tests {
             refresh_interval_secs: 60,
             tabs: Vec::new(),
             release_cut: false,
+            team_field_id: None,
+            team_field_name: None,
+            dispatch_workspace: None,
+            detail_modal: crate::config::DetailModalConfig::default(),
         }
     }
 

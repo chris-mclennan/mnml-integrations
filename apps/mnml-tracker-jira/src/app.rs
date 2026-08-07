@@ -5,7 +5,8 @@ use crate::config::{Config, ResolveMode, Tab, TabKind};
 use crate::jira::{Client, Issue, IssueDetail, Transition};
 use crate::tree::TreeState;
 use anyhow::{Context, Result};
-use std::collections::{BTreeSet, HashMap};
+use ratatui::layout::Rect;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub struct App {
     pub cfg: Config,
@@ -68,6 +69,84 @@ pub struct App {
     /// how many tabs remain after filtering — the caller (mnml's
     /// split Jira chips) has already picked the view for the user.
     pub hide_tab_strip: bool,
+    /// 2026-08-07 — friendly-name cache for boards, keyed by id.
+    /// Populated lazily on kanban render; used by the toolbar chip
+    /// to show `[Board: HeliOS]` instead of `[Board:200]`.
+    pub board_name_cache: HashMap<u64, String>,
+    /// 2026-08-07 — mouse-rect registry, refreshed every frame by
+    /// the UI layer. The event loop reads these to route clicks on
+    /// kanban tabs (cards, toolbar chips, expand chevrons) since
+    /// those don't fit the flat-row `table_row_at` model.
+    pub rects: Rects,
+    /// 2026-08-07 — per-column vertical scroll offset for the
+    /// kanban board (order: To Do / In Progress / Testing / Done).
+    /// j/k on the focused column or wheel scroll on hover moves it.
+    pub kanban_col_scroll: [u16; 4],
+    /// 2026-08-07 — cards the user has expanded inline (chevron
+    /// click). Adds 2-3 rows of quick-peek info under the card.
+    /// Deeper drill = the detail modal.
+    pub kanban_expanded: HashSet<String>,
+    /// 2026-08-07 — active card detail modal. `None` = closed.
+    pub detail_modal: Option<DetailModal>,
+    /// 2026-08-07 — expanded PR sub-row lists per issue key.
+    /// Value is the count currently visible (starts at 3, grows in
+    /// 3s on "show more" click). Unset ⇒ 3.
+    pub pr_show_count: HashMap<String, usize>,
+}
+
+/// Live rect registry, rebuilt every frame. Not persisted between
+/// draws — the mouse handler just reads whatever the last draw left
+/// behind. Keeping it on `App` (not `Frame`) so the event loop can
+/// see it. Coordinates are absolute (terminal-space).
+#[derive(Default)]
+pub struct Rects {
+    /// Kanban card body rects → issue index. Clicking a card body
+    /// opens the detail modal.
+    pub kanban_cards: Vec<(Rect, usize)>,
+    /// Kanban expand-chevron rects → issue key. Toggles
+    /// `kanban_expanded`.
+    pub kanban_chevrons: Vec<(Rect, String)>,
+    /// Kanban toolbar chip rects → chip kind. Clicking dispatches
+    /// to the matching picker / cycles a filter.
+    pub kanban_chips: Vec<(Rect, ChipKind)>,
+    /// Kanban column body rects (whole column including header).
+    /// Used by wheel-scroll on hover to know which column to scroll.
+    pub kanban_cols: [Option<Rect>; 4],
+    /// Detail modal's close button (`×`).
+    pub modal_close: Option<Rect>,
+    /// Show-more PR row rects → issue key. Bumps that key's
+    /// `pr_show_count` by 3.
+    pub pr_show_more: Vec<(Rect, String)>,
+}
+
+/// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
+/// action or a "coming soon" toast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    Board,
+    Search,
+    Team,
+    Version,
+    Epic,
+    Type,
+    Label,
+    QuickFilters,
+}
+
+/// 2026-08-07 — card detail modal state. Loaded lazily — `data`
+/// is `None` while the fetch is in flight. Scroll applies to the
+/// right (long-text) pane; left column is always compact.
+pub struct DetailModal {
+    /// Issue key the modal is bound to.
+    pub key: String,
+    /// Full raw JSON returned by `/rest/api/3/issue/{key}?fields=…`.
+    /// `None` while loading; renderer shows a spinner.
+    pub data: Option<serde_json::Value>,
+    /// Vertical scroll into the description / long-text pane.
+    pub scroll: u16,
+    /// Populated on request failure so we can show an error banner
+    /// inside the modal instead of blowing away the status line.
+    pub error: Option<String>,
 }
 
 /// Inline-edit picker for one of two fields. The mechanics are
@@ -263,6 +342,12 @@ impl App {
             selection: BTreeSet::new(),
             field_picker: None,
             hide_tab_strip: false,
+            board_name_cache: HashMap::new(),
+            rects: Rects::default(),
+            kanban_col_scroll: [0; 4],
+            kanban_expanded: HashSet::new(),
+            detail_modal: None,
+            pr_show_count: HashMap::new(),
         };
         // 2026-07-25 — previously did a /myself pre-flight to
         // detect stale tokens (which /search/jql silently
@@ -1894,6 +1979,172 @@ impl App {
             self.ensure_focused_detail().await;
         }
     }
+
+    /// 2026-08-07 — fetch a board's friendly name and cache it.
+    /// No-op when already cached. Called from the kanban render
+    /// path (fire-and-forget via `.await` inside the event loop's
+    /// pre-draw hook — see `ensure_board_names_for_active`).
+    pub async fn resolve_board_name(&mut self, board_id: u64) {
+        if self.board_name_cache.contains_key(&board_id) {
+            return;
+        }
+        match self.client.fetch_board(board_id).await {
+            Ok(b) => {
+                self.board_name_cache.insert(board_id, b.name);
+            }
+            Err(e) => {
+                self.status = format!("board {board_id} lookup: {e}");
+                // Cache a fallback so we don't hammer the endpoint
+                // every frame when the id is bad.
+                self.board_name_cache
+                    .insert(board_id, format!("{board_id}"));
+            }
+        }
+    }
+
+    /// Called from the event loop before each draw of a kanban
+    /// tab. Ensures the friendly name for the current tab's
+    /// `board_id` (if any) is cached — the render then reads from
+    /// `board_name_cache`.
+    pub async fn ensure_board_names_for_active(&mut self) {
+        let Some(bid) = self
+            .cfg
+            .tabs
+            .get(self.active_tab)
+            .and_then(|t| t.board_id)
+        else {
+            return;
+        };
+        self.resolve_board_name(bid).await;
+    }
+
+    /// 2026-08-07 — open the ticket detail modal for `key` and
+    /// kick off the fetch. Fields = whatever `[detail_modal]` in
+    /// the user's config asks for (plus a couple always-on ones
+    /// like summary/status so the header renders even for a
+    /// minimal config).
+    pub async fn open_detail_modal(&mut self, key: String) {
+        let alias = self.cfg.detail_modal.field_alias.clone();
+        let mut fields: Vec<String> = self
+            .cfg
+            .detail_modal
+            .fields
+            .iter()
+            .map(|f| f.resolve_id(&alias))
+            .collect();
+        // Always include the ones the header + fallbacks need.
+        for baked in [
+            "summary",
+            "status",
+            "issuetype",
+            "priority",
+            "assignee",
+            "reporter",
+            "labels",
+            "components",
+            "fixVersions",
+            "parent",
+            "description",
+        ] {
+            let s = baked.to_string();
+            if !fields.contains(&s) {
+                fields.push(s);
+            }
+        }
+        self.detail_modal = Some(DetailModal {
+            key: key.clone(),
+            data: None,
+            scroll: 0,
+            error: None,
+        });
+        match self.client.fetch_issue_full(&key, &fields).await {
+            Ok(v) => {
+                if let Some(m) = self.detail_modal.as_mut()
+                    && m.key == key
+                {
+                    m.data = Some(v);
+                }
+            }
+            Err(e) => {
+                if let Some(m) = self.detail_modal.as_mut()
+                    && m.key == key
+                {
+                    m.error = Some(format!("{e}"));
+                }
+            }
+        }
+    }
+
+    pub fn close_detail_modal(&mut self) {
+        self.detail_modal = None;
+    }
+
+    pub fn detail_modal_scroll(&mut self, delta: i32) {
+        if let Some(m) = self.detail_modal.as_mut() {
+            let cur = m.scroll as i32;
+            m.scroll = (cur + delta).max(0) as u16;
+        }
+    }
+
+    /// Toggle inline expand-chevron state for one card.
+    pub fn toggle_kanban_expanded(&mut self, key: &str) {
+        if self.kanban_expanded.contains(key) {
+            self.kanban_expanded.remove(key);
+        } else {
+            self.kanban_expanded.insert(key.to_string());
+        }
+    }
+
+    /// True when the active tab is a kanban (board) view.
+    pub fn active_is_kanban(&self) -> bool {
+        self.cfg
+            .tabs
+            .get(self.active_tab)
+            .and_then(|t| t.kind)
+            .is_some_and(|k| matches!(k, TabKind::BoardActiveSprint | TabKind::BoardBacklog))
+    }
+
+    /// Scroll one column on the active kanban tab. `col` is 0..4
+    /// (To Do / In Progress / Testing / Done order).
+    pub fn kanban_scroll_col(&mut self, col: usize, delta: i32) {
+        if col >= 4 {
+            return;
+        }
+        let cur = self.kanban_col_scroll[col] as i32;
+        self.kanban_col_scroll[col] = (cur + delta).max(0) as u16;
+    }
+
+    /// The kanban column that currently owns the cursor (0..4).
+    pub fn kanban_selected_col(&self) -> usize {
+        let tab = self.active();
+        let Some(issue) = tab.issues.get(tab.selected) else {
+            return 1;
+        };
+        let s = issue
+            .fields
+            .status
+            .as_ref()
+            .map(|s| s.name.to_ascii_lowercase())
+            .unwrap_or_default();
+        match s.as_str() {
+            "to do" | "backlog" | "open" | "reopened" | "selected for development" => 0,
+            "done" | "closed" | "resolved" | "released" => 3,
+            "testing" | "in pr review" | "in review" | "qa" | "ready for qa" | "code review" => 2,
+            _ => 1,
+        }
+    }
+
+    /// How many PRs to show for `key`. Defaults to 3; grows in
+    /// steps of 3 when the user clicks "show more" in a tree row.
+    pub fn pr_visible_count(&self, key: &str) -> usize {
+        self.pr_show_count.get(key).copied().unwrap_or(3)
+    }
+
+    /// Bump the visible-PR count for `key` by 3.
+    pub fn pr_show_more(&mut self, key: &str) {
+        let cur = self.pr_visible_count(key);
+        self.pr_show_count.insert(key.to_string(), cur + 3);
+    }
 }
 
 /// Resolve a tab's `mode = ...` into a concrete JQL string, or pass
@@ -1983,6 +2234,9 @@ mod tests {
                         updated: None,
                         created: None,
                         fix_versions: Vec::new(),
+                        components: Vec::new(),
+                        labels: Vec::new(),
+                        extras: std::collections::BTreeMap::new(),
                     },
                 })
                 .collect(),
@@ -1998,6 +2252,10 @@ mod tests {
                 refresh_interval_secs: 60,
                 tabs: Vec::new(),
                 release_cut: false,
+                team_field_id: None,
+                team_field_name: None,
+                dispatch_workspace: None,
+                detail_modal: crate::config::DetailModalConfig::default(),
             },
             client,
             tabs: vec![tab],
@@ -2014,6 +2272,12 @@ mod tests {
             selection: BTreeSet::new(),
             field_picker: None,
             hide_tab_strip: false,
+            board_name_cache: HashMap::new(),
+            rects: Rects::default(),
+            kanban_col_scroll: [0; 4],
+            kanban_expanded: HashSet::new(),
+            detail_modal: None,
+            pr_show_count: HashMap::new(),
         }
     }
 
