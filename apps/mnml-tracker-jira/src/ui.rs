@@ -403,6 +403,27 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
 /// on a keyboard tick moves the cursor across columns (v1 uses the
 /// existing MoveSelection actions — no per-column cursor yet).
 fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
+    // 2026-08-07 — draw the `/` filter strip above the columns when
+    // any filter is active (or being edited). Same widget the flat/
+    // tree table paths use so keyboard filter + kanban stay in sync.
+    let (filter_area, area) = if app.filter.is_some() {
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(area);
+        (Some(parts[0]), parts[1])
+    } else {
+        (None, area)
+    };
+    if let Some(a) = filter_area {
+        draw_filter_strip(f, a, app);
+    }
+    // 2026-08-07 — respect the `/` text filter (matches issue key or
+    // summary, case-insensitive) when bucketing kanban cards. Was:
+    // filter only applied to flat/tree tables; kanban ignored it and
+    // showed everything regardless of what the user typed.
+    let filter_visible: std::collections::HashSet<usize> =
+        app.visible_indices().into_iter().collect();
     let tab = app.active();
     // 2026-08-06 — added Testing column (In PR Review + Testing + QA
     // statuses) between In Progress and Done. Tattle's status_order
@@ -472,6 +493,9 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
     let mut done: Vec<usize> = Vec::new();
     for (i, issue) in tab.issues.iter().enumerate() {
         if !team_matches(issue) {
+            continue;
+        }
+        if !filter_visible.is_empty() && !filter_visible.contains(&i) {
             continue;
         }
         let status = issue.fields.status.as_ref().map(|s| s.name.as_str());
@@ -1129,7 +1153,7 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
                 )
             });
         if is_board {
-            " ↑↓ · Space pick · t move · a assignee · f version · T team · w watch · d details · q "
+            " ↑↓ · / filter · Space pick · . actions · t move · a assignee · T team · w watch · d details · q "
         } else {
             " 1-9 · ↑↓ · / filter · Space pick · t move · a assignee · f version · w watch · d details · q "
         }
