@@ -92,6 +92,12 @@ pub struct FieldPicker {
 pub enum FieldKind {
     Assignee,
     FixVersion,
+    /// 2026-08-06 — Team filter picker for board tabs. Items come
+    /// from the union of `components` + `labels` across the current
+    /// tab's issues (no Jira roundtrip needed). Commit writes back
+    /// to `tab.team` in-memory + re-buckets the kanban immediately;
+    /// persistence to config.toml is a follow-up.
+    Team,
 }
 
 impl FieldPicker {
@@ -1096,6 +1102,55 @@ impl App {
         self.field_picker = None;
     }
 
+    /// 2026-08-06 — Team picker. Collects unique component names +
+    /// label strings from every issue in the active tab, plus a
+    /// leading "— Clear team —" row. Selecting commits the value
+    /// into `cfg.tabs[active].team` (in-memory only — restart reloads
+    /// from config.toml) and re-buckets the kanban on next paint.
+    pub fn open_team_picker(&mut self) {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for issue in &self.active().issues {
+            for c in &issue.fields.components {
+                if !c.name.trim().is_empty() {
+                    seen.insert(c.name.clone());
+                }
+            }
+            for l in &issue.fields.labels {
+                if !l.trim().is_empty() {
+                    seen.insert(l.clone());
+                }
+            }
+        }
+        let items: Vec<(String, String)> =
+            std::iter::once((String::new(), "— Clear team —".to_string()))
+                .chain(seen.into_iter().map(|s| (s.clone(), s)))
+                .collect();
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::Team,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+        });
+    }
+
+    /// Commit handler for the Team picker. Writes the value onto the
+    /// active tab config; the kanban render reads from there on next
+    /// paint. `""` clears the filter.
+    pub fn commit_team_picker(&mut self, value: String) {
+        let idx = self.active_tab;
+        if let Some(tab) = self.cfg.tabs.get_mut(idx) {
+            tab.team = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+        }
+        self.field_picker = None;
+    }
+
     pub fn field_picker_filter_insert(&mut self, c: char) {
         if let Some(p) = self.field_picker.as_mut() {
             let byte = p
@@ -1161,6 +1216,19 @@ impl App {
             return;
         };
         let kind = picker.kind;
+        // Team picker is a local filter, not a Jira mutation. Route
+        // before the bulk-write loop below so it doesn't try to POST
+        // anything to Jira.
+        if kind == FieldKind::Team {
+            self.commit_team_picker(id.clone());
+            let display = if id.is_empty() {
+                "(cleared)".to_string()
+            } else {
+                label.clone()
+            };
+            self.status = format!("team filter: {display}");
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -1189,6 +1257,7 @@ impl App {
                     };
                     self.client.set_fix_versions(key, &versions).await
                 }
+                FieldKind::Team => unreachable!("team routed above"),
             };
             match result {
                 Ok(()) => {
@@ -1203,6 +1272,7 @@ impl App {
             let field = match kind {
                 FieldKind::Assignee => "assignee",
                 FieldKind::FixVersion => "fixVersion",
+                FieldKind::Team => unreachable!("team routed above"),
             };
             self.status = format!("{} ticket(s) · {field} = {label}", ok);
             self.selection.clear();
