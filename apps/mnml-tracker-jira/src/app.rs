@@ -327,7 +327,30 @@ impl App {
     /// `last_error` on the tab.
     pub async fn refresh_active(&mut self) {
         let idx = self.active_tab;
-        let jql = self.tabs[idx].jql.clone();
+        let base_jql = self.tabs[idx].jql.clone();
+        // 2026-08-07 — push the team filter into JQL server-side. Was:
+        // fetched up to 100 tickets, then filtered client-side by
+        // team. Sprints with 100+ tickets across teams meant the
+        // selected team's tickets could be past the cap and never
+        // rendered. User: "HeliOS is missing some things."
+        let team = self
+            .cfg
+            .tabs
+            .get(idx)
+            .and_then(|t| t.team.clone())
+            .filter(|s| !s.trim().is_empty());
+        let jql = match &team {
+            Some(t) => {
+                let escaped = t.replace('"', "\\\"");
+                // OR across the 3 places teams live in Tattle: the
+                // "Tattle Team" custom field, the components list,
+                // and labels. Any match keeps the ticket.
+                format!(
+                    "({base_jql}) AND (\"Tattle Team\" = \"{escaped}\" OR component = \"{escaped}\" OR labels = \"{escaped}\")"
+                )
+            }
+            None => base_jql,
+        };
         self.status = format!("refreshing {}…", self.tabs[idx].name);
         match self.client.search(&jql, 100).await {
             Ok(issues) => {
@@ -1327,6 +1350,11 @@ impl App {
                 label.clone()
             };
             self.status = format!("team filter: {display}");
+            // 2026-08-07 — server-side team filter needs a fresh
+            // fetch. Was: only re-bucketed the already-fetched 100
+            // tickets client-side, which meant HeliOS's tickets past
+            // the openSprints() rank cap were missing.
+            self.refresh_active().await;
             return;
         }
         // TabFixVersion picker rewrites the tab's JQL — not a per-
