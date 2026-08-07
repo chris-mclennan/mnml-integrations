@@ -58,6 +58,12 @@ pub enum Action {
     /// changing WHICH release the tab displays. Distinct from `f`
     /// which assigns the picked version to the focused ticket.
     OpenTabFixVersionPicker,
+    /// `.` — open the action picker for the focused ticket. Items
+    /// come from `dispatch::buttons_for_ticket` (Implement / Fix /
+    /// Triage per type + status). Same handoff as the on-card
+    /// buttons; keyboard path so all tabs (Fix Versions AND Board)
+    /// have a uniform way to fire an action.
+    OpenActionPicker,
     FieldPickerInsert(char),
     FieldPickerBackspace,
     FieldPickerUp,
@@ -241,6 +247,7 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('f') => Some(Action::OpenFixVersionPicker),
         KeyCode::Char('T') => Some(Action::OpenTeamPicker),
         KeyCode::Char('V') => Some(Action::OpenTabFixVersionPicker),
+        KeyCode::Char('.') => Some(Action::OpenActionPicker),
         // `d` (lowercase, no modifiers) toggles the detail pane.
         // Ctrl+d above takes precedence for scroll-down.
         KeyCode::Char('d') => Some(Action::ToggleDetails),
@@ -334,6 +341,7 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::OpenFixVersionPicker => app.open_fix_version_picker().await,
         Action::OpenTeamPicker => app.open_team_picker(),
         Action::OpenTabFixVersionPicker => app.open_tab_fix_version_picker().await,
+        Action::OpenActionPicker => app.open_action_picker(),
         Action::FieldPickerInsert(c) => app.field_picker_filter_insert(c),
         Action::FieldPickerBackspace => app.field_picker_filter_backspace(),
         Action::FieldPickerUp => app.field_picker_move(-1),

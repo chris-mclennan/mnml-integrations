@@ -628,6 +628,30 @@ fn draw_kanban_column(
                     .add_modifier(Modifier::ITALIC),
             )));
         }
+        // 2026-08-07 — action button strip. Same source-of-truth as
+        // the fix_version_tree card buttons (dispatch::buttons_for_ticket).
+        // Colored per TicketButton::color_slot. User asked to have
+        // [Implement] / [Fix] / [Triage] visible on kanban cards too.
+        let buttons = crate::dispatch::buttons_for_ticket(issue);
+        if !buttons.is_empty() {
+            let mut spans: Vec<Span> = vec![Span::raw("  ")];
+            for (i, b) in buttons.iter().enumerate() {
+                let color = match b.color_slot() {
+                    "green" => Color::Green,
+                    "red" => Color::Red,
+                    "yellow" => Color::Yellow,
+                    _ => Color::White,
+                };
+                if i > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    b.label().to_string(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
         // Blank separator line between cards.
         lines.push(Line::from(""));
     }
@@ -1504,6 +1528,7 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         crate::app::FieldKind::FixVersion => "fixVersion",
         crate::app::FieldKind::Team => "team",
         crate::app::FieldKind::TabFixVersion => "tab fixVersion",
+        crate::app::FieldKind::TicketAction => "action",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -1514,6 +1539,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         " filter kanban by team ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::TabFixVersion) {
         " switch tab view to fixVersion ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::TicketAction) {
+        " actions ".to_string()
     } else if target_count == 1 {
         format!(" set {field_label} ")
     } else {
