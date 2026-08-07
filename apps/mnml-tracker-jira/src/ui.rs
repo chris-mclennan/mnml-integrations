@@ -404,17 +404,49 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
 /// existing MoveSelection actions — no per-column cursor yet).
 fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.active();
+    // 2026-08-06 — added Testing column (In PR Review + Testing + QA
+    // statuses) between In Progress and Done. Tattle's status_order
+    // default is "Testing, In PR Review, In Progress, To Do, Done" so
+    // "in-flight-but-not-live" is a real bucket worth its own column.
+    // Also added `team` config filter: `[[tabs]] team = "web"` narrows
+    // to issues whose component name OR label contains the string
+    // (case-insensitive substring — flexible for Tattle's
+    // `component=web-team` and `label=team:web` conventions).
+    let team_filter: Option<String> = app
+        .cfg
+        .tabs
+        .get(app.active_tab)
+        .and_then(|t| t.team.clone())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let team_matches = |issue: &crate::jira::Issue| -> bool {
+        let Some(needle) = &team_filter else {
+            return true;
+        };
+        let comp_hit = issue
+            .fields
+            .components
+            .iter()
+            .any(|c| c.name.to_ascii_lowercase().contains(needle));
+        let label_hit = issue
+            .fields
+            .labels
+            .iter()
+            .any(|l| l.to_ascii_lowercase().contains(needle));
+        comp_hit || label_hit
+    };
     if tab.issues.is_empty() {
         let p = Paragraph::new("(no issues in this sprint)")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(p, area);
         return;
     }
-    // Bucket every issue.
+    // Bucket every filtered issue into one of four columns.
     #[derive(Copy, Clone)]
     enum Col {
         Todo,
         InProgress,
+        Testing,
         Done,
     }
     fn bucket_of(status: Option<&str>) -> Col {
@@ -422,22 +454,32 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
         match s.as_str() {
             "to do" | "backlog" | "open" | "reopened" | "selected for development" => Col::Todo,
             "done" | "closed" | "resolved" | "released" => Col::Done,
+            "testing" | "in pr review" | "in review" | "qa" | "ready for qa" | "code review" => {
+                Col::Testing
+            }
             _ => Col::InProgress,
         }
     }
     let mut todo: Vec<usize> = Vec::new();
     let mut in_prog: Vec<usize> = Vec::new();
+    let mut testing: Vec<usize> = Vec::new();
     let mut done: Vec<usize> = Vec::new();
     for (i, issue) in tab.issues.iter().enumerate() {
+        if !team_matches(issue) {
+            continue;
+        }
         let status = issue.fields.status.as_ref().map(|s| s.name.as_str());
         match bucket_of(status) {
             Col::Todo => todo.push(i),
             Col::InProgress => in_prog.push(i),
+            Col::Testing => testing.push(i),
             Col::Done => done.push(i),
         }
     }
     let selected_col = if todo.contains(&tab.selected) {
         Col::Todo
+    } else if testing.contains(&tab.selected) {
+        Col::Testing
     } else if done.contains(&tab.selected) {
         Col::Done
     } else {
@@ -446,13 +488,15 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
         ])
         .split(area);
     let title_todo = format!(" To Do ({}) ", todo.len());
     let title_prog = format!(" In Progress ({}) ", in_prog.len());
+    let title_testing = format!(" Testing ({}) ", testing.len());
     let title_done = format!(" Done ({}) ", done.len());
     draw_kanban_column(
         f,
@@ -475,6 +519,15 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &App) {
     draw_kanban_column(
         f,
         cols[2],
+        &title_testing,
+        &testing,
+        tab,
+        app,
+        matches!(selected_col, Col::Testing),
+    );
+    draw_kanban_column(
+        f,
+        cols[3],
         &title_done,
         &done,
         tab,

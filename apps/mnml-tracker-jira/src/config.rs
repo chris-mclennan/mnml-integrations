@@ -92,6 +92,14 @@ pub struct Tab {
     /// non-fix_version_tree kinds.
     #[serde(default)]
     pub version_name_contains: Option<String>,
+    /// 2026-08-06 — Board tabs: filter kanban issues by team. A
+    /// case-insensitive substring match against each issue's
+    /// components AND labels — either hit keeps the ticket. Tattle
+    /// splits teams via `component=web-team`/`mobile-team`/etc AND
+    /// via `label=team:web`, so this handles both conventions.
+    /// Ignored on non-board kinds.
+    #[serde(default)]
+    pub team: Option<String>,
 }
 
 /// 2026-07-25 — new TabKind enum. Powers the split rail chips

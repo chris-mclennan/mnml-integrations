@@ -49,7 +49,7 @@ impl Client {
             "fields": [
                 "summary", "status", "assignee", "reporter",
                 "priority", "issuetype", "updated", "created",
-                "fixVersions",
+                "fixVersions", "components", "labels",
             ],
         });
         let resp = self
@@ -741,6 +741,14 @@ pub struct Fields {
     #[serde(default)]
     #[serde(rename = "fixVersions")]
     pub fix_versions: Vec<NamedField>,
+    /// Component names (e.g. "web-team", "mobile"). Populated when
+    /// the JQL response asks for `components`.
+    #[serde(default)]
+    pub components: Vec<NamedField>,
+    /// Freeform label strings (e.g. "team:web"). Same as above —
+    /// requires `labels` in the requested field list.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
