@@ -1525,6 +1525,19 @@ async fn resolve_tab_jql(tab: &Tab, client: &Client) -> Result<String> {
     if let Some(jql) = &tab.jql {
         return Ok(jql.clone());
     }
+    // 2026-08-06 — honor `kind = "..."` tabs whose default_jql is a
+    // static string (work_assigned / work_recently_done /
+    // board_active_sprint / board_backlog). Fix-version kinds return
+    // None here and fall through to the mode-based resolver below —
+    // finalize() promotes their `kind` into `mode = CurrentRelease`
+    // (or whatever the user set). Without this branch every
+    // `kind`-only tab silently failed at query time with "neither jql
+    // nor mode", even though validate() accepts it.
+    if let Some(kind) = tab.kind
+        && let Some(default) = kind.default_jql()
+    {
+        return Ok(default.to_string());
+    }
     let mode = tab
         .mode
         .as_ref()
