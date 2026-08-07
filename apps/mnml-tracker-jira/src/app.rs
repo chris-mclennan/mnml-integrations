@@ -88,10 +88,6 @@ pub struct App {
     pub kanban_expanded: HashSet<String>,
     /// 2026-08-07 — active card detail modal. `None` = closed.
     pub detail_modal: Option<DetailModal>,
-    /// 2026-08-07 — expanded PR sub-row lists per issue key.
-    /// Value is the count currently visible (starts at 3, grows in
-    /// 3s on "show more" click). Unset ⇒ 3.
-    pub pr_show_count: HashMap<String, usize>,
 }
 
 /// Live rect registry, rebuilt every frame. Not persisted between
@@ -347,7 +343,6 @@ impl App {
             kanban_col_scroll: [0; 4],
             kanban_expanded: HashSet::new(),
             detail_modal: None,
-            pr_show_count: HashMap::new(),
         };
         // 2026-07-25 — previously did a /myself pre-flight to
         // detect stale tokens (which /search/jql silently
@@ -676,6 +671,12 @@ impl App {
                     self.status = format!("opened {url}");
                 }
             }
+            VisibleRow::PrShowMore { issue_idx, .. } => {
+                // Enter/Space on a "show more" row reveals the next
+                // batch of PRs. Same as clicking it.
+                let key = self.active().issues[issue_idx].key.clone();
+                self.pr_show_more(&key);
+            }
             VisibleRow::PrLoading { .. }
             | VisibleRow::PrEmpty { .. }
             | VisibleRow::PrPipelineLoading { .. }
@@ -810,6 +811,14 @@ impl App {
             }
             VisibleRow::PrLoading { issue_idx } | VisibleRow::PrEmpty { issue_idx } => {
                 // Ticket-level hint rows: collapse the ticket.
+                let key = self.active().issues[issue_idx].key.clone();
+                if let Some(tree) = self.active_mut().tree.as_mut() {
+                    tree.expanded_tickets.remove(&key);
+                }
+            }
+            VisibleRow::PrShowMore { issue_idx, .. } => {
+                // On a "show more" row: collapse the parent ticket
+                // (same as Left on any PR sub-row).
                 let key = self.active().issues[issue_idx].key.clone();
                 if let Some(tree) = self.active_mut().tree.as_mut() {
                     tree.expanded_tickets.remove(&key);
@@ -2134,16 +2143,16 @@ impl App {
         }
     }
 
-    /// How many PRs to show for `key`. Defaults to 3; grows in
-    /// steps of 3 when the user clicks "show more" in a tree row.
-    pub fn pr_visible_count(&self, key: &str) -> usize {
-        self.pr_show_count.get(key).copied().unwrap_or(3)
-    }
-
-    /// Bump the visible-PR count for `key` by 3.
+    /// Bump the visible-PR count for `key` by 3 on the active tab.
+    /// PRs are stored on TreeState (per-tab) so the count lives
+    /// there too — a "show more" click on tab A doesn't reveal PRs
+    /// on tab B's copy of the same ticket.
     pub fn pr_show_more(&mut self, key: &str) {
-        let cur = self.pr_visible_count(key);
-        self.pr_show_count.insert(key.to_string(), cur + 3);
+        let Some(tree) = self.active_mut().tree.as_mut() else {
+            return;
+        };
+        let cur = tree.pr_show_counts.get(key).copied().unwrap_or(3);
+        tree.pr_show_counts.insert(key.to_string(), cur + 3);
     }
 }
 
@@ -2277,7 +2286,6 @@ mod tests {
             kanban_col_scroll: [0; 4],
             kanban_expanded: HashSet::new(),
             detail_modal: None,
-            pr_show_count: HashMap::new(),
         }
     }
 
