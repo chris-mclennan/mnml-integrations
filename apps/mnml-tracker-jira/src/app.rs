@@ -198,10 +198,21 @@ impl App {
                 eprintln!("tab '{}': resolve failed: {e}", t.name);
                 "issuekey = ''".to_string()
             });
-            // 2026-07-25 — TreeState only on FixVersionTree kind.
-            // Other kinds (work_*, board_*, or legacy no-kind tabs)
-            // render as flat tables and get `None`.
-            let tree = if t.kind == Some(TabKind::FixVersionTree) {
+            // 2026-08-06 — extend TreeState to work_* + board_*
+            // kinds too. Was: FixVersionTree only. User request:
+            // work_assigned should render like fix_version_tree
+            // (status-grouped headers, per-ticket expand to show
+            // linked PRs). All the tree machinery already exists;
+            // the only reason work tabs were flat was this
+            // allocation. Legacy no-kind tabs keep the flat table.
+            let tree = if matches!(
+                t.kind,
+                Some(TabKind::FixVersionTree)
+                    | Some(TabKind::WorkAssigned)
+                    | Some(TabKind::WorkRecentlyDone)
+                    | Some(TabKind::BoardActiveSprint)
+                    | Some(TabKind::BoardBacklog)
+            ) {
                 Some(TreeState::default())
             } else {
                 None
