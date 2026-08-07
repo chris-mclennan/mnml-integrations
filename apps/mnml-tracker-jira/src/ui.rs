@@ -592,9 +592,35 @@ fn draw_kanban_column(
                 .add_modifier(Modifier::BOLD)
         };
         let summary = issue.fields.summary.as_str();
+        // 2026-08-07 — small colored type badge before the KEY so
+        // Bug/Story/Task read at a glance (Jira Cloud convention).
+        // Nerd Font glyphs (nf-fa-bug / oct-book / md-checkbox-marked
+        // / md-lightning-bolt); the terminal falls back to text if
+        // the font lacks them. Colors match Tattle Jira: red bugs,
+        // green stories, blue tasks, purple epics.
+        let (type_glyph, type_color) = match issue
+            .fields
+            .issuetype
+            .as_ref()
+            .map(|t| t.name.to_ascii_lowercase())
+            .unwrap_or_default()
+            .as_str()
+        {
+            "bug" => ("\u{F188}", Color::Red),
+            "story" => ("\u{F02D}", Color::Green),
+            "task" => ("\u{F0139}", Color::Blue),
+            "epic" => ("\u{F0E7}", Color::Magenta),
+            "sub-task" | "subtask" => ("\u{F149}", Color::DarkGray),
+            "spike" => ("\u{F0EB}", Color::Yellow),
+            _ => ("\u{F02B}", Color::DarkGray),
+        };
         // Card = 2 lines: KEY + wrapped summary
         lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", issue.key), key_style),
+            Span::styled(
+                format!(" {type_glyph} "),
+                Style::default().fg(type_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{} ", issue.key), key_style),
         ]));
         // Wrap summary to inner width - 2 for padding.
         let wrap_w = (inner.width as usize).saturating_sub(2).max(10);
