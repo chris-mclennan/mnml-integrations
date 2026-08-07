@@ -1057,7 +1057,26 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     } else if !app.selection.is_empty() {
         " ↑↓ · Space pick · t move · a assignee · f version · Esc clear · / filter · q "
     } else {
-        " 1-9 · ↑↓ · / filter · Space pick · t move · a assignee · f version · w watch · d details · q "
+        // Board tabs get a kanban-specific hint that surfaces the
+        // team-filter key (T) added 2026-08-06. Other tabs keep the
+        // classic flat/tree table hint.
+        let is_board = app
+            .cfg
+            .tabs
+            .get(app.active_tab)
+            .and_then(|t| t.kind)
+            .is_some_and(|k| {
+                matches!(
+                    k,
+                    crate::config::TabKind::BoardActiveSprint
+                        | crate::config::TabKind::BoardBacklog
+                )
+            });
+        if is_board {
+            " ↑↓ · Space pick · t move · a assignee · f version · T team · w watch · d details · q "
+        } else {
+            " 1-9 · ↑↓ · / filter · Space pick · t move · a assignee · f version · w watch · d details · q "
+        }
     };
     let line = Line::from(vec![
         Span::styled(
@@ -1477,13 +1496,16 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
     let field_label = match picker.kind {
         crate::app::FieldKind::Assignee => "assignee",
         crate::app::FieldKind::FixVersion => "fixVersion",
+        crate::app::FieldKind::Team => "team",
     };
     let target_count = if app.selection.is_empty() {
         1
     } else {
         app.selection.len()
     };
-    let title = if target_count == 1 {
+    let title = if matches!(picker.kind, crate::app::FieldKind::Team) {
+        " filter kanban by team ".to_string()
+    } else if target_count == 1 {
         format!(" set {field_label} ")
     } else {
         format!(" set {field_label} × {target_count} ")
