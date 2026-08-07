@@ -350,15 +350,31 @@ impl Client {
             .await
             .with_context(|| format!("parsing versions for {project_key}"))?;
         versions.retain(|v| !v.archived);
-        // Sort by startDate descending (most recent first), then name.
-        versions.sort_by(
-            |a, b| match (a.start_date.as_deref(), b.start_date.as_deref()) {
+        // 2026-08-06 — unreleased FIRST so release-planning versions
+        // (13.16.0 / 13.17.0 etc) never get pushed off the picker's
+        // visible list by older released versions. Was: sorted purely
+        // by startDate descending — versions with no startDate sank
+        // to the bottom, which is exactly where 13.16.0 / 13.17.0
+        // live (product creates them without a date until the
+        // release cut). User: "why isn't 13.16.0 in the picker."
+        //
+        // Within each bucket (unreleased / released), sort by
+        // startDate desc; missing dates fall back to name desc so
+        // 13.17.0 > 13.16.0 alphabetically when neither has a date.
+        versions.sort_by(|a, b| {
+            let a_unreleased = !a.released;
+            let b_unreleased = !b.released;
+            // Unreleased before released.
+            if a_unreleased != b_unreleased {
+                return b_unreleased.cmp(&a_unreleased);
+            }
+            match (a.start_date.as_deref(), b.start_date.as_deref()) {
                 (Some(x), Some(y)) => y.cmp(x),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            },
-        );
+                (None, None) => b.name.cmp(&a.name),
+            }
+        });
         Ok(versions)
     }
 
