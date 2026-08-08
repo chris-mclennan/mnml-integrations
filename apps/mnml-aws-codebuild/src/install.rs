@@ -27,7 +27,7 @@ const CODEBUILD_SVG: &[u8] = include_bytes!("../assets/icons/codebuild.svg");
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "AWS CodeBuild + logs".into(),
+        label: "CodeBuild Builds".into(),
         description: Some("AWS CodeBuild project + build viewer".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-codebuild".into(),

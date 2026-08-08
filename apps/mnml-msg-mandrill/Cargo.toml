@@ -1,6 +1,6 @@
 [package]
 name = "mnml-msg-mandrill"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Mandrill (Mailchimp Transactional) browser for mnml — terminal TUI for messages, templates, tags, webhooks. Shells out to the Mandrill API (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."

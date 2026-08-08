@@ -61,8 +61,8 @@ fn cloudwatch_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "CloudWatch Logs live tail".into(),
-        description: Some("AWS CloudWatch Logs live tail".into()),
+        label: "CloudWatch Logs".into(),
+        description: Some("AWS CloudWatch Logs".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-cloudwatch-logs".into(),
         category: Some("aws".into()),

@@ -1,6 +1,6 @@
 [package]
 name = "mnml-test-playwright"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Playwright trace.zip viewer for mnml — terminal TUI for the per-action timeline, console messages, errors recorded by Playwright. Runs standalone or as an mnml-hosted pane. The test runner stays in mnml core (editor-integrated)."

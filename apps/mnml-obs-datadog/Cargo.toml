@@ -1,6 +1,6 @@
 [package]
 name = "mnml-obs-datadog"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Datadog observability browser for mnml — terminal TUI for monitors, dashboards, logs, and traces. Shells out to the Datadog API (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."

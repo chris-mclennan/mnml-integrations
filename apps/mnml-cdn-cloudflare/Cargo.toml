@@ -1,6 +1,6 @@
 [package]
 name = "mnml-cdn-cloudflare"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Cloudflare CDN browser for mnml — terminal TUI for zones, DNS records, Workers, Pages, and security events. Shells out to the Cloudflare API v4 (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."

@@ -53,7 +53,7 @@ fn ecr_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "ECR container registry".into(),
+        label: "ECR Images".into(),
         description: Some("ECR images + scan findings + critical/high color cues".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-ecr".into(),

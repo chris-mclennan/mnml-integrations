@@ -1,9 +1,9 @@
 [package]
 name = "mnml-forge-bitbucket"
-version = "0.3.0"
+version = "0.3.2"
 edition = "2024"
 license = "MIT"
-description = "Bitbucket Cloud pull-request viewer for mnml — terminal TUI with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
+description = "Bitbucket Cloud viewer for mnml — pull requests + pipeline runs, workspace-scoped, with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
 homepage = "https://mnml.sh"
 repository = "https://github.com/chris-mclennan/mnml-forge-bitbucket"
 readme = "README.md"

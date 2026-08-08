@@ -14,7 +14,7 @@ const INTEGRATION_ID: &str = "gcal";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Google Calendar — today + week + upcoming meetings + create".into(),
+        label: "Google Calendar".into(),
         description: Some("Google Calendar browse + create".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-gcal".into(),

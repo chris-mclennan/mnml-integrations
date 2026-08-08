@@ -53,8 +53,8 @@ fn ecs_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "ECS clusters + services".into(),
-        description: Some("ECS clusters + services + log-tail handoff to cloudwatch-logs".into()),
+        label: "ECS Services".into(),
+        description: Some("ECS Services + log-tail handoff to cloudwatch-logs".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-ecs".into(),
         category: Some("aws".into()),

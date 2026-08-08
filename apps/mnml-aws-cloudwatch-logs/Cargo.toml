@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-cloudwatch-logs"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "AWS CloudWatch Logs live tail viewer for mnml — terminal TUI with tabbed log groups, per-line severity coloring, filter patterns, console link. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."

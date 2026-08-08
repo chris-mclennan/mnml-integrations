@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-sns"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 description = "AWS SNS topic + subscription browser for mnml — terminal TUI listing SNS topics with confirmed/pending subscription counts, drilling into per-topic subscription detail (endpoint, protocol, status). Pairs with mnml-aws-sqs for the canonical SNS → SQS fan-out pattern. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."

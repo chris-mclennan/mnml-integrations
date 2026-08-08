@@ -15,7 +15,7 @@ const INTEGRATION_ID: &str = "teams";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Microsoft Teams — teams + chats + threads + post".into(),
+        label: "Microsoft Teams".into(),
         description: Some("Microsoft Teams channels + chats + posts".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-teams".into(),

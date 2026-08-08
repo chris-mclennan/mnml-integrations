@@ -1,6 +1,6 @@
 [package]
 name = "mnml-forge-azdevops"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Azure DevOps viewer for mnml — terminal TUI with configurable tabs (per-repo PRs, mine, builds). Runs standalone or as an mnml-hosted pane."

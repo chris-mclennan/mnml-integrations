@@ -27,7 +27,7 @@ pub fn install() -> Result<()> {
 
     let channels = IntegrationSpec {
         id: CHANNELS_ID.into(),
-        label: "Slack Channels".into(),
+        label: "Slack".into(),
         description: Some("Slack channels + DMs + threads + search + post".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-slack".into(),

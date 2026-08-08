@@ -15,7 +15,7 @@ const INTEGRATION_ID: &str = "azure_blob";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Azure Blob Storage browser".into(),
+        label: "Azure Blob Storage".into(),
         description: Some("Azure Blob storage browser".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-fs-azure-blob".into(),

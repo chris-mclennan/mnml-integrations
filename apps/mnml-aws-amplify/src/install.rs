@@ -30,7 +30,7 @@ const AMPLIFY_SVG: &[u8] = include_bytes!("../assets/icons/amplify.svg");
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Amplify apps + deploys".into(),
+        label: "Amplify Deployments".into(),
         description: Some("AWS Amplify app + deploy viewer".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-amplify".into(),

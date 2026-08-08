@@ -34,7 +34,7 @@ pub fn install(keep_predecessors: bool) -> Result<()> {
     }
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Database viewer (postgres, redis, …)".into(),
+        label: "Databases".into(),
         description: Some(
             "Database viewer — SQL playground for Postgres, command playground for Redis, more engines coming.".into(),
         ),

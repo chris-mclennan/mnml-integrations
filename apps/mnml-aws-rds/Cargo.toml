@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-rds"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "AWS RDS database browser for mnml — terminal TUI listing DB instances and Aurora clusters with engine, status, endpoint, and storage detail. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."

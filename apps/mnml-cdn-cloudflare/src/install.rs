@@ -15,7 +15,7 @@ const INTEGRATION_ID: &str = "cloudflare";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Cloudflare — zones + DNS + Workers + Pages".into(),
+        label: "Cloudflare".into(),
         description: Some("Cloudflare zones + DNS + Workers + Pages".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-cdn-cloudflare".into(),

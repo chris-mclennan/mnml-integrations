@@ -1,17 +1,22 @@
 //! `--install` / `--uninstall` subcommands.
 //!
-//! 2026-08-07 — split into three rail chips (PRs / Pipelines /
-//! Branches) matching the `mnml-tracker-jira` pattern. Each chip
-//! drops the user straight into a single-purpose view via
-//! `--only <family>`:
+//! 2026-08-07 — split into rail chips matching the `mnml-tracker-jira`
+//! pattern. Each chip drops the user straight into a single-purpose
+//! view via `--only <family>`:
 //!   - Bitbucket PRs        → `mnml-forge-bitbucket --only prs`
 //!   - Bitbucket Pipelines  → `mnml-forge-bitbucket --only pipelines`
-//!   - Bitbucket Branches   → `mnml-forge-bitbucket --only branches`
+//!
+//! 2026-08-08 — Branches chip removed. User report: the branches
+//! surface was accidentally shipped by an earlier iteration and
+//! doesn't reflect a real supported view. `--uninstall` still tries
+//! to remove `bitbucket_branches` so anyone who installed the
+//! branches chip while it was there gets it cleaned up.
 //!
 //! The pre-split combined "bitbucket" manifest gets removed on
-//! install so it doesn't duplicate as a fourth chip. `--uninstall`
-//! removes all four (three splits + the legacy combined) for
-//! symmetry with a user who's been on both schemes over time.
+//! install so it doesn't duplicate as a third chip. `--uninstall`
+//! removes all four (the two current splits + legacy combined +
+//! retired branches) for symmetry with a user who's been on any of
+//! the historical schemes.
 
 use anyhow::Result;
 use mnml_bridge::{
@@ -37,10 +42,9 @@ struct SplitChip {
     command_title: &'static str,
 }
 
-/// The three split chips. Same glyph (Bitbucket icon, E703) across
-/// all three — the tooltip + fallback letters distinguish them.
-/// Colors: prs=blue (review flow), pipelines=green (build health),
-/// branches=magenta (topology) — matches the roles.
+/// The two split chips. Same glyph (Bitbucket icon, E703) across
+/// both — the tooltip + fallback letters distinguish them.
+/// Colors: prs=blue (review flow), pipelines=green (build health).
 const SPLITS: &[SplitChip] = &[
     SplitChip {
         id: "bitbucket_prs",
@@ -64,18 +68,11 @@ const SPLITS: &[SplitChip] = &[
         command_id: "bitbucket_pipelines.open",
         command_title: "Bitbucket Pipelines: open",
     },
-    SplitChip {
-        id: "bitbucket_branches",
-        description: "Bitbucket: branch tree per repo",
-        fallback: "BB",
-        label: "Bitbucket Branches",
-        color: "magenta",
-        only_flag: "branches",
-        leader_keys: "<leader>ibb",
-        command_id: "bitbucket_branches.open",
-        command_title: "Bitbucket Branches: open",
-    },
 ];
+
+/// Retired chips — install won't create them, but `--uninstall` will
+/// remove them if a user is still on an older install schema.
+const RETIRED_IDS: &[&str] = &["bitbucket_branches"];
 
 pub fn install() -> Result<()> {
     // Remove the legacy combined manifest first so a fresh install
@@ -124,9 +121,14 @@ pub fn install() -> Result<()> {
 
 pub fn uninstall() -> Result<()> {
     let mut any = false;
-    // Legacy first (in case the user is only on the pre-split
-    // shape), then the three splits.
-    for id in [LEGACY_ID].into_iter().chain(SPLITS.iter().map(|c| c.id)) {
+    // Legacy combined first, then the current splits, then any
+    // retired split chips (bitbucket_branches, etc.) so a user on
+    // ANY historical install shape gets a clean sweep.
+    for id in [LEGACY_ID]
+        .into_iter()
+        .chain(SPLITS.iter().map(|c| c.id))
+        .chain(RETIRED_IDS.iter().copied())
+    {
         if uninstall_integration(id)? {
             println!("removed manifest for {id}");
             any = true;

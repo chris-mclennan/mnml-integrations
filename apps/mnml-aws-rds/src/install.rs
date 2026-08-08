@@ -53,7 +53,7 @@ fn rds_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "RDS database browser".into(),
+        label: "RDS Databases".into(),
         description: Some("RDS DB instances + Aurora clusters + log-tail handoff".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-rds".into(),

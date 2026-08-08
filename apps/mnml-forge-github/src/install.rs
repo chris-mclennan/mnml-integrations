@@ -15,8 +15,8 @@ const INTEGRATION_ID: &str = "github";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "GitHub Actions + PRs".into(),
-        description: Some("GitHub Actions + PRs viewer".into()),
+        label: "GitHub".into(),
+        description: Some("GitHub viewer".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-forge-github".into(),
         category: Some("forge".into()),

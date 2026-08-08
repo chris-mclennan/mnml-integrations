@@ -1,6 +1,6 @@
 [package]
 name = "mnml-msg-teams"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Microsoft Teams browse + post for mnml — terminal TUI for teams, channels, chats, threads, search, and posting from the editor. Uses Microsoft Graph (no SDK dep) with the same OAuth device-code flow as Azure CLI."

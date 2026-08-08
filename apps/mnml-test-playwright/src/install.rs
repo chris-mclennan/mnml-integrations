@@ -13,7 +13,7 @@ const INTEGRATION_ID: &str = "playwright";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Playwright traces".into(),
+        label: "Playwright".into(),
         description: Some("Playwright trace viewer".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-test-playwright".into(),

@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-ecr"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "AWS ECR container registry browser for mnml — terminal TUI listing ECR repositories and image tags with size, push date, and scan findings. Pairs with mnml-aws-ecs for the deploy workflow. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."

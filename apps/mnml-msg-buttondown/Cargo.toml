@@ -1,6 +1,6 @@
 [package]
 name = "mnml-msg-buttondown"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Buttondown newsletter browser for mnml — terminal TUI for drafts, sent emails, subscribers, and scheduled sends. Shells out to the Buttondown API (no SDK dep)."

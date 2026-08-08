@@ -15,7 +15,7 @@ const INTEGRATION_ID: &str = "mandrill";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Gmail — inbox + sent + labels + search + compose".into(),
+        label: "Mandrill".into(),
         description: Some("Mailchimp Transactional (Mandrill) send + logs".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-mandrill".into(),

@@ -53,7 +53,7 @@ fn lambda_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Lambda function browser".into(),
+        label: "Lambda Functions".into(),
         description: Some("Lambda functions + env/concurrency/tracing detail + log-tail".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-lambda".into(),

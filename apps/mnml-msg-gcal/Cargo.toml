@@ -1,6 +1,6 @@
 [package]
 name = "mnml-msg-gcal"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "Google Calendar browse + create for mnml — terminal TUI showing today, week ahead, and upcoming meetings, with quick-create. Uses Google Calendar API v3 with loopback OAuth (per-user GCP project required)."

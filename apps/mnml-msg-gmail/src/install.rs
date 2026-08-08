@@ -14,7 +14,7 @@ const INTEGRATION_ID: &str = "gmail";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Gmail — inbox + sent + labels + search + compose".into(),
+        label: "Gmail".into(),
         description: Some("Gmail browse + compose + reply".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-gmail".into(),

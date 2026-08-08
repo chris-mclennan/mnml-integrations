@@ -14,7 +14,7 @@ const INTEGRATION_ID: &str = "docker";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Docker — containers + images + volumes + networks".into(),
+        label: "Docker".into(),
         description: Some("Docker containers + images + volumes + networks".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-virt-docker".into(),

@@ -15,7 +15,7 @@ const INTEGRATION_ID: &str = "s3";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Amazon S3 browser".into(),
+        label: "S3".into(),
         description: Some("Amazon S3 bucket browser".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-fs-s3".into(),

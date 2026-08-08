@@ -13,7 +13,7 @@ const INTEGRATION_ID: &str = "cypress";
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "Cypress results".into(),
+        label: "Cypress".into(),
         description: Some("Cypress mochawesome result viewer".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-test-cypress".into(),

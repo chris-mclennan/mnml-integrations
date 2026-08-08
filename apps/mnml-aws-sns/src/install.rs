@@ -53,7 +53,7 @@ fn sns_svg_path() -> Option<PathBuf> {
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
-        label: "SNS topics + subscriptions".into(),
+        label: "SNS Topics".into(),
         description: Some("SNS topics + subs · L handoff to SQS/Lambda · P publish test".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-sns".into(),

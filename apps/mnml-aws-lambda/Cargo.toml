@@ -1,6 +1,6 @@
 [package]
 name = "mnml-aws-lambda"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 description = "AWS Lambda function browser for mnml — terminal TUI listing functions with runtime/memory/timeout detail, console open, ARN yank, and one-keystroke log tail handoff to mnml-aws-cloudwatch-logs. Runs standalone or as an mnml-hosted pane. Shells out to the `aws` CLI; no SDK dep."
