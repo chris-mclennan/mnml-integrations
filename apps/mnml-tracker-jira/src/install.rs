@@ -37,8 +37,9 @@ struct SplitChip {
     command_title: &'static str,
 }
 
-/// The three split chips. Same glyph (Jira icon, F0411) across
-/// all three — the tooltip + fallback letters distinguish them.
+/// The three split chips. Same glyph (nf-md-jira F0303 — matches
+/// what mnml core's marketplace catalog uses for the tracker entry)
+/// across all three — the tooltip + fallback letters distinguish them.
 /// Colors: work=blue (mine), fix-versions=green (releases),
 /// boards=magenta (planning) — matches the roles.
 const SPLITS: &[SplitChip] = &[
@@ -100,7 +101,7 @@ pub fn install() -> Result<()> {
                 // nf-md-jira glyph everywhere — the three chips
                 // are one family; the label / fallback letters
                 // split them apart.
-                glyph: "\u{F0411}".into(),
+                glyph: "\u{F0303}".into(),
                 fallback: chip.fallback.into(),
                 color: chip.color.into(),
                 enabled: true,
