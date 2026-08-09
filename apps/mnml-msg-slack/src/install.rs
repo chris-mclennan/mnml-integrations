@@ -7,35 +7,66 @@
 //! chips (mirroring the Bitbucket PRs / Pipelines split):
 //!
 //!   - `slack_channels`   — `mnml-msg-slack --only channels`
-//!   - `slack_canvases`   — `mnml-msg-slack --only canvases`
+//!   - `slack_boards`     — `mnml-msg-slack --only canvases`
 //!
-//! The legacy `slack` id is uninstalled on install so users don't
-//! see three chips. Uninstall wipes all three.
+//! 2026-08-09 (0.1.2) — three fixes driven by mnml's sibling glyph
+//! stability audit (`scratchpad/sibling-audit-2026-08-09.md`) +
+//! user morning direction:
+//!   * Glyph swap: F117F (channels) + F0F6 (canvases) → F07D2
+//!     mdi-slack on BOTH. F117F was accidentally routing to a random
+//!     Symbols Nerd Font Mono glyph; F0F6 sat OUTSIDE ghostty's
+//!     `font-codepoint-map` ranges entirely → guaranteed tofu.
+//!     F07D2 IS the canonical Slack logo AND falls in the routed
+//!     F0001-F1AFF range, so it renders reliably.
+//!   * Colors: channels → `white`, boards → `yellow`. Distinguishes
+//!     the two chips when the glyph is identical.
+//!   * `slack_canvases` → `slack_boards` (id + label). Added to the
+//!     PREDECESSOR_IDS uninstall cleanup so existing users get the
+//!     old `slack_canvases.toml` manifest removed on next `--install`,
+//!     ending up with just the new `slack_boards.toml`.
+//!
+//! `PREDECESSOR_IDS` uninstalls run BEFORE the new manifest writes.
 
 use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
 
-const LEGACY_ID: &str = "slack";
 const CHANNELS_ID: &str = "slack_channels";
-const CANVASES_ID: &str = "slack_canvases";
+const BOARDS_ID: &str = "slack_boards";
+
+/// Ids of PRIOR manifest names this sibling has written but no
+/// longer wants. Every entry is unconditionally uninstalled on each
+/// `--install` so an upgrade doesn't leave orphan chips in the rail.
+///
+/// - `slack` (pre-0.1) — the single-chip form before the
+///   channels/canvases split (2026-07-22).
+/// - `slack_canvases` (pre-0.1.2) — renamed to `slack_boards` on
+///   2026-08-09 to match Slack's own product-marketing name.
+const PREDECESSOR_IDS: &[&str] = &["slack", "slack_canvases"];
 
 pub fn install() -> Result<()> {
-    // Drop the legacy single-chip manifest if it's still around.
-    let _ = uninstall_integration(LEGACY_ID);
+    // Drop every legacy manifest first so we don't end up with
+    // 3+ chips after upgrading.
+    for pid in PREDECESSOR_IDS {
+        let _ = uninstall_integration(pid);
+    }
 
     let channels = IntegrationSpec {
         id: CHANNELS_ID.into(),
-        label: "Slack".into(),
+        label: "Slack Channels".into(),
         description: Some("Slack channels + DMs + threads + search + post".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
         chip: Some(ChipSpec {
-            glyph: "\u{F117F}".into(),
+            // F07D2 = mdi-slack (Material Design Icons). Ghostty's
+            // font-codepoint-map routes F0001-F1AFF to
+            // `Symbols Nerd Font Mono`, so this codepoint renders
+            // as the canonical Slack logo reliably.
+            glyph: "\u{F07D2}".into(),
             fallback: "Sk".into(),
-            color: "magenta".into(),
+            color: "white".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(CHANNELS_ID.into()),
@@ -53,37 +84,45 @@ pub fn install() -> Result<()> {
     let path = install_integration(&channels)?;
     println!("wrote manifest: {}", path.display());
 
-    let canvases = IntegrationSpec {
-        id: CANVASES_ID.into(),
-        label: "Slack Canvases".into(),
-        description: Some("Slack Canvases (v0.1 stub — files.list?type=canvas)".into()),
+    let boards = IntegrationSpec {
+        id: BOARDS_ID.into(),
+        label: "Slack Boards".into(),
+        description: Some("Slack Boards (v0.1 stub — files.list?type=canvas)".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
         chip: Some(ChipSpec {
-            glyph: "\u{F0F6}".into(),
-            fallback: "SC".into(),
-            color: "cyan".into(),
+            // Same F07D2 mdi-slack outline as channels — the CHIP
+            // COLOR is what tells the two apart in the rail. Sharing
+            // the outline matches the "one bundled crate → many
+            // chips, one shared glyph, per-chip color" pattern the
+            // stability audit proposes.
+            glyph: "\u{F07D2}".into(),
+            fallback: "SB".into(),
+            color: "yellow".into(),
             // 2026-07-22 — enabled by default so users see BOTH
-            // chips after --install; the sibling's canvases view is
+            // chips after --install; the sibling's boards view is
             // still a v0.1 stub but the chip visibility is the
-            // affordance we want ("hey, Canvases exists — it's
+            // affordance we want ("hey, Boards exists — it's
             // coming"). Users can right-click → Remove to hide.
             enabled: true,
             in_palette_bar: false,
-            badge_key: Some(CANVASES_ID.into()),
+            badge_key: Some(BOARDS_ID.into()),
             ..Default::default()
         }),
         commands: vec![CommandSpec {
-            id: "slack.open_canvases".into(),
-            title: "Slack: open canvases".into(),
+            id: "slack.open_boards".into(),
+            title: "Slack: open boards".into(),
             group: Some("integrations".into()),
             keys: vec![],
+            // Argument name stays `canvases` — that's the Slack
+            // API surface name. Only the mnml-facing chip label
+            // and manifest id changed.
             run: ":term mnml-msg-slack --only canvases".into(),
         }],
         ..Default::default()
     };
-    let path = install_integration(&canvases)?;
+    let path = install_integration(&boards)?;
     println!("wrote manifest: {}", path.display());
 
     println!("run mnml + `integrations.refresh` (or restart) to pick up the rail chips");
@@ -92,7 +131,7 @@ pub fn install() -> Result<()> {
 
 pub fn uninstall() -> Result<()> {
     let mut removed_any = false;
-    for id in [LEGACY_ID, CHANNELS_ID, CANVASES_ID] {
+    for id in PREDECESSOR_IDS.iter().chain([&CHANNELS_ID, &BOARDS_ID]) {
         if uninstall_integration(id)? {
             println!("removed manifest for {id}");
             removed_any = true;

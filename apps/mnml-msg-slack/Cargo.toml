@@ -1,6 +1,6 @@
 [package]
 name = "mnml-msg-slack"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 description = "Slack browse + post for mnml — terminal TUI for channels, DMs, threads, search, and posting from the editor. Shells out to the Slack Web API (no SDK dep). Runs standalone today; v0.2 will support mnml-hosted pane mode."
