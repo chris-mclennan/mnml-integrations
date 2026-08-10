@@ -16,8 +16,13 @@
 //!     mdi-slack on BOTH. F117F was accidentally routing to a random
 //!     Symbols Nerd Font Mono glyph; F0F6 sat OUTSIDE ghostty's
 //!     `font-codepoint-map` ranges entirely → guaranteed tofu.
-//!     F07D2 IS the canonical Slack logo AND falls in the routed
-//!     F0001-F1AFF range, so it renders reliably.
+//!
+//! 2026-08-09 (0.1.3) — F07D2 was ALSO wrong: on current Nerd Font
+//! versions that codepoint renders as an unrelated (house-shaped)
+//! icon, not slack. Bumped to F03EF (also in the routed
+//! F0001-F1AFF range) which is the codepoint mnml's own
+//! `src/icon_catalog.rs` uses for slack and which renders as the
+//! Slack logo on the Nerd Font builds the audit tested.
 //!   * Colors: channels → `white`, boards → `yellow`. Distinguishes
 //!     the two chips when the glyph is identical.
 //!   * `slack_canvases` → `slack_boards` (id + label). Added to the
@@ -60,11 +65,14 @@ pub fn install() -> Result<()> {
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
         chip: Some(ChipSpec {
-            // F07D2 = mdi-slack (Material Design Icons). Ghostty's
-            // font-codepoint-map routes F0001-F1AFF to
+            // F03EF = slack in mnml's `src/icon_catalog.rs`.
+            // Ghostty's font-codepoint-map routes F0001-F1AFF to
             // `Symbols Nerd Font Mono`, so this codepoint renders
-            // as the canonical Slack logo reliably.
-            glyph: "\u{F07D2}".into(),
+            // as the canonical Slack logo. (v0.1.2 shipped F07D2
+            // on the assumption it was mdi-slack; on current
+            // Nerd Font versions F07D2 renders as an unrelated
+            // house-shaped glyph.)
+            glyph: "\u{F03EF}".into(),
             fallback: "Sk".into(),
             color: "white".into(),
             enabled: true,
@@ -92,12 +100,12 @@ pub fn install() -> Result<()> {
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
         chip: Some(ChipSpec {
-            // Same F07D2 mdi-slack outline as channels — the CHIP
+            // Same F03EF slack outline as channels — the CHIP
             // COLOR is what tells the two apart in the rail. Sharing
             // the outline matches the "one bundled crate → many
             // chips, one shared glyph, per-chip color" pattern the
             // stability audit proposes.
-            glyph: "\u{F07D2}".into(),
+            glyph: "\u{F03EF}".into(),
             fallback: "SB".into(),
             color: "yellow".into(),
             // 2026-07-22 — enabled by default so users see BOTH
