@@ -34,7 +34,7 @@
 
 use anyhow::Result;
 use mnml_bridge::{
-    ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
+    AuthField, ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
 
 const CHANNELS_ID: &str = "slack_channels";
@@ -49,6 +49,44 @@ const BOARDS_ID: &str = "slack_boards";
 /// - `slack_canvases` (pre-0.1.2) — renamed to `slack_boards` on
 ///   2026-08-09 to match Slack's own product-marketing name.
 const PREDECESSOR_IDS: &[&str] = &["slack", "slack_canvases"];
+
+/// Shared auth-field schema for both `slack_channels` + `slack_boards`.
+/// Both chips run the same binary + hit the same Slack Web API, so
+/// they need the same token; using one shared `auth_fields()` helper
+/// makes that explicit + writes identical `[[auth]]` blocks to both
+/// manifests. mnml's per-integration Settings pane reads these
+/// declarations + renders a form; save writes user answers under
+/// `[auth_values]` in the same TOML.
+///
+/// Added in 0.1.3 (2026-08-11) — requires `mnml-bridge = "0.7"`.
+fn auth_fields() -> Vec<AuthField> {
+    vec![
+        AuthField {
+            key: "bot_token".into(),
+            label: "Slack bot token".into(),
+            kind: "secret".into(),
+            env_fallback: Some("SLACK_BOT_TOKEN".into()),
+            help_url: Some("https://api.slack.com/apps".into()),
+            help: Some(
+                "Create a Slack app + install to workspace + copy the Bot User OAuth Token."
+                    .into(),
+            ),
+            required: true,
+        },
+        AuthField {
+            key: "team_id".into(),
+            label: "Team ID (optional)".into(),
+            kind: "text".into(),
+            env_fallback: None,
+            help_url: None,
+            help: Some(
+                "Optional. Restricts channel/board listing to this workspace. Blank = all workspaces the token can see."
+                    .into(),
+            ),
+            required: false,
+        },
+    ]
+}
 
 pub fn install() -> Result<()> {
     // Drop every legacy manifest first so we don't end up with
@@ -87,6 +125,7 @@ pub fn install() -> Result<()> {
             keys: vec!["<leader>iS".into()],
             run: ":term mnml-msg-slack --only channels".into(),
         }],
+        auth: auth_fields(),
         ..Default::default()
     };
     let path = install_integration(&channels)?;
@@ -128,6 +167,7 @@ pub fn install() -> Result<()> {
             // and manifest id changed.
             run: ":term mnml-msg-slack --only canvases".into(),
         }],
+        auth: auth_fields(),
         ..Default::default()
     };
     let path = install_integration(&boards)?;
