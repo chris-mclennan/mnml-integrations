@@ -150,18 +150,17 @@ fn auth_fields() -> Vec<AuthField> {
             required: true,
             ..Default::default()
         },
-        AuthField {
-            key: "bitbucket_access_token".into(),
-            label: "Bitbucket access token (optional)".into(),
-            kind: "secret".into(),
-            env_fallback: Some("BITBUCKET_ACCESS_TOKEN".into()),
-            help: Some(
-                "Optional. Fix Versions view uses this to fetch the PRs linked from each Jira ticket. Skip if you don't need PR correlation."
-                    .into(),
-            ),
-            required: false,
-            ..Default::default()
-        },
+        // NOTE: The Fix Versions view correlates Jira tickets with
+        // Bitbucket PRs via `src/bitbucket.rs`, which reads
+        // `$BITBUCKET_ACCESS_TOKEN` from env. That's intentionally
+        // NOT declared here: users who install mnml-forge-bitbucket
+        // configure Bitbucket auth there once, and asking for a
+        // second BB token in the Jira pane would be duplicative.
+        // Users who need PR correlation and don't have the BB
+        // sibling installed can still set the env var by hand. A
+        // cleaner "cross-integration env sharing" (mnml core injects
+        // env from OTHER integrations' [auth_values] at spawn) is
+        // queued as a follow-up.
     ]
 }
 
