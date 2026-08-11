@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use mnml_bridge::{
-    ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
+    AuthField, ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
 
 const LEGACY_ID: &str = "jira";
@@ -90,7 +90,83 @@ pub fn install() -> Result<()> {
     }
 
     for chip in SPLITS {
-        let spec = IntegrationSpec {
+        let spec = build_spec(chip);
+        let path = install_integration(&spec)?;
+        println!("wrote manifest: {}", path.display());
+    }
+    println!("\nrun mnml + `integrations.refresh` (or restart) to pick up the new chips");
+    println!("chords: <leader>ijw / ijv / ijb  ·  right-click chip for options");
+    Ok(())
+}
+
+/// Auth-field schema shared across all three chips (Work / Fix Versions /
+/// Boards). All three run the same binary + hit the same Jira Cloud API,
+/// so they share one auth surface: site URL + email + API token. Also
+/// carries `bitbucket_access_token` because jira_fix_versions correlates
+/// tickets with linked BB PRs (see `src/bitbucket.rs`).
+///
+/// mnml reads these declarations to (a) render the per-integration
+/// Settings pane form, (b) intercept a chip click with missing required
+/// auth and open the pane, (c) inject env vars at Pty spawn from
+/// `[auth_values]` via `env_fallback` so users who type a token into
+/// the pane don't have to also edit their shell rc file.
+///
+/// Added in 0.2.6 (2026-08-11); requires `mnml-bridge = "0.7"`.
+fn auth_fields() -> Vec<AuthField> {
+    vec![
+        AuthField {
+            key: "site_url".into(),
+            label: "Jira site URL".into(),
+            kind: "url".into(),
+            env_fallback: Some("JIRA_URL".into()),
+            help: Some(
+                "Your Atlassian instance, like https://mycompany.atlassian.net".into(),
+            ),
+            required: true,
+            ..Default::default()
+        },
+        AuthField {
+            key: "email".into(),
+            label: "Atlassian account email".into(),
+            kind: "email".into(),
+            env_fallback: Some("JIRA_EMAIL".into()),
+            help: Some(
+                "The email you use to sign in to Jira. Pairs with the API token for HTTP Basic auth."
+                    .into(),
+            ),
+            required: true,
+            ..Default::default()
+        },
+        AuthField {
+            key: "api_token".into(),
+            label: "Jira API token".into(),
+            kind: "secret".into(),
+            env_fallback: Some("JIRA_API_TOKEN".into()),
+            help_url: Some("https://id.atlassian.com/manage-profile/security/api-tokens".into()),
+            help: Some(
+                "Create at id.atlassian.com → Security → API tokens. This is different from your Atlassian account password."
+                    .into(),
+            ),
+            required: true,
+            ..Default::default()
+        },
+        AuthField {
+            key: "bitbucket_access_token".into(),
+            label: "Bitbucket access token (optional)".into(),
+            kind: "secret".into(),
+            env_fallback: Some("BITBUCKET_ACCESS_TOKEN".into()),
+            help: Some(
+                "Optional. Fix Versions view uses this to fetch the PRs linked from each Jira ticket. Skip if you don't need PR correlation."
+                    .into(),
+            ),
+            required: false,
+            ..Default::default()
+        },
+    ]
+}
+
+fn build_spec(chip: &SplitChip) -> IntegrationSpec {
+    IntegrationSpec {
             id: chip.id.into(),
             label: chip.label.into(),
             description: Some(chip.description.into()),
@@ -116,14 +192,9 @@ pub fn install() -> Result<()> {
                 keys: vec![chip.leader_keys.into()],
                 run: format!(":term mnml-tracker-jira --only {}", chip.only_flag),
             }],
+            auth: auth_fields(),
             ..Default::default()
-        };
-        let path = install_integration(&spec)?;
-        println!("wrote manifest: {}", path.display());
     }
-    println!("\nrun mnml + `integrations.refresh` (or restart) to pick up the new chips");
-    println!("chords: <leader>ijw / ijv / ijb  ·  right-click chip for options");
-    Ok(())
 }
 
 pub fn uninstall() -> Result<()> {

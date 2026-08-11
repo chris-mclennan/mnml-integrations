@@ -20,7 +20,7 @@
 
 use anyhow::Result;
 use mnml_bridge::{
-    ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
+    AuthField, ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
 
 const LEGACY_ID: &str = "bitbucket";
@@ -74,6 +74,51 @@ const SPLITS: &[SplitChip] = &[
 /// remove them if a user is still on an older install schema.
 const RETIRED_IDS: &[&str] = &["bitbucket_branches"];
 
+/// Auth fields written into each chip's manifest. mnml reads these
+/// and (a) surfaces the form via right-click → "Configure…",
+/// (b) intercepts a chip click with required-missing auth to open
+/// that form, (c) injects the env vars from `[auth_values]` at
+/// Pty spawn time using the `env_fallback` names — so a user who
+/// pastes a token into the pane sees it flow through to the
+/// sibling as `$BITBUCKET_APP_PASSWORD` without editing their
+/// shell rc file. Env-var users are unaffected (skip-if-empty
+/// leaves their shell export in place).
+///
+/// Two chips (PRs + Pipelines) share the same binary + auth path,
+/// so both manifests carry the same block. Added in 0.1.4
+/// (2026-08-11); requires `mnml-bridge = "0.7"`.
+fn auth_fields() -> Vec<AuthField> {
+    vec![
+        AuthField {
+            key: "app_password".into(),
+            label: "Bitbucket app password".into(),
+            kind: "secret".into(),
+            env_fallback: Some("BITBUCKET_APP_PASSWORD".into()),
+            help_url: Some(
+                "https://bitbucket.org/account/settings/app-passwords/"
+                    .into(),
+            ),
+            help: Some(
+                "Create an app password with the Repositories:Read + Pull requests:Read + Pipelines:Read scopes."
+                    .into(),
+            ),
+            required: true,
+        },
+        AuthField {
+            key: "username".into(),
+            label: "Bitbucket username (optional)".into(),
+            kind: "text".into(),
+            env_fallback: Some("BITBUCKET_USERNAME".into()),
+            help: Some(
+                "Optional. Only needed if your app password requires Basic auth (username + password); leave blank for token-only auth."
+                    .into(),
+            ),
+            required: false,
+            ..Default::default()
+        },
+    ]
+}
+
 pub fn install() -> Result<()> {
     // Remove the legacy combined manifest first so a fresh install
     // doesn't leave four chips in the rail. Silent if it's already
@@ -109,6 +154,7 @@ pub fn install() -> Result<()> {
                 keys: vec![chip.leader_keys.into()],
                 run: format!(":term mnml-forge-bitbucket --only {}", chip.only_flag),
             }],
+            auth: auth_fields(),
             ..Default::default()
         };
         let path = install_integration(&spec)?;
