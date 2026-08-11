@@ -110,7 +110,7 @@ pub fn install() -> Result<()> {
             // on the assumption it was mdi-slack; on current
             // Nerd Font versions F07D2 renders as an unrelated
             // house-shaped glyph.)
-            glyph: "\u{F03EF}".into(),
+            glyph: "\u{F04B1}".into(),
             fallback: "Sk".into(),
             color: "white".into(),
             enabled: true,
@@ -144,7 +144,7 @@ pub fn install() -> Result<()> {
             // the outline matches the "one bundled crate → many
             // chips, one shared glyph, per-chip color" pattern the
             // stability audit proposes.
-            glyph: "\u{F03EF}".into(),
+            glyph: "\u{F04B1}".into(),
             fallback: "SB".into(),
             color: "yellow".into(),
             // 2026-07-22 — enabled by default so users see BOTH
