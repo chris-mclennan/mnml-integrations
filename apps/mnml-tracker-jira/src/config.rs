@@ -391,6 +391,14 @@ pub enum Column {
     Updated,
     FixVersion,
     Summary,
+    /// Task #890 — inline hotkey-hint column. Renders a compact
+    /// dim string `t a f w d .` reminding the user of the available
+    /// per-row actions (t=transition, a=assignee, f=fixVersion,
+    /// w=watch, d=details, .=action-picker). Purely visual — no
+    /// click routing yet (v2); the point is discoverability, since
+    /// R5 tester flagged that Work-pane actions were entirely
+    /// keyboard-driven with no visible surface.
+    Actions,
 }
 
 impl Column {
@@ -402,6 +410,7 @@ impl Column {
             Column::Assignee,
             Column::Updated,
             Column::Summary,
+            Column::Actions,
         ]
     }
 
@@ -417,6 +426,7 @@ impl Column {
             Column::Updated => "UPDATED",
             Column::FixVersion => "FIXVERSION",
             Column::Summary => "SUMMARY",
+            Column::Actions => "ACTIONS",
         }
     }
 
@@ -433,6 +443,9 @@ impl Column {
             Column::Updated => Some(12),
             Column::FixVersion => Some(14),
             Column::Summary => None,
+            // 11 cells covers the compact `t a f w d .` cluster
+            // (`t a f w d .` = 11 with spaces).
+            Column::Actions => Some(11),
         }
     }
 }

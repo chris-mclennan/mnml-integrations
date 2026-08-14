@@ -2167,6 +2167,8 @@ fn cell_for_column(issue: &crate::jira::Issue, column: crate::config::Column) ->
             Cell::from(s)
         }
         Column::Summary => Cell::from(f.summary.clone()),
+        // Task #890 — hotkey-hint cluster, dim comment fg.
+        Column::Actions => Cell::from("t a f w d .").style(Style::default().fg(Color::DarkGray)),
     }
 }
 
