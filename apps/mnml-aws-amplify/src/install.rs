@@ -5,19 +5,25 @@
 //! that shipped in mnml core through 0.1.4; from 0.2.0 onwards
 //! the sibling owns its own registration.
 //!
-//! 2026-08-04 — updated to mnml-bridge 0.5 `glyph_svg_bytes` API.
-//! The SVG is embedded in this binary via `include_bytes!`, so
-//! `--install` never needs to look up the SVG on disk (the old
-//! path-based lookup failed on `cargo install` where the assets/
-//! dir didn't ship). Bridge writes bytes to
-//! `~/.cache/mnml/pending-glyphs/amplify.svg`; mnml bakes at next
-//! startup + deletes the pending file — no permanent glyph SVG
-//! anywhere under `~/.config/mnml/`.
+//! 2026-08-16 — chip defaults fixed. Two changes:
+//!   * `glyph_codepoint`: `F1B00` → `F1C0E`. F1B00 was colliding
+//!     with something else in users' local MnmlSymbols.ttf bakes
+//!     (the amplify chip rendered as an unrelated icon). F1C0E is
+//!     the codepoint mnml-core's marketplace `catalog_lookup` uses
+//!     for `mnml-aws-amplify` — moving here so the Installed chip
+//!     matches what the Marketplace tab preview shows.
+//!   * `color`: `purple` → `red` (#DD344C — the Security/Front-End
+//!     AWS brand color that mnml-core's marketplace catalog
+//!     assigns to Amplify).
 //!
-//! `glyph_codepoint = "F1B00"` pins the SVG at the same codepoint
-//! mnml core used to bake it at (see `src/icon_catalog.rs` in mnml),
-//! so users who already have MnmlSymbols.ttf on their system don't
-//! see the amplify chip change position when they upgrade.
+//! `glyph_svg_bytes` still ships the sibling's own `amplify.svg` —
+//! per mnml-core Stage 2 (2026-08-01 in `src/glyph_builder.rs`),
+//! the built-in font (`BUILTIN_GLYPHS`) carries no AWS entries;
+//! each `mnml-aws-*` sibling owns its SVG and mnml bakes it locally
+//! at the pinned codepoint via `integrations.bake_integration_glyphs`.
+//! Users on a fresh install without a prior bake at F1C0E rely on
+//! the sibling shipping the bytes — dropping them would tofu the
+//! chip on every fresh install.
 
 use anyhow::Result;
 use mnml_bridge::{
@@ -36,25 +42,20 @@ pub fn install() -> Result<()> {
         binary: "mnml-aws-amplify".into(),
         category: Some("aws".into()),
         chip: Some(ChipSpec {
-            // Empty glyph → mnml fills it from the assigned
-            // codepoint once the SVG is discovered. Leaving it
-            // empty (not the old \u{F087D}) means the sibling
-            // doesn't have to pick a codepoint from the mnml core
-            // PUA layout — the SDK handles that.
+            // Empty glyph → mnml fills it from the codepoint below
+            // via merge_integration_manifests's three-tier resolver.
             glyph: String::new(),
             fallback: "Am".into(),
-            color: "purple".into(),
+            color: "red".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
-            // 2026-08-04 — mnml-bridge 0.5. Bytes are embedded in
-            // the binary; bridge writes them to
-            // `~/.cache/mnml/pending-glyphs/` for mnml to bake +
-            // delete on next startup.
+            // Bytes embedded in the binary; mnml-bridge writes them
+            // to `~/.cache/mnml/pending-glyphs/` for mnml to bake
+            // into the user's local MnmlSymbols.ttf at F1C0E on
+            // next startup, then deletes the pending file.
             glyph_svg_bytes: Some(AMPLIFY_SVG.to_vec()),
-            // Pin to the codepoint mnml core used to bake amplify
-            // at, so upgrading users don't see the chip move.
-            glyph_codepoint: Some("F1B00".into()),
+            glyph_codepoint: Some("F1C0E".into()),
         }),
         commands: vec![CommandSpec {
             id: "amplify.open".into(),
