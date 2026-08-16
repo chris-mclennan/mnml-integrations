@@ -5,21 +5,25 @@
 //! that shipped in mnml core through 0.1.4; from 0.2.0 onwards
 //! the sibling owns its own registration.
 //!
-//! 2026-08-16 — chip defaults reconciled with mnml core's AWS
-//! SVG family (F1C03–F1C0E). Prior versions shipped the sibling's
-//! own `amplify.svg` and pinned `F1B00`, competing with the mnml-
-//! core bake at `F1C0E` for the same integration — the F1B00 slot
-//! ended up baked with an inconsistent glyph (users saw it render
-//! as an unrelated icon) and the color drifted from AWS brand
-//! purple to the family-correct AWS red. The sibling now:
-//!   * declares `glyph_codepoint = "F1C0E"` so the chip resolves
-//!     to the mnml-core-baked AWS Amplify glyph;
-//!   * uses `color = "red"` (#DD344C — the Security/Front-End AWS
-//!     brand color that mnml core's marketplace catalog assigns
-//!     to this integration);
-//!   * no longer ships `glyph_svg_bytes` — mnml-core already owns
-//!     the F1C0E bake for the whole `mnml-aws-*` family, so a
-//!     second sibling-shipped SVG would just overwrite it.
+//! 2026-08-16 — chip defaults fixed. Two changes:
+//!   * `glyph_codepoint`: `F1B00` → `F1C0E`. F1B00 was colliding
+//!     with something else in users' local MnmlSymbols.ttf bakes
+//!     (the amplify chip rendered as an unrelated icon). F1C0E is
+//!     the codepoint mnml-core's marketplace `catalog_lookup` uses
+//!     for `mnml-aws-amplify` — moving here so the Installed chip
+//!     matches what the Marketplace tab preview shows.
+//!   * `color`: `purple` → `red` (#DD344C — the Security/Front-End
+//!     AWS brand color that mnml-core's marketplace catalog
+//!     assigns to Amplify).
+//!
+//! `glyph_svg_bytes` still ships the sibling's own `amplify.svg` —
+//! per mnml-core Stage 2 (2026-08-01 in `src/glyph_builder.rs`),
+//! the built-in font (`BUILTIN_GLYPHS`) carries no AWS entries;
+//! each `mnml-aws-*` sibling owns its SVG and mnml bakes it locally
+//! at the pinned codepoint via `integrations.bake_integration_glyphs`.
+//! Users on a fresh install without a prior bake at F1C0E rely on
+//! the sibling shipping the bytes — dropping them would tofu the
+//! chip on every fresh install.
 
 use anyhow::Result;
 use mnml_bridge::{
@@ -27,6 +31,7 @@ use mnml_bridge::{
 };
 
 const INTEGRATION_ID: &str = "amplify";
+const AMPLIFY_SVG: &[u8] = include_bytes!("../assets/icons/amplify.svg");
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
@@ -45,12 +50,11 @@ pub fn install() -> Result<()> {
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
-            // mnml-core owns the F1C0E bake for the AWS Amplify
-            // glyph (part of the AWS SVG family baked from
-            // ~/Downloads/mnml-aws-icon-preview-inverted at
-            // F1C03–F1C0E). Sibling only pins the codepoint;
-            // no sibling-shipped SVG.
-            glyph_svg_bytes: None,
+            // Bytes embedded in the binary; mnml-bridge writes them
+            // to `~/.cache/mnml/pending-glyphs/` for mnml to bake
+            // into the user's local MnmlSymbols.ttf at F1C0E on
+            // next startup, then deletes the pending file.
+            glyph_svg_bytes: Some(AMPLIFY_SVG.to_vec()),
             glyph_codepoint: Some("F1C0E".into()),
         }),
         commands: vec![CommandSpec {
