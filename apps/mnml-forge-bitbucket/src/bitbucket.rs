@@ -258,6 +258,14 @@ impl Client {
         let predicate = bbql_predicate.to_string();
         let state = state.map(str::to_string);
         let concurrency = 8usize;
+        // Task #956 (2026-08-17) — swap `list_repo_prs` for the
+        // 429-aware `list_repo_prs_retry` so `mode = "mine"` /
+        // "reviewing" tabs honor Retry-After the same way the
+        // `workspace_open_prs` / `workspace_merged_prs` tabs already
+        // do (that sweep landed in 0.3.4). Still uses
+        // `unwrap_or_default` — the caller's `Vec<PullRequest>` shape
+        // can't carry per-repo error metadata; a follow-up can widen
+        // the return type if these tabs need visible error state.
         let batches: Vec<Vec<PullRequest>> = stream::iter(repos.into_iter().map(|slug| {
             let ws = workspace.clone();
             let q = predicate.clone();
@@ -265,7 +273,7 @@ impl Client {
             let client = self.clone();
             async move {
                 client
-                    .list_repo_prs(&ws, &slug, st.as_deref(), Some(&q), per_page)
+                    .list_repo_prs_retry(&ws, &slug, st.as_deref(), Some(&q), per_page)
                     .await
                     .unwrap_or_default()
             }
