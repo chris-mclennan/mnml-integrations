@@ -669,13 +669,39 @@ fn draw_repo_pr_tree(
                     Cell::from(format!("#{} · {}", fb.id, fb.title)).style(dim),
                 )
             } else {
+                // 2026-08-17 — every collapsed row shows at least one
+                // PR inline (user report: "each one should have at
+                // least one in it"). Prior shape was just "N PRs" in
+                // STATE with empty author/branch/date/title cells,
+                // making rows outside the 24-hour recency filter look
+                // dead. Now the header preview follows the same
+                // per-repo shape as the empty+last_merged fallback,
+                // sourced from `repo.prs[0]` (the top of the fetch —
+                // Bitbucket returns updated_on-descending). Count
+                // stays in STATE so callers still see the total.
+                let preview = repo.prs.first();
+                let author = preview
+                    .and_then(|p| p.author.as_ref())
+                    .map(|u| u.display_name.clone())
+                    .unwrap_or_default();
+                let branch = preview
+                    .and_then(|p| p.source.as_ref())
+                    .and_then(|b| b.branch.as_ref())
+                    .map(|b| b.name.clone())
+                    .unwrap_or_default();
+                let date = preview
+                    .map(|p| p.updated_date())
+                    .unwrap_or_default();
+                let title = preview
+                    .map(|p| format!("#{} · {}", p.id, p.title))
+                    .unwrap_or_default();
+                let dim = Style::default().fg(Color::DarkGray);
                 (
-                    Cell::from(format!("{} PRs", repo.prs.len()))
-                        .style(Style::default().fg(Color::DarkGray)),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
+                    Cell::from(format!("{} PRs", repo.prs.len())).style(dim),
+                    Cell::from(author).style(dim),
+                    Cell::from(branch).style(dim),
+                    Cell::from(date).style(dim),
+                    Cell::from(title).style(dim),
                 )
             };
         // 2026-07-20 — leading " " on col 0 gives the triangles a
