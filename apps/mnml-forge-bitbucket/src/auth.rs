@@ -97,10 +97,7 @@ mod tests {
 
     #[test]
     fn strip_email_prefix_splits_on_colon() {
-        assert_eq!(
-            strip_email_prefix("me@example.com:ATATT-abc"),
-            "ATATT-abc"
-        );
+        assert_eq!(strip_email_prefix("me@example.com:ATATT-abc"), "ATATT-abc");
     }
 
     #[test]

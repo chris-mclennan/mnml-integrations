@@ -132,11 +132,7 @@ fn curate_branches(
             if is_eternal_major(&b.name) {
                 return true;
             }
-            match b
-                .last_activity_on
-                .as_deref()
-                .and_then(days_since)
-            {
+            match b.last_activity_on.as_deref().and_then(days_since) {
                 Some(days) => days <= STALE_AFTER_DAYS,
                 None => true,
             }
@@ -145,10 +141,8 @@ fn curate_branches(
     // Group each major branch by its family rank so we can cap
     // prefix-families (release/*, hotfix/*) without touching the
     // one-and-only main / master / develop / etc rows.
-    let mut buckets: std::collections::BTreeMap<
-        usize,
-        Vec<crate::bitbucket::BranchWithPipeline>,
-    > = std::collections::BTreeMap::new();
+    let mut buckets: std::collections::BTreeMap<usize, Vec<crate::bitbucket::BranchWithPipeline>> =
+        std::collections::BTreeMap::new();
     let mut features: Vec<crate::bitbucket::BranchWithPipeline> = Vec::new();
     for b in branches {
         match major_rank(&b.name) {
@@ -163,8 +157,14 @@ fn curate_branches(
     let mut out: Vec<crate::bitbucket::BranchWithPipeline> = Vec::new();
     for (_rank, mut group) in buckets {
         group.sort_by(|a, b| {
-            let ka = a.latest_pipeline.as_ref().and_then(|p| p.created_on.clone());
-            let kb = b.latest_pipeline.as_ref().and_then(|p| p.created_on.clone());
+            let ka = a
+                .latest_pipeline
+                .as_ref()
+                .and_then(|p| p.created_on.clone());
+            let kb = b
+                .latest_pipeline
+                .as_ref()
+                .and_then(|p| p.created_on.clone());
             kb.cmp(&ka)
         });
         group.truncate(MAX_PER_FAMILY);
@@ -172,13 +172,17 @@ fn curate_branches(
     }
     // Plus one feature branch (most-recent pipeline; fall back to
     // API's `-target.date` #1 when no pipelines).
-    let top_feature = features
-        .into_iter()
-        .max_by(|a, b| {
-            let ka = a.latest_pipeline.as_ref().and_then(|p| p.created_on.clone());
-            let kb = b.latest_pipeline.as_ref().and_then(|p| p.created_on.clone());
-            ka.cmp(&kb)
-        });
+    let top_feature = features.into_iter().max_by(|a, b| {
+        let ka = a
+            .latest_pipeline
+            .as_ref()
+            .and_then(|p| p.created_on.clone());
+        let kb = b
+            .latest_pipeline
+            .as_ref()
+            .and_then(|p| p.created_on.clone());
+        ka.cmp(&kb)
+    });
     if let Some(f) = top_feature {
         out.push(f);
     }
@@ -312,9 +316,19 @@ impl TabData {
             // Renderers use this to clamp cursor navigation.
             Self::RepoTree { rows, expanded } => rows
                 .iter()
-                .map(|r| 1 + if expanded.contains(&r.slug) { r.branches.len() } else { 0 })
+                .map(|r| {
+                    1 + if expanded.contains(&r.slug) {
+                        r.branches.len()
+                    } else {
+                        0
+                    }
+                })
                 .sum(),
-            Self::RepoPrTree { rows, expanded, show_all } => {
+            Self::RepoPrTree {
+                rows,
+                expanded,
+                show_all,
+            } => {
                 // 2026-07-24 — visible-row count. When show_all is
                 // false and any PR falls outside the 24-hour recency
                 // window, we count it as HIDDEN and reserve one
@@ -345,7 +359,12 @@ impl TabData {
     /// on non-RepoPrTree data or when nothing is hidden (in which
     /// case the footer isn't rendered).
     pub fn hidden_pr_count(&self) -> Option<usize> {
-        if let Self::RepoPrTree { rows, expanded, show_all } = self {
+        if let Self::RepoPrTree {
+            rows,
+            expanded,
+            show_all,
+        } = self
+        {
             if *show_all {
                 return None;
             }
@@ -551,16 +570,16 @@ impl TabSpec {
             // their scope from top-level Config (scope / hidden_repos /
             // explicit_repos), NOT from per-tab fields. Resolve
             // succeeds without validating repo/mode/q.
-            TabKind::WorkspaceOpenPRs | TabKind::WorkspaceMergedPRs | TabKind::WorkspacePipelines => {
-                Ok(TabSpec {
-                    kind,
-                    workspace,
-                    repo: None,
-                    scope: None,
-                    state: String::new(),
-                    q: None,
-                })
-            }
+            TabKind::WorkspaceOpenPRs
+            | TabKind::WorkspaceMergedPRs
+            | TabKind::WorkspacePipelines => Ok(TabSpec {
+                kind,
+                workspace,
+                repo: None,
+                scope: None,
+                state: String::new(),
+                q: None,
+            }),
         }
     }
 }
@@ -800,22 +819,30 @@ impl App {
         // a "PR #N" synthetic label for RepoPrTree — good enough
         // for expand/collapse/hide/reorder decisions which only
         // care about which repo header the cursor sits under.
-        let (rows_iter, expanded): (Box<dyn Iterator<Item = (String, Vec<String>)>>, &HashSet<String>) =
-            match &self.active().data {
-                TabData::RepoTree { rows, expanded } => (
-                    Box::new(rows.iter().map(|r| {
-                        (r.slug.clone(), r.branches.iter().map(|b| b.name.clone()).collect())
-                    })),
-                    expanded,
-                ),
-                TabData::RepoPrTree { rows, expanded, .. } => (
-                    Box::new(rows.iter().map(|r| {
-                        (r.slug.clone(), r.prs.iter().map(|p| format!("PR #{}", p.id)).collect())
-                    })),
-                    expanded,
-                ),
-                _ => return None,
-            };
+        let (rows_iter, expanded): (
+            Box<dyn Iterator<Item = (String, Vec<String>)>>,
+            &HashSet<String>,
+        ) = match &self.active().data {
+            TabData::RepoTree { rows, expanded } => (
+                Box::new(rows.iter().map(|r| {
+                    (
+                        r.slug.clone(),
+                        r.branches.iter().map(|b| b.name.clone()).collect(),
+                    )
+                })),
+                expanded,
+            ),
+            TabData::RepoPrTree { rows, expanded, .. } => (
+                Box::new(rows.iter().map(|r| {
+                    (
+                        r.slug.clone(),
+                        r.prs.iter().map(|p| format!("PR #{}", p.id)).collect(),
+                    )
+                })),
+                expanded,
+            ),
+            _ => return None,
+        };
         let mut idx = self.active().selected;
         for (slug, children) in rows_iter {
             if idx == 0 {
@@ -885,7 +912,11 @@ impl App {
     /// row is a PR (not the repo header). `None` otherwise.
     pub fn focused_pr(&self) -> Option<(String, PullRequest)> {
         let (rows, expanded, show_all) = match &self.active().data {
-            TabData::RepoPrTree { rows, expanded, show_all } => (rows, expanded, *show_all),
+            TabData::RepoPrTree {
+                rows,
+                expanded,
+                show_all,
+            } => (rows, expanded, *show_all),
             _ => return None,
         };
         let mut idx = self.active().selected;
@@ -940,7 +971,11 @@ impl App {
         if self.pr_pipeline_cache.contains_key(&key) {
             return;
         }
-        self.status = format!("fetching pipeline for PR #{} on {}…", pr.id, short_sha(&hash));
+        self.status = format!(
+            "fetching pipeline for PR #{} on {}…",
+            pr.id,
+            short_sha(&hash)
+        );
         let workspace = self.cfg.workspace.clone();
         match self
             .client
@@ -1088,9 +1123,7 @@ impl App {
         if child.is_some() {
             return; // already on a child; nothing to descend into
         }
-        let already_expanded = self
-            .tree_expanded_mut()
-            .is_some_and(|e| e.contains(&slug));
+        let already_expanded = self.tree_expanded_mut().is_some_and(|e| e.contains(&slug));
         if !already_expanded {
             if let Some(expanded) = self.tree_expanded_mut() {
                 expanded.insert(slug);
@@ -1509,16 +1542,18 @@ impl App {
     /// PRs. Preserves `expanded` across refreshes (filtered to
     /// slugs still present in the new row set) so the auto-refresh
     /// timer doesn't blow away the user's drill-down state.
-    fn commit_pr_tree_refresh(
-        &mut self,
-        idx: usize,
-        name: String,
-        result: Result<Vec<RepoPrs>>,
-    ) {
+    fn commit_pr_tree_refresh(&mut self, idx: usize, name: String, result: Result<Vec<RepoPrs>>) {
         match result {
             Ok(rows) => {
                 let n = rows.len();
                 let total_prs: usize = rows.iter().map(|r| r.prs.len()).sum();
+                // 2026-08-16 (#948) — surface partial-data. Erroring
+                // repos are still visible (their row shows "429 ·
+                // retry in 30s" or "auth failed") but the status
+                // line needs to name the count so the user knows
+                // some data is missing rather than the tab being
+                // authoritative-empty.
+                let errored: usize = rows.iter().filter(|r| r.error.is_some()).count();
                 // 2026-07-19 — same auto-expand behavior as the
                 // pipelines tab: on the very first fetch (prior
                 // expanded set was empty) auto-expand every repo
@@ -1552,7 +1587,11 @@ impl App {
                 self.tabs[idx].last_error = None;
                 let vis = self.tabs[idx].data.len();
                 self.tabs[idx].selected = self.tabs[idx].selected.min(vis.saturating_sub(1));
-                self.status = format!("{name} · {n} repos, {total_prs} PRs");
+                self.status = if errored > 0 {
+                    format!("{name} · {n} repos, {total_prs} PRs ({errored} errored)")
+                } else {
+                    format!("{name} · {n} repos, {total_prs} PRs")
+                };
             }
             Err(e) => {
                 self.tabs[idx].last_error = Some(e.to_string());
@@ -1675,9 +1714,7 @@ impl App {
                     Some(name) => Some(format!(
                         "https://bitbucket.org/{workspace}/{slug}/branch/{name}"
                     )),
-                    None => Some(format!(
-                        "https://bitbucket.org/{workspace}/{slug}/branches"
-                    )),
+                    None => Some(format!("https://bitbucket.org/{workspace}/{slug}/branches")),
                 }
             }
             TabData::RepoPrTree { rows, .. } => {
@@ -1686,9 +1723,8 @@ impl App {
                 match child {
                     Some(label) => {
                         // child label shape: "PR #<id>"
-                        let id: Option<i64> = label
-                            .strip_prefix("PR #")
-                            .and_then(|s| s.parse().ok());
+                        let id: Option<i64> =
+                            label.strip_prefix("PR #").and_then(|s| s.parse().ok());
                         id.and_then(|id| {
                             rows.iter()
                                 .find(|r| r.slug == slug)
@@ -1701,9 +1737,22 @@ impl App {
                             ))
                         })
                     }
-                    None => Some(format!(
-                        "https://bitbucket.org/{workspace}/{slug}/pull-requests/"
-                    )),
+                    // 2026-08-16 (#948) — on an empty-with-fallback
+                    // header row, hop straight to the fallback merged
+                    // PR (Enter/o/y is more useful than a repo-level
+                    // /pull-requests/ landing). Falls back to the
+                    // repo listing when there's no fallback.
+                    None => rows
+                        .iter()
+                        .find(|r| r.slug == slug)
+                        .filter(|r| r.prs.is_empty())
+                        .and_then(|r| r.fallback_merged.as_ref())
+                        .and_then(|p| p.html_url())
+                        .or_else(|| {
+                            Some(format!(
+                                "https://bitbucket.org/{workspace}/{slug}/pull-requests/"
+                            ))
+                        }),
                 }
             }
         }

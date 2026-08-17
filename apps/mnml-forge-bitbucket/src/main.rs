@@ -203,10 +203,7 @@ async fn main() -> Result<()> {
                 // repos is plenty to prove the code path works.
                 let slugs: Vec<String> = rs.iter().take(3).map(|r| r.slug.clone()).collect();
 
-                println!(
-                    "\nOPEN PRs (first 3 repos = {:?}):",
-                    slugs
-                );
+                println!("\nOPEN PRs (first 3 repos = {:?}):", slugs);
                 match client
                     .list_workspace_open_and_draft_prs(&cfg.workspace, &slugs, 25)
                     .await

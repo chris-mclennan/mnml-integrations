@@ -110,9 +110,12 @@ fn pr_to_json(pr: &PullRequest) -> PrJson {
         .and_then(|b| b.branch.as_ref())
         .map(|b| b.name.clone())
         .unwrap_or_default();
-    let url = pr
-        .html_url()
-        .unwrap_or_else(|| format!("https://bitbucket.org/{owner}/{repo}/pull-requests/{}", pr.id));
+    let url = pr.html_url().unwrap_or_else(|| {
+        format!(
+            "https://bitbucket.org/{owner}/{repo}/pull-requests/{}",
+            pr.id
+        )
+    });
     PrJson {
         id: pr.id.to_string(),
         url,

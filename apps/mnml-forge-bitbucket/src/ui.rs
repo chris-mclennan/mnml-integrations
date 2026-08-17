@@ -4,9 +4,7 @@ use crate::app::App;
 use crate::keys;
 use anyhow::Result;
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -42,7 +40,11 @@ pub async fn run(app: &mut App) -> Result<()> {
     let res = event_loop(&mut terminal, app).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     res
@@ -154,7 +156,11 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
     let target = (row - body_top) as usize;
     let mut visual = 0usize;
     match &app.active().data {
-        crate::app::TabData::RepoPrTree { rows, expanded, show_all } => {
+        crate::app::TabData::RepoPrTree {
+            rows,
+            expanded,
+            show_all,
+        } => {
             let mut logical = 0usize;
             for repo in rows {
                 if visual + 1 > target && visual <= target {
@@ -191,8 +197,10 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
             // 2026-07-24 — synthetic "[ Show N older ]" footer row.
             // Present when show_all=false AND hidden_pr_count > 0.
             // Callers detect it via `is_show_more_footer_row(idx)`.
-            if !show_all && app.active().data.hidden_pr_count().unwrap_or(0) > 0
-                && visual + 1 > target && visual <= target
+            if !show_all
+                && app.active().data.hidden_pr_count().unwrap_or(0) > 0
+                && visual + 1 > target
+                && visual <= target
             {
                 return Some(logical);
             }
@@ -208,7 +216,11 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
 /// the index equals the last logical row.
 fn is_show_more_footer_row(app: &App, target: usize) -> bool {
     match &app.active().data {
-        crate::app::TabData::RepoPrTree { rows, expanded, show_all } => {
+        crate::app::TabData::RepoPrTree {
+            rows,
+            expanded,
+            show_all,
+        } => {
             if *show_all {
                 return false;
             }
@@ -563,9 +575,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App) {
         crate::app::TabData::RepoTree { rows, expanded } => {
             draw_repo_tree(f, area, tab, rows, expanded)
         }
-        crate::app::TabData::RepoPrTree { rows, expanded, show_all } => {
-            draw_repo_pr_tree(f, area, tab, rows, expanded, *show_all, app)
-        }
+        crate::app::TabData::RepoPrTree {
+            rows,
+            expanded,
+            show_all,
+        } => draw_repo_pr_tree(f, area, tab, rows, expanded, *show_all, app),
     }
 }
 
@@ -607,20 +621,72 @@ fn draw_repo_pr_tree(
         } else {
             "▶"
         };
+        // 2026-08-16 (#948) — three header-row shapes now:
+        //   normal     → " N PRs " in dim (existing behavior)
+        //   errored    → " 429 · retry in 30s " in red so the row
+        //                isn't invisible when a fetch fails
+        //   empty+last → " last merged " in dim + author/branch/
+        //                date/title cells hijacked from the fallback
+        //                PR so an idle repo still surfaces something
+        //                useful. Visible-row count stays 1 for
+        //                empty repos regardless — the fallback is
+        //                inline metadata, not a child row (keeps
+        //                the click-mapping math intact).
+        let slug_style = if repo.error.is_some() {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+        let (state_cell, author_cell, branch_cell, date_cell, title_cell) =
+            if let Some(err) = &repo.error {
+                (
+                    Cell::from(err.clone()).style(Style::default().fg(Color::Red)),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                )
+            } else if let (true, Some(fb)) = (repo.prs.is_empty(), repo.fallback_merged.as_ref()) {
+                let author = fb
+                    .author
+                    .as_ref()
+                    .map(|u| u.display_name.clone())
+                    .unwrap_or_default();
+                let branch = fb
+                    .source
+                    .as_ref()
+                    .and_then(|b| b.branch.as_ref())
+                    .map(|b| b.name.clone())
+                    .unwrap_or_default();
+                let dim = Style::default().fg(Color::DarkGray);
+                (
+                    Cell::from("last merged").style(dim),
+                    Cell::from(author).style(dim),
+                    Cell::from(branch).style(dim),
+                    Cell::from(fb.updated_date()).style(dim),
+                    Cell::from(format!("#{} · {}", fb.id, fb.title)).style(dim),
+                )
+            } else {
+                (
+                    Cell::from(format!("{} PRs", repo.prs.len()))
+                        .style(Style::default().fg(Color::DarkGray)),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                )
+            };
         // 2026-07-20 — leading " " on col 0 gives the triangles a
         // one-cell breathing gap from the pane border.
         table_rows.push(Row::new(vec![
-            Cell::from(format!(" {arrow} {}", repo.slug)).style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from(format!("{} PRs", repo.prs.len()))
-                .style(Style::default().fg(Color::DarkGray)),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
+            Cell::from(format!(" {arrow} {}", repo.slug)).style(slug_style),
+            state_cell,
+            author_cell,
+            branch_cell,
+            date_cell,
+            title_cell,
         ]));
         if expanded.contains(&repo.slug) {
             for pr in repo.prs.iter().filter(|pr| {
@@ -658,8 +724,7 @@ fn draw_repo_pr_tree(
                 let is_merged_expandable =
                     pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some();
                 let key = (repo.slug.clone(), pr.id);
-                let is_pr_expanded =
-                    is_merged_expandable && app.expanded_prs.contains(&key);
+                let is_pr_expanded = is_merged_expandable && app.expanded_prs.contains(&key);
                 let pr_arrow = if !is_merged_expandable {
                     "  "
                 } else if is_pr_expanded {
@@ -701,8 +766,11 @@ fn draw_repo_pr_tree(
                 Cell::from(""),
                 Cell::from(""),
                 Cell::from(""),
-                Cell::from(format!("[ Show {hidden} older PRs ]"))
-                    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from(format!("[ Show {hidden} older PRs ]")).style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
         }
     }
@@ -831,7 +899,10 @@ fn render_pr_expand_title_cell(
                 Span::raw("  "),
                 Span::styled(format!("on {dest}"), Style::default().fg(Color::Gray)),
                 Span::raw("  "),
-                Span::styled(format!("{when}  {dur}{more}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{when}  {dur}{more}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ])
         }
     };

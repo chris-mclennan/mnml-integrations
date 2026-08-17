@@ -13,6 +13,78 @@ use serde::Deserialize;
 
 const BASE: &str = "https://api.bitbucket.org/2.0";
 
+/// 2026-08-16 — reliability sweep (#948). Structured fetch error so the
+/// per-repo fan-out can classify a 429 (retry-worthy, honor
+/// `Retry-After`) vs an auth failure (surface, don't retry) vs a
+/// missing repo (surface, don't retry) vs a network glitch. Mirrors
+/// mnml-core's `src/ai_usage.rs::FetchErr` — same shape, same
+/// `.with_retry_after` builder — so the two rate-limit paths in the
+/// mnml family look and behave alike.
+#[derive(Debug, Clone)]
+pub struct FetchErr {
+    pub message: String,
+    /// From the `Retry-After` header on 429 responses. `None` on
+    /// non-429 errors or when the header is missing / unparseable.
+    /// Bitbucket emits it as an integer delta-seconds; we read it
+    /// BEFORE consuming the body so a body-read failure doesn't
+    /// swallow the header.
+    pub retry_after_secs: Option<u64>,
+    /// HTTP status code, or `None` for network / transport errors
+    /// (DNS, TLS, connection reset — anything below the HTTP layer).
+    pub status: Option<u16>,
+}
+
+impl FetchErr {
+    fn network(msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            retry_after_secs: None,
+            status: None,
+        }
+    }
+    fn http(status: u16, msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            retry_after_secs: None,
+            status: Some(status),
+        }
+    }
+    fn with_retry_after(mut self, secs: u64) -> Self {
+        self.retry_after_secs = Some(secs);
+        self
+    }
+    pub fn is_rate_limited(&self) -> bool {
+        self.status == Some(429)
+    }
+    /// Short human-readable label the UI paints in the per-repo row
+    /// when a fetch failed. Kept under ~24 chars so it fits the
+    /// STATE column without ellipsis. `409 · retry in 30s` reads as
+    /// "the client noticed the 429 and will re-try automatically";
+    /// `auth failed` reads as "your app password is wrong / missing
+    /// scopes" — different fixes, so worth distinguishing.
+    pub fn short_label(&self) -> String {
+        match self.status {
+            Some(429) => match self.retry_after_secs {
+                Some(s) => format!("429 · retry in {s}s"),
+                None => "429 · rate limited".to_string(),
+            },
+            Some(401) | Some(403) => "auth failed".to_string(),
+            Some(404) => "no such repo".to_string(),
+            Some(code) => format!("HTTP {code}"),
+            None => "network error".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for FetchErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(code) => write!(f, "HTTP {}: {}", code, self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -35,6 +107,10 @@ impl Client {
     /// `OPEN` / `MERGED` / `DECLINED` / `SUPERSEDED`. `q` is an
     /// optional Bitbucket Query Language string layered on top
     /// (e.g. `author.account_id = "{...}"`).
+    ///
+    /// 2026-08-16 — legacy anyhow wrapper. New fan-out callers
+    /// should prefer `list_repo_prs_retry` (429-aware) or
+    /// `list_repo_prs_fetch` (structured `FetchErr`) directly.
     pub async fn list_repo_prs(
         &self,
         workspace: &str,
@@ -43,9 +119,24 @@ impl Client {
         q: Option<&str>,
         per_page: u32,
     ) -> Result<Vec<PullRequest>> {
+        self.list_repo_prs_fetch(workspace, repo, state, q, per_page)
+            .await
+            .map_err(|e| anyhow!("{e}"))
+    }
+
+    /// 2026-08-16 (#948) — structured-error fetch. Reads
+    /// `Retry-After` BEFORE consuming the response body so a
+    /// body-read failure never swallows the header hint. Returns
+    /// `FetchErr` on any non-2xx OR any transport error.
+    pub async fn list_repo_prs_fetch(
+        &self,
+        workspace: &str,
+        repo: &str,
+        state: Option<&str>,
+        q: Option<&str>,
+        per_page: u32,
+    ) -> std::result::Result<Vec<PullRequest>, FetchErr> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests");
-        // Bitbucket Cloud supports `state` as a query param, repeated
-        // for OR — v0.1 takes a single state at a time.
         let mut req = self
             .http
             .get(&url)
@@ -58,17 +149,77 @@ impl Client {
         if let Some(query) = q {
             req = req.query(&[("q", query)]);
         }
-        let resp = req.send().await.context("bitbucket PR list failed")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FetchErr::network(e.to_string()))?;
+        let status = resp.status();
+        // Extract `Retry-After` BEFORE `resp.text()` consumes the
+        // response. Bitbucket emits it as an integer delta-seconds
+        // on 429s. RFC-7231 also allows an HTTP-date form; we try
+        // the numeric form first (Bitbucket's shape) and fall back
+        // to `None` on parse failure — the caller then uses its
+        // default backoff.
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("bitbucket {status}: {text}"));
+            let snippet = text.chars().take(120).collect::<String>();
+            let mut err = FetchErr::http(status.as_u16(), snippet);
+            if let Some(secs) = retry_after {
+                err = err.with_retry_after(secs);
+            }
+            return Err(err);
         }
         let body: PrPage = resp
             .json()
             .await
-            .context("parsing bitbucket PR list response")?;
+            .map_err(|e| FetchErr::network(format!("parse: {e}")))?;
         Ok(body.values)
+    }
+
+    /// 2026-08-16 (#948) — 429-aware retry wrapper around
+    /// `list_repo_prs_fetch`. Up to 3 attempts total; each 429
+    /// waits per Bitbucket's `Retry-After` header (or 15s default
+    /// if absent), capped at 30s per attempt so a single stubborn
+    /// repo can't block the whole fan-out for hours. Other errors
+    /// (401/403/404/network) do NOT retry — those aren't
+    /// transient and re-hitting the API would just re-fail.
+    pub async fn list_repo_prs_retry(
+        &self,
+        workspace: &str,
+        repo: &str,
+        state: Option<&str>,
+        q: Option<&str>,
+        per_page: u32,
+    ) -> std::result::Result<Vec<PullRequest>, FetchErr> {
+        const MAX_ATTEMPTS: u32 = 3;
+        const MAX_BACKOFF_SECS: u64 = 30;
+        const DEFAULT_BACKOFF_SECS: u64 = 15;
+        let mut last_err: Option<FetchErr> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            match self
+                .list_repo_prs_fetch(workspace, repo, state, q, per_page)
+                .await
+            {
+                Ok(v) => return Ok(v),
+                Err(e) if e.is_rate_limited() => {
+                    let wait = e
+                        .retry_after_secs
+                        .unwrap_or(DEFAULT_BACKOFF_SECS)
+                        .min(MAX_BACKOFF_SECS);
+                    last_err = Some(e);
+                    if attempt < MAX_ATTEMPTS - 1 {
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| FetchErr::network("retry exhausted")))
     }
 
     /// Workspace-spanning PRs authored by (or reviewed by) the
@@ -158,10 +309,7 @@ impl Client {
                 let text = resp.text().await.unwrap_or_default();
                 return Err(anyhow!("bitbucket repos {status}: {text}"));
             }
-            let page: RepoPage = resp
-                .json()
-                .await
-                .context("parsing bitbucket repo page")?;
+            let page: RepoPage = resp.json().await.context("parsing bitbucket repo page")?;
             out.extend(page.values.into_iter().map(|r| r.slug));
             match page.next {
                 Some(next) if !next.is_empty() => url = next,
@@ -401,9 +549,8 @@ impl Client {
         workspace: &str,
     ) -> Result<Vec<RepoActivity>> {
         let mut out: Vec<RepoActivity> = Vec::new();
-        let mut url = format!(
-            "{BASE}/repositories/{workspace}?role=member&pagelen=100&sort=-updated_on"
-        );
+        let mut url =
+            format!("{BASE}/repositories/{workspace}?role=member&pagelen=100&sort=-updated_on");
         let mut pages = 0;
         loop {
             let resp = self
@@ -510,6 +657,12 @@ impl Client {
     /// Merged variant of [`Self::list_workspace_open_prs_by_repo`].
     /// Same shape, `state=MERGED`, per-repo PRs already sorted
     /// newest → oldest. tree-redesign 2026-07-15.
+    ///
+    /// 2026-08-16 (#948) — 429-aware retry via
+    /// `list_repo_prs_retry`. Erroring repos still get a row (with
+    /// `error: Some(short_label)`) so the UI can surface "429 ·
+    /// retry in 30s" per repo instead of silently dropping them.
+    /// No fallback_merged here — we're already fetching MERGED.
     pub async fn list_workspace_merged_prs_by_repo(
         &self,
         workspace: &str,
@@ -523,53 +676,67 @@ impl Client {
         let workspace = workspace.to_string();
         let concurrency = 4usize;
         let slugs = repo_slugs.to_vec();
-        let rows: Vec<std::result::Result<RepoPrs, String>> =
-            stream::iter(slugs.into_iter().map(|slug| {
-                let ws = workspace.clone();
-                let client = self.clone();
-                async move {
-                    client
-                        .list_repo_prs(&ws, &slug, Some("MERGED"), None, per_repo_per_page)
-                        .await
-                        .map(|mut prs| {
-                            prs.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
-                            RepoPrs { slug: slug.clone(), prs }
-                        })
-                        .map_err(|e| format!("{slug}: {e}"))
+        let rows: Vec<RepoPrs> = stream::iter(slugs.into_iter().map(|slug| {
+            let ws = workspace.clone();
+            let client = self.clone();
+            async move {
+                match client
+                    .list_repo_prs_retry(&ws, &slug, Some("MERGED"), None, per_repo_per_page)
+                    .await
+                {
+                    Ok(mut prs) => {
+                        prs.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
+                        RepoPrs {
+                            slug,
+                            prs,
+                            error: None,
+                            fallback_merged: None,
+                        }
+                    }
+                    Err(e) => RepoPrs {
+                        slug,
+                        prs: Vec::new(),
+                        error: Some(e.short_label()),
+                        fallback_merged: None,
+                    },
                 }
-            }))
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
-        let n_total = rows.len();
-        let (ok, err): (Vec<_>, Vec<_>) = rows.into_iter().partition(std::result::Result::is_ok);
-        if !err.is_empty() && ok.is_empty() {
-            let first = err
-                .into_iter()
-                .find_map(|r| r.err())
-                .unwrap_or_else(|| "unknown".to_string());
-            return Err(anyhow!(
-                "all {n_total} repo requests failed; first: {first}"
-            ));
-        }
-        if !err.is_empty() {
-            eprintln!(
-                "list_workspace_merged_prs_by_repo: {}/{} repo(s) failed",
-                err.len(),
-                n_total
-            );
-        }
-        Ok(ok.into_iter().filter_map(|r| r.ok()).collect())
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+        // Preserve caller's slug order (buffer_unordered emits in
+        // completion order — a fast repo shouldn't outrank a slow
+        // one in the tree).
+        let mut by_slug: std::collections::HashMap<String, RepoPrs> =
+            rows.into_iter().map(|r| (r.slug.clone(), r)).collect();
+        let ordered: Vec<RepoPrs> = repo_slugs
+            .iter()
+            .filter_map(|s| by_slug.remove(s))
+            .collect();
+        Ok(ordered)
     }
 
     /// Same as [`Self::list_workspace_open_and_draft_prs`] but keeps
     /// the per-repo grouping (returns `Vec<RepoPrs>`, one row per
-    /// input slug that returned OK — repos with 0 PRs still get a
-    /// row so an expanded scope stays visible; repos that erred are
-    /// dropped with an eprintln). Feeds `TabData::RepoPrTree` on the
+    /// input slug — empty repos AND erroring repos both get rows so
+    /// the user can see them). Feeds `TabData::RepoPrTree` on the
     /// Open+Draft tab so the user can drill into a specific repo
     /// instead of scrolling a flat list.
     /// tree-redesign 2026-07-15.
+    ///
+    /// 2026-08-16 (#948) — reliability sweep:
+    ///   - `list_repo_prs_retry` (429-aware, honors Retry-After) in
+    ///     place of the bare `list_repo_prs`. Prior impl let a
+    ///     transient 429 blank a repo permanently.
+    ///   - Erroring repos still emit a row (`error: Some(label)`)
+    ///     so the UI paints "429 · retry in 30s" or "auth failed"
+    ///     per repo. Prior impl silently dropped them.
+    ///   - Zero-OPEN repos get a best-effort last-merged fallback
+    ///     lookup so every configured repo surfaces SOMETHING —
+    ///     either an open PR, or "last merged" metadata, or an
+    ///     explicit error. `0 PRs · nothing to see here` was
+    ///     indistinguishable from "we forgot to fetch this one".
     pub async fn list_workspace_open_prs_by_repo(
         &self,
         workspace: &str,
@@ -583,45 +750,58 @@ impl Client {
         let workspace = workspace.to_string();
         let concurrency = 8usize;
         let slugs = repo_slugs.to_vec();
-        let rows: Vec<std::result::Result<RepoPrs, String>> =
-            stream::iter(slugs.into_iter().map(|slug| {
-                let ws = workspace.clone();
-                let client = self.clone();
-                async move {
-                    client
-                        .list_repo_prs(&ws, &slug, Some("OPEN"), None, per_repo_per_page)
-                        .await
-                        .map(|mut prs| {
-                            prs.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
-                            RepoPrs { slug: slug.clone(), prs }
-                        })
-                        .map_err(|e| format!("{slug}: {e}"))
+        let rows: Vec<RepoPrs> = stream::iter(slugs.into_iter().map(|slug| {
+            let ws = workspace.clone();
+            let client = self.clone();
+            async move {
+                match client
+                    .list_repo_prs_retry(&ws, &slug, Some("OPEN"), None, per_repo_per_page)
+                    .await
+                {
+                    Ok(mut prs) => {
+                        prs.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
+                        // Best-effort last-merged fallback on empty
+                        // repos — single request, no retry (a merged
+                        // fetch that itself 429s just goes silent;
+                        // the empty row renders like it did before).
+                        let fallback_merged = if prs.is_empty() {
+                            client
+                                .list_repo_prs_fetch(&ws, &slug, Some("MERGED"), None, 1)
+                                .await
+                                .ok()
+                                .and_then(|v| v.into_iter().next())
+                        } else {
+                            None
+                        };
+                        RepoPrs {
+                            slug,
+                            prs,
+                            error: None,
+                            fallback_merged,
+                        }
+                    }
+                    Err(e) => RepoPrs {
+                        slug,
+                        prs: Vec::new(),
+                        error: Some(e.short_label()),
+                        fallback_merged: None,
+                    },
                 }
-            }))
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
-        let n_total = rows.len();
-        let (ok, err): (Vec<_>, Vec<_>) = rows.into_iter().partition(std::result::Result::is_ok);
-        if !err.is_empty() && ok.is_empty() {
-            let first = err
-                .into_iter()
-                .find_map(|r| r.err())
-                .unwrap_or_else(|| "unknown".to_string());
-            return Err(anyhow!(
-                "all {n_total} repo requests failed; first: {first}"
-            ));
-        }
-        if !err.is_empty() {
-            eprintln!(
-                "list_workspace_open_prs_by_repo: {}/{} repo(s) failed",
-                err.len(),
-                n_total
-            );
-        }
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
         // Preserve the input slug order (which reflects the caller's
-        // scope + repo_order resolution) — no re-sort.
-        Ok(ok.into_iter().filter_map(|r| r.ok()).collect())
+        // scope + repo_order resolution) by re-indexing against the
+        // slugs list — buffer_unordered emits in completion order.
+        let mut by_slug: std::collections::HashMap<String, RepoPrs> =
+            rows.into_iter().map(|r| (r.slug.clone(), r)).collect();
+        let ordered: Vec<RepoPrs> = repo_slugs
+            .iter()
+            .filter_map(|s| by_slug.remove(s))
+            .collect();
+        Ok(ordered)
     }
 
     /// Every MERGED PR across the given repos, all authors,
@@ -665,7 +845,12 @@ impl Client {
             .await;
         let (ok, err): (Vec<_>, Vec<_>) = batches.into_iter().partition(std::result::Result::is_ok);
         if !err.is_empty() {
-            let first = err.iter().next().and_then(|e| e.as_ref().err()).cloned().unwrap_or_default();
+            let first = err
+                .iter()
+                .next()
+                .and_then(|e| e.as_ref().err())
+                .cloned()
+                .unwrap_or_default();
             eprintln!(
                 "list_workspace_merged_prs: {} repo(s) failed (first: {}); returning {} results",
                 err.len(),
@@ -673,7 +858,11 @@ impl Client {
                 ok.len(),
             );
         }
-        let mut all: Vec<PullRequest> = ok.into_iter().filter_map(std::result::Result::ok).flatten().collect();
+        let mut all: Vec<PullRequest> = ok
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .flatten()
+            .collect();
         // Newest merges first (matches the "everyone new to old"
         // spec — user wants a chronological workspace-wide log).
         all.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
@@ -736,11 +925,7 @@ impl Client {
                         let last_activity_on = latest
                             .as_ref()
                             .and_then(|p| p.created_on.clone())
-                            .or_else(|| {
-                                b.target
-                                    .as_ref()
-                                    .and_then(|t| t.date.clone())
-                            });
+                            .or_else(|| b.target.as_ref().and_then(|t| t.date.clone()));
                         BranchWithPipeline {
                             name,
                             latest_pipeline: latest,
@@ -818,10 +1003,30 @@ pub struct BranchWithPipeline {
 /// Returned by [`Client::list_workspace_open_prs_by_repo`] — feeds
 /// `TabData::RepoPrTree` (Phase 3 wire-up in progress).
 /// tree-redesign 2026-07-15.
+///
+/// 2026-08-16 (#948) — `error` + `fallback_merged` added so every
+/// configured repo gets a visible row even when the per-repo fetch
+/// failed OR the repo happened to have zero open PRs. Prior
+/// behavior silently dropped erroring repos (via
+/// `filter_map(|r| r.ok())`) and rendered `0 PRs` on healthy-but-
+/// empty repos — both were indistinguishable from "no repos in
+/// scope" and the user couldn't tell which repos had never been
+/// contacted.
 #[derive(Debug, Clone)]
 pub struct RepoPrs {
     pub slug: String,
     pub prs: Vec<PullRequest>,
+    /// Populated when the per-repo fetch failed (even after retry).
+    /// Short human-readable label (see [`FetchErr::short_label`]).
+    /// Mutually exclusive with `fallback_merged` — a real error
+    /// precludes the fallback lookup.
+    pub error: Option<String>,
+    /// For `state=OPEN` fetches only: when the repo has zero open
+    /// PRs, this is a best-effort single-shot fetch of its
+    /// most-recently-merged PR. Silent on failure (an empty repo
+    /// with a network-blip fallback fetch renders exactly like an
+    /// empty repo, no scary red).
+    pub fallback_merged: Option<PullRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1502,5 +1707,29 @@ mod tests {
         let mut p = pr("OPEN");
         p.links = None;
         assert_eq!(p.html_url(), None);
+    }
+
+    // ── 2026-08-16 (#948) — FetchErr label + retry-after semantics ─
+
+    #[test]
+    fn fetch_err_short_label_covers_common_statuses() {
+        assert_eq!(FetchErr::http(401, "").short_label(), "auth failed");
+        assert_eq!(FetchErr::http(403, "").short_label(), "auth failed");
+        assert_eq!(FetchErr::http(404, "").short_label(), "no such repo");
+        assert_eq!(FetchErr::http(500, "").short_label(), "HTTP 500");
+        assert_eq!(FetchErr::network("dns").short_label(), "network error");
+    }
+
+    #[test]
+    fn fetch_err_429_label_includes_retry_after_when_present() {
+        let e = FetchErr::http(429, "throttled").with_retry_after(45);
+        assert_eq!(e.short_label(), "429 · retry in 45s");
+        assert!(e.is_rate_limited());
+    }
+
+    #[test]
+    fn fetch_err_429_label_without_header_is_generic() {
+        let e = FetchErr::http(429, "throttled");
+        assert_eq!(e.short_label(), "429 · rate limited");
     }
 }
