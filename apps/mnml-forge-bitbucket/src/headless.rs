@@ -162,6 +162,75 @@ pub async fn find_pipeline_for_pr(
     Ok(())
 }
 
+/// mnml 0.2.11+ statusline-segment values payload. Emitted by
+/// `--values` for consumption by the generic `[[values_sources]]`
+/// polling worker. Keys are the identifiers the matching
+/// `[[statusline_segments]]` chip's `format` template substitutes
+/// — see `~/.config/mnml/integrations/bitbucket_prs.toml`.
+#[derive(Serialize)]
+struct SegmentValues {
+    /// Count of OPEN pull requests authored by the auth user
+    /// across the configured workspace. `0` when the user has no
+    /// open PRs (rendered as the plain number; the chip only shows
+    /// `!` on a fetch error, not on a legitimate zero).
+    open_mine: usize,
+    /// Subset of `open_mine` that has at least one approval on it
+    /// (any non-author approver counts — the user's own
+    /// participant record won't have `approved = true` on a PR
+    /// they authored). Rendered in the chip's parenthesized
+    /// suffix (`2(1)` = 2 open, 1 approved).
+    approved_mine: usize,
+}
+
+/// Emit `{"open_mine": N, "approved_mine": K}` on stdout for
+/// mnml's statusline-segment poller. Uses the workspace-wide
+/// author-BBQL fan-out (`list_workspace_prs_filtered`) so the
+/// count reflects every repo in `cfg.workspace`, not just
+/// per-tab configured repos.
+///
+/// Approval count reads from the PR list response's
+/// `participants[].approved` field. **v1 known limitation:**
+/// Bitbucket's `/pullrequests` list endpoint typically omits
+/// `participants` (that field is populated on the per-PR detail
+/// endpoint), so `approved_mine` will often report 0 even when
+/// the user has approved PRs. Fixing this "correctly" would
+/// require a second per-PR detail fetch for each open PR, which
+/// blows the 10s poll ceiling on any large workspace (398 PRs ×
+/// ~300ms each = ~2min). A future iteration could either
+///   (a) fetch details for a bounded top-N, or
+///   (b) use a second BBQL query `author.account_id = "..." AND
+///       participants.approved = true` as a count-only lookup.
+/// For v1, ship the accurate `open_mine` + best-effort
+/// `approved_mine` and let the user reach for the detail pane
+/// when they need the exact approval breakdown.
+pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
+    // Resolve the auth user's account_id — BBQL author filter
+    // requires the stable id, not the email.
+    let me = client
+        .whoami()
+        .await
+        .context("resolving auth user via /2.0/user")?;
+    let account_id = me
+        .account_id
+        .ok_or_else(|| anyhow::anyhow!("/2.0/user returned no account_id"))?;
+
+    let bbql = format!("author.account_id = \"{account_id}\"");
+    let prs = client
+        .list_workspace_prs_filtered(&cfg.workspace, &bbql, Some("OPEN"), 50)
+        .await
+        .context("fetching open PRs authored by you")?;
+
+    let open_mine = prs.len();
+    let approved_mine = prs.iter().filter(|p| p.approval_count() > 0).count();
+
+    let out = SegmentValues {
+        open_mine,
+        approved_mine,
+    };
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
+}
+
 fn matches_branch(p: &Pipeline, branch: &str) -> bool {
     p.target
         .as_ref()

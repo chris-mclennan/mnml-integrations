@@ -158,11 +158,81 @@ pub fn install() -> Result<()> {
             ..Default::default()
         };
         let path = install_integration(&spec)?;
+        // mnml 0.2.11+ generic statusline-segment surface. The
+        // schema (`[[values_sources]]` + `[[statusline_segments]]`)
+        // lives in mnml-bridge 0.8+, which isn't on crates.io yet —
+        // this sibling still resolves 0.7. Rather than block on the
+        // publish, we append the sections as raw TOML after the
+        // bridge writes its portion. Only the PRs chip carries a
+        // segment for now — the Pipelines chip has no bounded "how
+        // many are red right now" summary that fits a right-side
+        // chip yet. See docs/design/statusline-segments.md on the
+        // mnml side.
+        if let Err(e) = append_segment_blocks(chip.id, &path) {
+            eprintln!(
+                "note: couldn't append [[values_sources]] to {} ({e}) — hand-edit that file to add the chip",
+                path.display()
+            );
+        }
         println!("wrote manifest: {}", path.display());
     }
     println!("\nrun mnml + `integrations.refresh` (or restart) to pick up the new chips");
     println!("chords: <leader>ibp / ibl / ibb  ·  right-click chip for options");
     Ok(())
+}
+
+/// Append mnml 0.2.11+ statusline-segment TOML blocks to a
+/// freshly-written manifest, but only for the PRs chip. Idempotent:
+/// re-installing does NOT double-append (we grep the file for the
+/// segment `id` first). No-ops for chips that don't declare a
+/// segment. See main.rs `--values` for the paired data source.
+fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Result<()> {
+    // Only the PRs chip has a segment declaration today.
+    if chip_id != "bitbucket_prs" {
+        return Ok(());
+    }
+    let current = std::fs::read_to_string(path)?;
+    // Idempotence guard — the segment `id` is unique enough to
+    // detect a prior append cleanly. Prevents a second install
+    // (or a re-install to pick up a new sibling version) from
+    // stacking duplicate `[[values_sources]]` entries.
+    const SEGMENT_ID: &str = "bitbucket_prs_mine";
+    if current.contains(SEGMENT_ID) {
+        return Ok(());
+    }
+    // Raw TOML append. Bridge 0.7 doesn't know about these
+    // sections; bridge 0.8+ will serialize them from typed structs,
+    // and this whole helper can be deleted then. Glyph is
+    // nf-md-source-pull (U+F062D) — matches the "pull request"
+    // visual metaphor without colliding with the chip's Bitbucket
+    // logo (U+F00A8).
+    let block = concat!(
+        "\n",
+        "# mnml 0.2.11+ statusline segment — appended by\n",
+        "# mnml-forge-bitbucket --install. Idempotent: re-install\n",
+        "# skips this if `bitbucket_prs_mine` is already present.\n",
+        "[[values_sources]]\n",
+        "id = \"bitbucket_values\"\n",
+        "command = \"mnml-forge-bitbucket --values\"\n",
+        "poll_interval_secs = 300\n",
+        "\n",
+        "[[statusline_segments]]\n",
+        "id = \"bitbucket_prs_mine\"\n",
+        "source = \"bitbucket_values\"\n",
+        "glyph = \"\u{F062D}\"\n",
+        "color = \"cyan\"\n",
+        "format = \"{open_mine}({approved_mine})\"\n",
+        "tooltip = \"Open PRs authored by you — parens = approved count. Click to open the PRs pane.\"\n",
+        "click_command = \"bitbucket_prs.open\"\n",
+    );
+    // Ensure a trailing newline before we append so we never fuse
+    // a section onto the last line of an existing block.
+    let mut out = current;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(block);
+    std::fs::write(path, out)
 }
 
 pub fn uninstall() -> Result<()> {

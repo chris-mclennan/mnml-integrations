@@ -49,6 +49,18 @@ struct Cli {
     /// the headless surface for future shapes.
     #[arg(long)]
     json: bool,
+    /// Headless: emit statusline-segment values as JSON on stdout,
+    /// then exit. Powers mnml 0.2.11+'s generic
+    /// `[[values_sources]]` polling — mnml runs this on a cadence
+    /// and paints the result through a matching `[[statusline_segments]]`
+    /// chip. Emits `{"open_mine": N, "approved_mine": K}` where
+    /// N = count of OPEN PRs authored by the auth user across the
+    /// configured workspace, K = subset that have at least one
+    /// approval. Exits non-zero with a short stderr message on
+    /// auth / network / timeout failure — mnml then renders `!`
+    /// on the chip.
+    #[arg(long)]
+    values: bool,
     /// Register this sibling with mnml — writes an integration
     /// manifest at ~/.config/mnml/integrations/bitbucket.toml so the
     /// rail chip + palette command + <leader>ib chord appear on the
@@ -130,6 +142,24 @@ async fn main() -> Result<()> {
             anyhow::bail!("--list-prs requires --json (only shape supported v1)");
         }
         return headless::list_prs(&cfg, &client).await;
+    }
+
+    if cli.values {
+        // No `--json` requirement — the flag's whole purpose is
+        // emitting a JSON blob for mnml's statusline-segment poller
+        // (see mnml/src/app/statusline_segments.rs). Wrap in a 10s
+        // timeout so a hung network never freezes the polling
+        // worker on the mnml side (worker interval is >=30s; a poll
+        // that takes longer than the interval starves the next
+        // one). Any failure — timeout / auth / network / parse —
+        // exits non-zero with a short stderr message; mnml
+        // renders `!` on the chip and surfaces the message via
+        // hover.
+        let fut = headless::list_values(&cfg, &client);
+        return match tokio::time::timeout(std::time::Duration::from_secs(10), fut).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!("--values timed out after 10s")),
+        };
     }
 
     if cli.find_pipeline_for_pr {
