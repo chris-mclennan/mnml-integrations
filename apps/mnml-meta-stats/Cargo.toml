@@ -13,7 +13,7 @@ name = "mnml-meta-stats"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.7" }
+mnml-bridge = "0.7"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

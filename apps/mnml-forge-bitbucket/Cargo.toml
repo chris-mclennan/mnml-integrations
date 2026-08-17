@@ -1,6 +1,6 @@
 [package]
 name = "mnml-forge-bitbucket"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 license = "MIT"
 description = "Bitbucket Cloud viewer for mnml — pull requests + pipeline runs, workspace-scoped, with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
@@ -13,7 +13,7 @@ name = "mnml-forge-bitbucket"
 path = "src/main.rs"
 
 [dependencies]
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.7" }
+mnml-bridge = "0.7"
 ratatui = "0.29"
 crossterm = "0.28"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

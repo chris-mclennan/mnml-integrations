@@ -155,16 +155,16 @@ impl Client {
             .map_err(|e| FetchErr::network(e.to_string()))?;
         let status = resp.status();
         // Extract `Retry-After` BEFORE `resp.text()` consumes the
-        // response. Bitbucket emits it as an integer delta-seconds
-        // on 429s. RFC-7231 also allows an HTTP-date form; we try
-        // the numeric form first (Bitbucket's shape) and fall back
-        // to `None` on parse failure — the caller then uses its
-        // default backoff.
+        // response. RFC-7231 allows two forms: an integer delta-
+        // seconds (Bitbucket's typical shape on 429s) OR an HTTP-
+        // date. Try numeric first; on parse fail, try HTTP-date and
+        // compute the delta from now. Falls back to `None` if
+        // neither works — the caller then uses its default backoff.
         let retry_after = resp
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok());
+            .and_then(parse_retry_after);
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             let snippet = text.chars().take(120).collect::<String>();
@@ -1591,6 +1591,28 @@ impl BranchRef {
     }
 }
 
+/// Parse a `Retry-After` header value per RFC-7231 §7.1.3. Accepts
+/// either an integer delta-seconds (the typical Bitbucket shape) or
+/// an HTTP-date (IMF-fixdate, RFC-850, or asctime — the three formats
+/// RFC-7231 mandates). Returns None if neither form parses; the caller
+/// uses its default backoff. Task #957 (2026-08-16 follow-up to #948).
+fn parse_retry_after(raw: &str) -> Option<u64> {
+    let s = raw.trim();
+    // Fast path: delta-seconds — the form Bitbucket actually emits.
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    // Fallback: HTTP-date. chrono's DateTime::parse_from_rfc2822 covers
+    // IMF-fixdate ("Fri, 31 Dec 1999 23:59:59 GMT") which is the
+    // preferred form and what modern servers emit; the two legacy
+    // forms (RFC-850, asctime) are rare enough in practice that we
+    // don't bother — a missed parse just triggers default backoff.
+    let dt = chrono::DateTime::parse_from_rfc2822(s).ok()?;
+    let now = chrono::Utc::now();
+    let delta = dt.with_timezone(&chrono::Utc) - now;
+    delta.num_seconds().try_into().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1731,5 +1753,31 @@ mod tests {
     fn fetch_err_429_label_without_header_is_generic() {
         let e = FetchErr::http(429, "throttled");
         assert_eq!(e.short_label(), "429 · rate limited");
+    }
+
+    #[test]
+    fn parse_retry_after_delta_seconds() {
+        assert_eq!(parse_retry_after("30"), Some(30));
+        assert_eq!(parse_retry_after("  60  "), Some(60));
+        assert_eq!(parse_retry_after("0"), Some(0));
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_future() {
+        let future = chrono::Utc::now() + chrono::Duration::seconds(120);
+        let hdr = future.to_rfc2822();
+        let got = parse_retry_after(&hdr).unwrap_or(0);
+        // Rounding: chrono::Duration::seconds truncates; allow ±2s slack.
+        assert!(got >= 118 && got <= 122, "expected ~120, got {got}");
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_past_or_invalid() {
+        // Past date → negative delta → try_into::<u64> fails → None.
+        let past = chrono::Utc::now() - chrono::Duration::seconds(60);
+        assert_eq!(parse_retry_after(&past.to_rfc2822()), None);
+        // Junk → both parses fail → None.
+        assert_eq!(parse_retry_after("not a date"), None);
+        assert_eq!(parse_retry_after(""), None);
     }
 }

@@ -19,7 +19,7 @@ path = "src/main.rs"
 # ChipSpec::glyph_svg / glyph_codepoint fields. Path override
 # points at the mnml-sibling-icons worktree where 0.4.0 lives
 # during Stage 1; drop the `path =` once 0.4.0 is on crates.io.
-mnml-bridge = { path = "../../../mnml/crates/mnml-bridge", version = "0.7" }
+mnml-bridge = "0.7"
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
