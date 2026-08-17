@@ -247,11 +247,7 @@ pub fn expand_ticket_sub_rows(
             // arrive from Jira's dev-status API in whatever order the
             // repo returned them; we render newest-first by grabbing
             // the tail so long-running tickets don't drown the tree.
-            let cap = tree
-                .pr_show_counts
-                .get(&issue.key)
-                .copied()
-                .unwrap_or(3);
+            let cap = tree.pr_show_counts.get(&issue.key).copied().unwrap_or(3);
             if prs.len() <= cap {
                 (0..prs.len())
                     .map(|pr_idx| VisibleRow::LinkedPr { issue_idx, pr_idx })

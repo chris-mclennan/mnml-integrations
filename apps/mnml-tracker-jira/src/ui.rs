@@ -744,7 +744,11 @@ fn draw_kanban_column(
                         .as_ref()
                         .map(|t| t.name.to_ascii_lowercase())
                         .unwrap_or_default(),
-                    assignee: issue.fields.assignee.as_ref().map(|a| a.display_name.clone()),
+                    assignee: issue
+                        .fields
+                        .assignee
+                        .as_ref()
+                        .map(|a| a.display_name.clone()),
                     labels: issue.fields.labels.clone(),
                     actions: buttons
                         .into_iter()
@@ -778,9 +782,7 @@ fn draw_kanban_column(
                 .fg(key_color)
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            Style::default()
-                .fg(key_color)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(key_color).add_modifier(Modifier::BOLD)
         };
         let (type_glyph, type_color) = match s.issuetype_lc.as_str() {
             "bug" => ("\u{F188}", Color::Red),
@@ -907,7 +909,10 @@ fn draw_kanban_column(
         total_lines.saturating_sub(scroll_off as usize) > inner.height as usize
     };
     let text = ratatui::text::Text::from(visible_lines);
-    f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+    f.render_widget(
+        Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 
     // 2026-08-07 — compute per-card screen rects post-render. We know
     // each card's height in lines; walk the map, tracking absolute Y.
@@ -957,7 +962,9 @@ fn draw_kanban_column(
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  ↓ more · j/k scroll ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::DIM),
             ))),
             hint_rect,
         );
@@ -976,9 +983,9 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let show_more_keys: Vec<Option<String>> = rows
         .iter()
         .map(|r| match r {
-            crate::tree::VisibleRow::PrShowMore { issue_idx, .. } => Some(
-                app.active().issues[*issue_idx].key.clone(),
-            ),
+            crate::tree::VisibleRow::PrShowMore { issue_idx, .. } => {
+                Some(app.active().issues[*issue_idx].key.clone())
+            }
             _ => None,
         })
         .collect();
@@ -1351,8 +1358,16 @@ fn tree_row_for<'a>(
             Row::new(vec![Cell::from(line)])
         }
         VisibleRow::PrShowMore { hidden, .. } => Row::new(vec![
-            Cell::from(format!("        ▸ show {} more PR{}", hidden, if *hidden == 1 { "" } else { "s" }))
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from(format!(
+                "        ▸ show {} more PR{}",
+                hidden,
+                if *hidden == 1 { "" } else { "s" }
+            ))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     }
 }
@@ -1446,16 +1461,85 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
     // Register each chip's rect so the click handler can dispatch.
     // We measure widths inline so the register-order matches render-order.
     use crate::app::ChipKind;
-    let entries: Vec<(String, bool, ChipKind)> = vec![
-        (board_label, cfg_tab.is_some_and(|t| t.board_id.is_some()), ChipKind::Board),
-        (search_label, app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()), ChipKind::Search),
-        (team_label, cfg_tab.is_some_and(|t| t.team.is_some()), ChipKind::Team),
-        (version_label, version_active, ChipKind::Version),
-        ("Epic ▾".to_string(), false, ChipKind::Epic),
-        ("Type ▾".to_string(), false, ChipKind::Type),
-        ("Label ▾".to_string(), false, ChipKind::Label),
-        ("⚡ Quick filters ▾".to_string(), false, ChipKind::QuickFilters),
-    ];
+    // 2026-08-17 (task #887) — sprint chip. Visibility rule is
+    // "optimistic until confirmed kanban": show on any tab with a
+    // board_id UNLESS the sprint cache is known-empty (i.e. we
+    // fetched and Jira returned no sprints — the board is kanban).
+    // A None cache (not fetched yet) keeps the chip visible so the
+    // user has an entry point to trigger the fetch. On scrum boards,
+    // clicking populates the cache and the chip's label swaps from
+    // the placeholder to the current sprint name on the next paint.
+    let tab_state = app.tabs.get(app.active_tab);
+    let selected_sprint_id = tab_state.and_then(|s| s.selected_sprint_id);
+    let sprints_cache = tab_state.and_then(|s| s.sprints_cache.as_ref());
+    let has_board_id = cfg_tab.is_some_and(|t| t.board_id.is_some());
+    let cache_confirmed_empty = sprints_cache.is_some_and(|v| v.is_empty());
+    let has_sprints = has_board_id && !cache_confirmed_empty;
+    // The current sprint name we show on the chip. Priority:
+    //   1) if the user pinned a sprint, look it up in the cache;
+    //   2) otherwise take the sole "active" sprint from the cache;
+    //   3) otherwise fall back to a bare "Sprint" label.
+    let sprint_chip_label: String = if let Some(cache) = sprints_cache {
+        let name = if let Some(id) = selected_sprint_id {
+            cache.iter().find(|s| s.id == id).map(|s| s.name.clone())
+        } else {
+            cache
+                .iter()
+                .find(|s| s.state.eq_ignore_ascii_case("active"))
+                .map(|s| s.name.clone())
+        };
+        match name {
+            Some(n) => format!("Sprint: {n} ▾"),
+            None => "Sprint ▾".to_string(),
+        }
+    } else {
+        "Sprint ▾".to_string()
+    };
+    let sprint_active = selected_sprint_id.is_some();
+    // 2026-08-17 (task #893) — active-quick-filter count for the
+    // toolbar chip: `⚡ Quick filters (2) ▾` when two are active.
+    let active_qf_count = tab_state
+        .map(|s| s.active_quick_filter_ids.len())
+        .unwrap_or(0);
+    let quickfilters_label = if active_qf_count > 0 {
+        format!("⚡ Quick filters ({active_qf_count}) ▾")
+    } else {
+        "⚡ Quick filters ▾".to_string()
+    };
+    let quickfilters_active = active_qf_count > 0;
+    let mut entries: Vec<(String, bool, ChipKind)> = Vec::new();
+    entries.push((
+        board_label,
+        cfg_tab.is_some_and(|t| t.board_id.is_some()),
+        ChipKind::Board,
+    ));
+    if has_sprints {
+        entries.push((sprint_chip_label, sprint_active, ChipKind::Sprint));
+    }
+    entries.push((
+        search_label,
+        app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()),
+        ChipKind::Search,
+    ));
+    entries.push((
+        team_label,
+        cfg_tab.is_some_and(|t| t.team.is_some()),
+        ChipKind::Team,
+    ));
+    entries.push((version_label, version_active, ChipKind::Version));
+    entries.push(("Epic ▾".to_string(), false, ChipKind::Epic));
+    entries.push(("Type ▾".to_string(), false, ChipKind::Type));
+    entries.push(("Label ▾".to_string(), false, ChipKind::Label));
+    entries.push((
+        quickfilters_label,
+        quickfilters_active,
+        ChipKind::QuickFilters,
+    ));
+    // 2026-08-17 (task #893) — settings gear. Only visible when the
+    // tab has a board_id, since the URL we open is board-scoped.
+    if cfg_tab.is_some_and(|t| t.board_id.is_some()) {
+        entries.push(("⚙ Settings".to_string(), false, ChipKind::BoardSettings));
+    }
     app.rects.kanban_chips.clear();
     let mut spans: Vec<Span> = Vec::new();
     let mut cursor_x: u16 = area.x;
@@ -1982,6 +2066,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         crate::app::FieldKind::Team => "team",
         crate::app::FieldKind::TabFixVersion => "tab fixVersion",
         crate::app::FieldKind::TicketAction => "action",
+        crate::app::FieldKind::Sprint => "sprint",
+        crate::app::FieldKind::QuickFilter => "quick filters",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -1994,6 +2080,10 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         " switch tab view to fixVersion ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::TicketAction) {
         " actions ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::Sprint) {
+        " switch sprint ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::QuickFilter) {
+        " toggle quick filters (Space) ".to_string()
     } else if target_count == 1 {
         format!(" set {field_label} ")
     } else {
@@ -2040,7 +2130,7 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
             let start = sel_pos.saturating_sub(row_cap / 2);
             let end = (start + row_cap).min(visible.len());
             for &idx in &visible[start..end] {
-                let (_, label) = &picker.items[idx];
+                let (id, label) = &picker.items[idx];
                 let style = if idx == picker.selected {
                     Style::default()
                         .fg(Color::Black)
@@ -2049,10 +2139,27 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                let prefix = if idx == picker.selected {
-                    "  ▸ "
-                } else {
-                    "    "
+                // Multi-select pickers (task #893 quick filters)
+                // render a `[x]` / `[ ]` box before the label so the
+                // user can see the current selection at a glance and
+                // knows Space toggles rather than commits.
+                let prefix = match (picker.multi_selected.as_ref(), idx == picker.selected) {
+                    (Some(multi), true) => {
+                        if multi.contains(id) {
+                            "  ▸ [x] ".to_string()
+                        } else {
+                            "  ▸ [ ] ".to_string()
+                        }
+                    }
+                    (Some(multi), false) => {
+                        if multi.contains(id) {
+                            "    [x] ".to_string()
+                        } else {
+                            "    [ ] ".to_string()
+                        }
+                    }
+                    (None, true) => "  ▸ ".to_string(),
+                    (None, false) => "    ".to_string(),
                 };
                 body.push(Line::from(Span::styled(format!("{prefix}{label}"), style)));
             }
@@ -2067,8 +2174,13 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         )));
     }
     body.push(Line::from(""));
+    let hint = if picker.multi_selected.is_some() {
+        "  type to filter · ↑↓ move · Space toggle · Enter apply · Esc cancel"
+    } else {
+        "  type to filter · ↑↓ move · Enter commit · Esc cancel"
+    };
     body.push(Line::from(Span::styled(
-        "  type to filter · ↑↓ move · Enter commit · Esc cancel",
+        hint,
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM),
@@ -2198,21 +2310,27 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::Board => {
             // v1: no picker yet — clicking cycles a toast reminding
             // the user how to switch (config-driven for now).
-            app.status = "Board selection is config-driven — edit `board_id` in mnml-tracker-jira.toml".into();
+            app.status =
+                "Board selection is config-driven — edit `board_id` in mnml-tracker-jira.toml"
+                    .into();
         }
+        ChipKind::Sprint => app.open_sprint_picker().await,
         ChipKind::Search => app.open_filter(),
         ChipKind::Team => app.open_team_picker(),
         ChipKind::Version => app.open_tab_fix_version_picker().await,
-        ChipKind::Epic | ChipKind::Type | ChipKind::Label | ChipKind::QuickFilters => {
+        ChipKind::QuickFilters => app.open_quickfilter_picker().await,
+        ChipKind::BoardSettings => app.open_board_settings(),
+        ChipKind::Epic | ChipKind::Type | ChipKind::Label => {
             // 2026-08-07 — design-critic r1 #3: was `{kind:?}` which
-            // leaked Debug-formatted PascalCase ("QuickFilters filter
-            // — coming soon"). Explicit copy per chip matches the
-            // chip label text exactly.
+            // leaked Debug-formatted PascalCase. Explicit copy per
+            // chip matches the chip label text exactly. Epic/Type/
+            // Label filters are still deferred — the JQL for these
+            // needs a picker of their own values (project-scoped),
+            // which is v2 groundwork.
             let name = match kind {
                 ChipKind::Epic => "Epic",
                 ChipKind::Type => "Type",
                 ChipKind::Label => "Label",
-                ChipKind::QuickFilters => "Quick filters",
                 _ => "?",
             };
             app.status = format!("{name} filter — coming soon");
@@ -2239,7 +2357,12 @@ fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
     let h = (screen.height as u32 * 8 / 10) as u16;
     let x = screen.x + (screen.width.saturating_sub(w)) / 2;
     let y = screen.y + (screen.height.saturating_sub(h)) / 2;
-    let area = Rect { x, y, width: w, height: h };
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     // Dim backdrop with a filled block so nothing bleeds through.
     f.render_widget(ratatui::widgets::Clear, area);
     let block = Block::default()
@@ -2275,9 +2398,12 @@ fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
 
     // Loading / error state before we have JSON data.
     if let Some(err) = &modal.error {
-        let p = Paragraph::new(format!("Failed to load {}:\n{err}\n\nEsc to close.", modal.key))
-            .style(Style::default().fg(Color::Red))
-            .wrap(ratatui::widgets::Wrap { trim: false });
+        let p = Paragraph::new(format!(
+            "Failed to load {}:\n{err}\n\nEsc to close.",
+            modal.key
+        ))
+        .style(Style::default().fg(Color::Red))
+        .wrap(ratatui::widgets::Wrap { trim: false });
         f.render_widget(p, inner);
         return;
     }
@@ -2312,13 +2438,17 @@ fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
     let header = Line::from(vec![
         Span::styled(
             format!(" {} · ", modal.key),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(summary.to_string(), Style::default().fg(Color::Gray)),
         Span::raw("  "),
         Span::styled(
             format!("[{status}]"),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
     let header_rect = Rect {
@@ -2338,24 +2468,19 @@ fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
         let id = spec.resolve_id(&alias);
         let label = spec.resolve_label(&alias);
         // Fields that live on the right (long text).
-        let is_long = matches!(
-            id.as_str(),
-            "description" | "environment"
-        );
+        let is_long = matches!(id.as_str(), "description" | "environment");
         // Skip fields already in the header.
         if matches!(id.as_str(), "title" | "summary" | "status") {
             continue;
         }
         let value = resolve_field_value(data, &id);
         if is_long {
-            long_text_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{label}"),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            long_text_lines.push(Line::from(vec![Span::styled(
+                format!("{label}"),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             for line in value.lines() {
                 long_text_lines.push(Line::from(Span::styled(
                     line.to_string(),
@@ -2558,8 +2683,16 @@ fn json_to_display(v: Option<&serde_json::Value>) -> String {
             .filter_map(|x| {
                 x.as_str()
                     .map(|s| s.to_string())
-                    .or_else(|| x.pointer("/name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-                    .or_else(|| x.pointer("/value").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .or_else(|| {
+                        x.pointer("/name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .or_else(|| {
+                        x.pointer("/value")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
             })
             .collect::<Vec<_>>()
             .join(", ");

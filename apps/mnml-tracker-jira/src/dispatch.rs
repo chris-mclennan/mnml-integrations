@@ -431,9 +431,8 @@ mod tests {
             "https://bitbucket.org/acme/foo/pull-requests/2023".to_string(),
         );
         assert!(
-            d.prompt().starts_with(
-                "/agents:reviewer https://bitbucket.org/acme/foo/pull-requests/2023"
-            )
+            d.prompt()
+                .starts_with("/agents:reviewer https://bitbucket.org/acme/foo/pull-requests/2023")
         );
     }
 

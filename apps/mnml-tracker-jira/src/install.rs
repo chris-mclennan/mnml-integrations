@@ -163,33 +163,33 @@ fn auth_fields() -> Vec<AuthField> {
 
 fn build_spec(chip: &SplitChip) -> IntegrationSpec {
     IntegrationSpec {
-            id: chip.id.into(),
-            label: chip.label.into(),
-            description: Some(chip.description.into()),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-            binary: "mnml-tracker-jira".into(),
-            category: Some("tracker".into()),
-            chip: Some(ChipSpec {
-                // nf-md-jira glyph everywhere — the three chips
-                // are one family; the label / fallback letters
-                // split them apart.
-                glyph: "\u{F0303}".into(),
-                fallback: chip.fallback.into(),
-                color: chip.color.into(),
-                enabled: true,
-                in_palette_bar: false,
-                badge_key: Some(chip.id.into()),
-                ..Default::default()
-            }),
-            commands: vec![CommandSpec {
-                id: chip.command_id.into(),
-                title: chip.command_title.into(),
-                group: Some("integrations".into()),
-                keys: vec![chip.leader_keys.into()],
-                run: format!(":term mnml-tracker-jira --only {}", chip.only_flag),
-            }],
-            auth: auth_fields(),
+        id: chip.id.into(),
+        label: chip.label.into(),
+        description: Some(chip.description.into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+        binary: "mnml-tracker-jira".into(),
+        category: Some("tracker".into()),
+        chip: Some(ChipSpec {
+            // nf-md-jira glyph everywhere — the three chips
+            // are one family; the label / fallback letters
+            // split them apart.
+            glyph: "\u{F0303}".into(),
+            fallback: chip.fallback.into(),
+            color: chip.color.into(),
+            enabled: true,
+            in_palette_bar: false,
+            badge_key: Some(chip.id.into()),
             ..Default::default()
+        }),
+        commands: vec![CommandSpec {
+            id: chip.command_id.into(),
+            title: chip.command_title.into(),
+            group: Some("integrations".into()),
+            keys: vec![chip.leader_keys.into()],
+            run: format!(":term mnml-tracker-jira --only {}", chip.only_flag),
+        }],
+        auth: auth_fields(),
+        ..Default::default()
     }
 }
 

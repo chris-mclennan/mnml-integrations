@@ -140,6 +140,14 @@ impl Client {
         format!("{}/browse/{key}", self.base)
     }
 
+    /// The trailing-slash-stripped base URL (`https://foo.atlassian.net`).
+    /// Callers that build a Jira URL outside this client's endpoints
+    /// (e.g. the board settings page, task #893) borrow this instead
+    /// of duplicating the trim.
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
     /// 2026-07-25 — list PRs linked to a Jira issue via the Atlassian
     /// dev-status API. Requires the Bitbucket-for-Jira (or GitHub /
     /// Azure DevOps / Stash) app connector to be installed in the
@@ -399,10 +407,7 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("board {board_id} issues fetch: {status}: {text}"));
         }
-        let sr: SearchResult = resp
-            .json()
-            .await
-            .context("parsing board issues response")?;
+        let sr: SearchResult = resp.json().await.context("parsing board issues response")?;
         Ok(sr.issues)
     }
 
@@ -488,11 +493,89 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("board list fetch: {status}: {text}"));
         }
-        let br: BoardListResponse = resp
+        let br: BoardListResponse = resp.json().await.context("parsing board list response")?;
+        Ok(br.values)
+    }
+
+    /// 2026-08-17 (task #887) — list the sprints for a board. The
+    /// Agile API's `state` query param takes any comma-separated
+    /// subset of `active,future,closed`; we always ask for all three
+    /// so the caller can render current + upcoming + last-N-closed
+    /// in one round trip.
+    ///
+    /// Returns an empty vec (not an error) for kanban boards where
+    /// the endpoint replies 400 "The board does not support sprints"
+    /// — the UI hides the sprint chip in that case rather than
+    /// surfacing a toast on every refresh.
+    ///
+    /// Pagination: the endpoint is paged (`isLast` / `startAt` /
+    /// `maxResults`); we ask for `maxResults=50` in one shot which
+    /// covers the practical case of "current + a handful of future
+    /// + the last ~10 closed". If a board has more, older closed
+    ///   sprints simply don't surface — the caller trims to
+    ///   `last N closed` anyway.
+    pub async fn fetch_sprints_for_board(&self, board_id: u64) -> Result<Vec<Sprint>> {
+        let url = format!("{}/rest/agile/1.0/board/{board_id}/sprint", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("state", "active,future,closed"), ("maxResults", "50")])
+            .send()
+            .await
+            .with_context(|| format!("fetching sprints for board {board_id}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            // 400 = kanban board (no sprints) — treat as empty list,
+            // not an error, so the UI can quietly hide the chip.
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                return Ok(Vec::new());
+            }
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "sprint list fetch failed for board {board_id}: {status}: {text}"
+            ));
+        }
+        let sr: SprintListResponse = resp
             .json()
             .await
-            .context("parsing board list response")?;
-        Ok(br.values)
+            .with_context(|| format!("parsing sprint list for board {board_id}"))?;
+        Ok(sr.values)
+    }
+
+    /// 2026-08-17 (task #893) — list the board's saved "quick
+    /// filters". These are user-defined JQL fragments (typically
+    /// `assignee = currentUser()`, `labels = "hotfix"`) that Jira
+    /// Cloud's board toolbar surfaces as toggleable chips. Each has
+    /// a stable id + a display name + a JQL fragment we can layer
+    /// into the board fetch via `?jql=<extra>`.
+    ///
+    /// Returns an empty vec (not an error) if the board defines no
+    /// quick filters. The UI collapses the chip in that case.
+    pub async fn fetch_quickfilters_for_board(&self, board_id: u64) -> Result<Vec<QuickFilter>> {
+        let url = format!("{}/rest/agile/1.0/board/{board_id}/quickfilter", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("maxResults", "50")])
+            .send()
+            .await
+            .with_context(|| format!("fetching quick filters for board {board_id}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "quick filter fetch failed for board {board_id}: {status}: {text}"
+            ));
+        }
+        let sr: QuickFilterListResponse = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing quick filters for board {board_id}"))?;
+        Ok(sr.values)
     }
 
     /// Fetch every version of `project_key` (released + unreleased,
@@ -1073,6 +1156,134 @@ struct BoardListResponse {
     values: Vec<Board>,
 }
 
+/// 2026-08-17 (task #887) — one sprint on a Jira Software board.
+/// State is one of `"active" | "future" | "closed"`. Dates are ISO
+/// strings; `complete_date` is present only on closed sprints.
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct Sprint {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, rename = "startDate")]
+    pub start_date: Option<String>,
+    #[serde(default, rename = "endDate")]
+    pub end_date: Option<String>,
+    #[serde(default, rename = "completeDate")]
+    pub complete_date: Option<String>,
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// Which board originated this sprint. A sprint can belong to
+    /// multiple boards via shared filters, but the API always echos
+    /// the id we asked from — useful for cache-keying.
+    #[serde(default, rename = "originBoardId")]
+    pub origin_board_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct SprintListResponse {
+    #[serde(default)]
+    values: Vec<Sprint>,
+}
+
+impl Sprint {
+    /// Sort into the order the picker renders: active first (there is
+    /// usually one, sometimes multiple in parallel-track setups), then
+    /// future sprints by startDate ascending (soonest-up first), then
+    /// closed sprints by completeDate descending (most-recently-closed
+    /// first) — capped at `last_n_closed` so the picker doesn't drown
+    /// in years-old sprints.
+    pub fn sort_for_picker(mut sprints: Vec<Sprint>, last_n_closed: usize) -> Vec<Sprint> {
+        let bucket = |s: &Sprint| -> u8 {
+            match s.state.to_ascii_lowercase().as_str() {
+                "active" => 0,
+                "future" => 1,
+                _ => 2, // "closed" and anything unexpected
+            }
+        };
+        sprints.sort_by(|a, b| {
+            let ba = bucket(a);
+            let bb = bucket(b);
+            if ba != bb {
+                return ba.cmp(&bb);
+            }
+            match ba {
+                // Active: startDate asc, missing dates last.
+                0 => cmp_iso_opt_asc(a.start_date.as_deref(), b.start_date.as_deref())
+                    .then_with(|| a.name.cmp(&b.name)),
+                // Future: startDate asc, missing dates last.
+                1 => cmp_iso_opt_asc(a.start_date.as_deref(), b.start_date.as_deref())
+                    .then_with(|| a.name.cmp(&b.name)),
+                // Closed: completeDate desc (most-recent first), fall
+                // back to endDate desc, then name desc.
+                _ => {
+                    let a_c = a.complete_date.as_deref().or(a.end_date.as_deref());
+                    let b_c = b.complete_date.as_deref().or(b.end_date.as_deref());
+                    cmp_iso_opt_desc(a_c, b_c).then_with(|| b.name.cmp(&a.name))
+                }
+            }
+        });
+        // Trim trailing closed sprints past the cap. Active + future
+        // are always kept in full.
+        let mut kept_closed = 0usize;
+        sprints.retain(|s| {
+            if s.state.eq_ignore_ascii_case("closed") {
+                kept_closed += 1;
+                kept_closed <= last_n_closed
+            } else {
+                true
+            }
+        });
+        sprints
+    }
+}
+
+fn cmp_iso_opt_asc(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn cmp_iso_opt_desc(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => y.cmp(x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// 2026-08-17 (task #893) — one of a board's saved "quick filters".
+/// Each is a named JQL fragment (`assignee = currentUser()`,
+/// `labels = "hotfix"`, etc.) that Jira Cloud's board toolbar
+/// surfaces as a toggleable chip. Layered into the board fetch via
+/// `?jql=<jql>` so an active-quick-filter selection narrows what the
+/// board returns.
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct QuickFilter {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub jql: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Board that owns this quick filter. Present but redundant for
+    /// our use (we only ever ask for one board at a time).
+    #[serde(default, rename = "boardId")]
+    pub board_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct QuickFilterListResponse {
+    #[serde(default)]
+    values: Vec<QuickFilter>,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct ProjectVersion {
@@ -1192,6 +1403,73 @@ mod tests {
         assert_eq!(paragraphs.len(), 3);
         assert_eq!(paragraphs[1]["type"], "paragraph");
         assert!(paragraphs[1].get("content").is_none());
+    }
+
+    fn mk_sprint(id: u64, state: &str, start: Option<&str>, end: Option<&str>) -> Sprint {
+        Sprint {
+            id,
+            name: format!("Sprint {id}"),
+            state: state.into(),
+            start_date: start.map(|s| s.into()),
+            end_date: end.map(|s| s.into()),
+            complete_date: end.map(|s| s.into()),
+            goal: None,
+            origin_board_id: Some(1),
+        }
+    }
+
+    #[test]
+    fn sprint_picker_sort_puts_active_first_then_future_then_closed_recent() {
+        let sprints = vec![
+            mk_sprint(4, "closed", Some("2026-06-01"), Some("2026-06-14")),
+            mk_sprint(1, "closed", Some("2026-05-01"), Some("2026-05-14")),
+            mk_sprint(6, "future", Some("2026-08-15"), None),
+            mk_sprint(5, "future", Some("2026-08-01"), None),
+            mk_sprint(9, "active", Some("2026-07-15"), Some("2026-07-29")),
+        ];
+        let sorted = Sprint::sort_for_picker(sprints, 3);
+        let ids: Vec<u64> = sorted.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![9, 5, 6, 4, 1]);
+    }
+
+    #[test]
+    fn sprint_picker_sort_caps_closed_at_n() {
+        let sprints = vec![
+            mk_sprint(1, "closed", Some("2026-05-01"), Some("2026-05-14")),
+            mk_sprint(2, "closed", Some("2026-05-15"), Some("2026-05-28")),
+            mk_sprint(3, "closed", Some("2026-06-01"), Some("2026-06-14")),
+            mk_sprint(4, "closed", Some("2026-06-15"), Some("2026-06-28")),
+            mk_sprint(5, "closed", Some("2026-07-01"), Some("2026-07-14")),
+        ];
+        let sorted = Sprint::sort_for_picker(sprints, 3);
+        assert_eq!(sorted.len(), 3, "kept only last 3 closed");
+        let ids: Vec<u64> = sorted.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![5, 4, 3], "most-recently-closed first");
+    }
+
+    #[test]
+    fn sprint_picker_sort_active_and_future_always_kept_regardless_of_cap() {
+        let sprints = vec![
+            mk_sprint(1, "closed", Some("2026-05-01"), Some("2026-05-14")),
+            mk_sprint(2, "closed", Some("2026-05-15"), Some("2026-05-28")),
+            mk_sprint(3, "active", Some("2026-07-15"), Some("2026-07-29")),
+            mk_sprint(4, "future", Some("2026-08-01"), None),
+            mk_sprint(5, "future", Some("2026-08-15"), None),
+        ];
+        let sorted = Sprint::sort_for_picker(sprints, 0);
+        let ids: Vec<u64> = sorted.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![3, 4, 5], "closed dropped, active + future kept");
+    }
+
+    #[test]
+    fn sprint_picker_sort_missing_start_dates_sink_within_bucket() {
+        let mut a = mk_sprint(1, "future", None, None);
+        a.name = "no-date".into();
+        let b = mk_sprint(2, "future", Some("2026-08-01"), None);
+        let c = mk_sprint(3, "future", Some("2026-08-15"), None);
+        let sorted = Sprint::sort_for_picker(vec![a, b, c], 3);
+        let ids: Vec<u64> = sorted.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![2, 3, 1]);
     }
 
     #[test]

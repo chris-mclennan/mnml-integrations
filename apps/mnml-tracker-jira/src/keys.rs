@@ -70,6 +70,11 @@ pub enum Action {
     FieldPickerDown,
     FieldPickerCommit,
     FieldPickerCancel,
+    /// 2026-08-17 (task #893) — Space in the field picker. In
+    /// multi-select mode (QuickFilter), toggles the row under the
+    /// cursor. In single-select mode, no-op — the row stays as a
+    /// filter character insertion via `FieldPickerInsert(' ')`.
+    FieldPickerToggle,
     /// 2026-07-25 — tree tabs only. Enter/Space on the focused
     /// row: toggle group / toggle ticket-expand (fetches PRs) /
     /// open PR URL, depending on the row variant.
@@ -144,13 +149,19 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
     // Field picker (assignee / fixVersion) — greedy modal with a
     // type-to-filter editor + arrow navigation. Comes before the
     // transition picker so they don't collide on overlapping chords.
-    if app.field_picker.is_some() {
+    if let Some(fp) = app.field_picker.as_ref() {
+        // 2026-08-17 (task #893) — Space in multi-select mode
+        // toggles the current row. In single-select mode Space
+        // still types into the filter buffer (the classic behavior),
+        // so this only applies when the picker declared multi.
+        let is_multi = fp.multi_selected.is_some();
         return match key.code {
             KeyCode::Esc => Some(Action::FieldPickerCancel),
             KeyCode::Enter => Some(Action::FieldPickerCommit),
             KeyCode::Up => Some(Action::FieldPickerUp),
             KeyCode::Down => Some(Action::FieldPickerDown),
             KeyCode::Backspace => Some(Action::FieldPickerBackspace),
+            KeyCode::Char(' ') if is_multi => Some(Action::FieldPickerToggle),
             KeyCode::Char(c) if !m.contains(KeyModifiers::CONTROL) => {
                 Some(Action::FieldPickerInsert(c))
             }
@@ -266,9 +277,7 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('I') if is_fix_version_tree_tab(app) => {
             Some(Action::DispatchTicket("implement"))
         }
-        KeyCode::Char('X') if is_fix_version_tree_tab(app) => {
-            Some(Action::DispatchTicket("fix"))
-        }
+        KeyCode::Char('X') if is_fix_version_tree_tab(app) => Some(Action::DispatchTicket("fix")),
         KeyCode::Char('T') if is_fix_version_tree_tab(app) => {
             Some(Action::DispatchTicket("triage"))
         }
@@ -391,6 +400,7 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::FieldPickerDown => app.field_picker_move(1),
         Action::FieldPickerCommit => app.commit_field_picker().await,
         Action::FieldPickerCancel => app.close_field_picker(),
+        Action::FieldPickerToggle => app.quickfilter_toggle_selected(),
         Action::TreeActivate => app.tree_activate_focused().await,
         Action::TreeExpand => app.tree_expand_focused().await,
         Action::TreeCollapse => app.tree_collapse_focused(),

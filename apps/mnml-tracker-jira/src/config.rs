@@ -157,9 +157,7 @@ impl FieldSpec {
                 }
                 default_label_for(n)
             }
-            FieldSpec::Custom {
-                label: Some(l), ..
-            } => l.clone(),
+            FieldSpec::Custom { label: Some(l), .. } => l.clone(),
             FieldSpec::Custom { id, .. } => id.clone(),
         }
     }

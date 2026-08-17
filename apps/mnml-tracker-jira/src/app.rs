@@ -2,7 +2,7 @@
 //! each configured tab. The UI layer reads from this.
 
 use crate::config::{Config, ResolveMode, Tab, TabKind};
-use crate::jira::{Client, Issue, IssueDetail, Transition};
+use crate::jira::{Client, Issue, IssueDetail, QuickFilter, Sprint, Transition};
 use crate::tree::TreeState;
 use anyhow::{Context, Result};
 use ratatui::layout::Rect;
@@ -120,6 +120,10 @@ pub struct Rects {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipKind {
     Board,
+    /// 2026-08-17 (task #887) — Sprint chip. Only rendered on scrum
+    /// boards whose sprint list is non-empty; hidden on kanban.
+    /// Click opens the sprint picker.
+    Sprint,
     Search,
     Team,
     Version,
@@ -127,6 +131,9 @@ pub enum ChipKind {
     Type,
     Label,
     QuickFilters,
+    /// 2026-08-17 (task #893) — opens the board's settings URL in the
+    /// system browser. The Jira Cloud "Configure board" page.
+    BoardSettings,
 }
 
 /// 2026-08-07 — card detail modal state. Loaded lazily — `data`
@@ -161,6 +168,13 @@ pub struct FieldPicker {
     pub cursor: usize,
     pub selected: usize,
     pub error: Option<String>,
+    /// 2026-08-17 (task #893) — multi-select state used by the
+    /// QuickFilter picker. `Some(set)` ⇒ picker renders `[x]`/`[ ]`
+    /// prefixes, Space toggles the row's id in the set, Enter closes
+    /// and commits the whole set. `None` ⇒ classic single-select.
+    /// The Sprint picker deliberately stays single-select (a board
+    /// is on exactly one sprint at a time).
+    pub multi_selected: Option<BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +200,17 @@ pub enum FieldKind {
     /// use. Mouse users click the buttons directly; keyboard users
     /// press `.` to pick.
     TicketAction,
+    /// 2026-08-17 (task #887) — Sprint picker for board tabs. Items
+    /// come from `TabState.sprints_cache`, sorted current-active
+    /// first then future then last-N-closed. Commit sets
+    /// `TabState.selected_sprint_id` and refetches the board via
+    /// `?jql=... AND sprint = <id>`.
+    Sprint,
+    /// 2026-08-17 (task #893) — Quick filter picker for board tabs.
+    /// Multi-select — Space toggles the row under the cursor, Enter
+    /// closes + applies (writes `TabState.active_quick_filter_ids`
+    /// and refetches).
+    QuickFilter,
 }
 
 impl FieldPicker {
@@ -262,6 +287,31 @@ pub struct TabState {
     /// `None` on legacy / non-tree tabs — renderer falls back to
     /// the flat table path in that case.
     pub tree: Option<TreeState>,
+    /// 2026-08-17 (task #887) — board-tab-only. Overrides which
+    /// sprint the board fetch scopes to. `None` = default behavior
+    /// (the Agile API's `/board/{id}/issue` returns whatever the
+    /// board's own view shows, which is the active sprint on scrum
+    /// boards). `Some(id)` = additionally AND `sprint = <id>` into
+    /// the fetch, letting the user peek at upcoming / previous
+    /// sprints without changing the board itself.
+    ///
+    /// In-memory only — not written back to config. On restart the
+    /// tab reverts to the board's default view.
+    pub selected_sprint_id: Option<u64>,
+    /// 2026-08-17 (task #887) — lazy-loaded sprint list for the
+    /// tab's `board_id`. Populated on first sprint-picker open;
+    /// re-used across subsequent opens until refresh. `None` = never
+    /// fetched; `Some(vec)` = fetched (empty vec = kanban board).
+    pub sprints_cache: Option<Vec<Sprint>>,
+    /// 2026-08-17 (task #893) — active quick-filter ids. Each id
+    /// contributes an `AND (<qf.jql>)` clause to the board fetch.
+    /// Multiple can be active simultaneously; empty set = no
+    /// quick-filter narrowing. Persists across refreshes but not
+    /// across restarts (in-memory only).
+    pub active_quick_filter_ids: BTreeSet<u64>,
+    /// 2026-08-17 (task #893) — lazy-loaded quick-filter list for
+    /// the tab's `board_id`. Same lifecycle as `sprints_cache`.
+    pub quick_filters_cache: Option<Vec<QuickFilter>>,
 }
 
 impl TabState {
@@ -319,6 +369,10 @@ impl App {
                 last_fetched: None,
                 last_error: None,
                 tree,
+                selected_sprint_id: None,
+                sprints_cache: None,
+                active_quick_filter_ids: BTreeSet::new(),
+                quick_filters_cache: None,
             });
         }
         let mut app = App {
@@ -441,7 +495,11 @@ impl App {
                     .team_field_name
                     .as_ref()
                     .filter(|s| !s.trim().is_empty())
-                    .or(self.cfg.team_field_id.as_ref().filter(|s| !s.trim().is_empty()))
+                    .or(self
+                        .cfg
+                        .team_field_id
+                        .as_ref()
+                        .filter(|s| !s.trim().is_empty()))
                 {
                     clauses.push(format!("\"{field_name}\" = \"{escaped}\""));
                 }
@@ -475,26 +533,62 @@ impl App {
         let board_id = self.cfg.tabs.get(idx).and_then(|t| t.board_id);
         let fetch_result = match board_id {
             Some(id) => {
-                let extra_jql = team.as_ref().map(|_| {
-                    // The team clause was already built above; extract
-                    // just the AND-clause portion by re-building it from
-                    // the parts. Simpler than parsing the full jql back
-                    // apart: recompute from the team string alone.
-                    let escaped = team.as_ref().unwrap().replace('"', "\\\"");
+                // Compose the `?jql=<extra>` clauses that layer on top
+                // of what the board itself already filters by:
+                //   - team clause (component / labels / configured team
+                //     custom field)
+                //   - sprint override (task #887)
+                //   - active quick filters (task #893)
+                // All AND'd together; empty ⇒ no extra ?jql= param.
+                let mut extra_clauses: Vec<String> = Vec::new();
+                if let Some(t) = team.as_ref() {
+                    let escaped = t.replace('"', "\\\"");
                     let mut clauses = Vec::new();
                     if let Some(field_name) = self
                         .cfg
                         .team_field_name
                         .as_ref()
                         .filter(|s| !s.trim().is_empty())
-                        .or(self.cfg.team_field_id.as_ref().filter(|s| !s.trim().is_empty()))
+                        .or(self
+                            .cfg
+                            .team_field_id
+                            .as_ref()
+                            .filter(|s| !s.trim().is_empty()))
                     {
                         clauses.push(format!("\"{field_name}\" = \"{escaped}\""));
                     }
                     clauses.push(format!("component = \"{escaped}\""));
                     clauses.push(format!("labels = \"{escaped}\""));
-                    format!("({})", clauses.join(" OR "))
-                });
+                    extra_clauses.push(format!("({})", clauses.join(" OR ")));
+                }
+                // Sprint override — bare `sprint = <id>` clause. The
+                // Agile /board/{id}/issue endpoint accepts JQL against
+                // the sprint field even though the board's own view
+                // already implies "in the active sprint" — the extra
+                // clause is what lets us pin to a specific sprint id
+                // (past or future).
+                if let Some(sprint_id) = self.tabs[idx].selected_sprint_id {
+                    extra_clauses.push(format!("sprint = {sprint_id}"));
+                }
+                // Quick filters — each contributes a bracketed sub-
+                // clause of its own JQL. We wrap in parens defensively
+                // in case the quick filter contains a top-level OR.
+                if !self.tabs[idx].active_quick_filter_ids.is_empty()
+                    && let Some(cache) = self.tabs[idx].quick_filters_cache.as_ref()
+                {
+                    for qf in cache {
+                        if self.tabs[idx].active_quick_filter_ids.contains(&qf.id)
+                            && !qf.jql.trim().is_empty()
+                        {
+                            extra_clauses.push(format!("({})", qf.jql.trim()));
+                        }
+                    }
+                }
+                let extra_jql = if extra_clauses.is_empty() {
+                    None
+                } else {
+                    Some(extra_clauses.join(" AND "))
+                };
                 self.client
                     .fetch_board_issues(id, extra_jql.as_deref(), &extra_fields)
                     .await
@@ -864,7 +958,8 @@ impl App {
         let issue = self.active().issues[issue_idx].clone();
         let jira_url = self.client.issue_url(&issue.key);
         let d = crate::dispatch::Dispatch::for_ticket(kind, &issue, jira_url);
-        let (queue_dir, ipc_dir) = crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
+        let (queue_dir, ipc_dir) =
+            crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
         self.status = crate::dispatch::dispatch(&d, queue_dir.as_deref(), ipc_dir.as_deref());
     }
 
@@ -891,7 +986,8 @@ impl App {
         };
         let jira_url = self.client.issue_url(&issue.key);
         let d = crate::dispatch::Dispatch::for_pr(&issue, jira_url, pr_url);
-        let (queue_dir, ipc_dir) = crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
+        let (queue_dir, ipc_dir) =
+            crate::dispatch::workspace_dispatch_paths(self.cfg.dispatch_workspace.as_deref());
         self.status = crate::dispatch::dispatch(&d, queue_dir.as_deref(), ipc_dir.as_deref());
     }
 
@@ -1259,6 +1355,7 @@ impl App {
             cursor: 0,
             selected: 0,
             error: None,
+            multi_selected: None,
         });
         match self.client.fetch_assignable_users(&project, "").await {
             Ok(users) => {
@@ -1305,6 +1402,7 @@ impl App {
             cursor: 0,
             selected: 0,
             error: None,
+            multi_selected: None,
         });
         match self.client.fetch_versions(&project).await {
             Ok(versions) => {
@@ -1383,6 +1481,7 @@ impl App {
             cursor: 0,
             selected: 0,
             error: None,
+            multi_selected: None,
         });
     }
 
@@ -1426,6 +1525,7 @@ impl App {
             cursor: 0,
             selected: 0,
             error: None,
+            multi_selected: None,
         });
     }
 
@@ -1442,6 +1542,260 @@ impl App {
             };
         }
         self.field_picker = None;
+    }
+
+    /// 2026-08-17 (task #887) — Sprint picker for board tabs. Opens
+    /// a modal listing the tab's board sprints (current + upcoming +
+    /// last N closed). Uses the cache when populated, otherwise
+    /// fetches from `/rest/agile/1.0/board/{id}/sprint`. Silently
+    /// no-ops for tabs without a `board_id`.
+    ///
+    /// Kanban boards return an empty sprint list (the API rejects
+    /// the `/sprint` endpoint with 400 for non-scrum boards, which
+    /// the client maps to `Ok(vec![])`); the chip that fires this
+    /// picker is hidden on those tabs, so getting here already
+    /// implies scrum.
+    pub async fn open_sprint_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(board_id) = self.cfg.tabs.get(idx).and_then(|t| t.board_id) else {
+            self.status = "sprint picker: this tab has no `board_id`".to_string();
+            return;
+        };
+        // Prime the picker in the "loading…" state before we await —
+        // gives the UI a chance to render feedback if the fetch is
+        // slow.
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::Sprint,
+            items: Vec::new(),
+            loaded: false,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: None,
+        });
+        let sprints = if let Some(cached) = self.tabs[idx].sprints_cache.clone() {
+            cached
+        } else {
+            match self.client.fetch_sprints_for_board(board_id).await {
+                Ok(list) => {
+                    self.tabs[idx].sprints_cache = Some(list.clone());
+                    list
+                }
+                Err(e) => {
+                    if let Some(p) = self.field_picker.as_mut() {
+                        p.error = Some(e.to_string());
+                        p.loaded = true;
+                    }
+                    return;
+                }
+            }
+        };
+        // Cap `last N closed` at 5 — the picker window is ~13 rows
+        // tall; leaving room for active + 2-3 future keeps closed
+        // sprints from pushing the current sprint out of view.
+        let sorted = Sprint::sort_for_picker(sprints, 5);
+        // The "— Board default (active sprint) —" sentinel maps to
+        // `selected_sprint_id = None` so users can quickly return to
+        // the board's default view (which follows the active sprint
+        // rotation without a re-pick).
+        let items: Vec<(String, String)> = std::iter::once((
+            String::new(),
+            "— Board default (active sprint) —".to_string(),
+        ))
+        .chain(sorted.iter().map(|s| {
+            let tag = match s.state.to_ascii_lowercase().as_str() {
+                "active" => "active",
+                "future" => "future",
+                _ => "closed",
+            };
+            (s.id.to_string(), format!("{}  [{tag}]", s.name))
+        }))
+        .collect();
+        if items.len() == 1 {
+            // Sentinel only ⇒ no sprints (this board is kanban after
+            // all, or scrum with none created yet). Nicer to close +
+            // toast than to open an empty picker.
+            self.field_picker = None;
+            self.status = "sprint picker: this board has no sprints".to_string();
+            return;
+        }
+        // Pre-select whatever the tab is currently pinned to, so the
+        // picker opens with the cursor on the user's current view.
+        let current = self.tabs[idx]
+            .selected_sprint_id
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let default_pos = items.iter().position(|(id, _)| id == &current).unwrap_or(0);
+        // The picker's `selected` is an INDEX into `items` (visible_indices
+        // returns [0..items.len) when the filter is empty). Set it to
+        // the current-sprint row.
+        let picker_selected = default_pos;
+        if let Some(p) = self.field_picker.as_mut() {
+            p.items = items;
+            p.selected = picker_selected;
+            p.loaded = true;
+        }
+    }
+
+    /// 2026-08-17 (task #887) — commit for the Sprint picker. `id`
+    /// is either an empty string (Board default) or the sprint id
+    /// as a decimal string. Updates the tab's `selected_sprint_id`
+    /// and refetches so the kanban re-populates from the chosen
+    /// sprint.
+    pub async fn commit_sprint_picker(&mut self, id: String) {
+        let idx = self.active_tab;
+        let new_id: Option<u64> = if id.trim().is_empty() {
+            None
+        } else {
+            id.parse::<u64>().ok()
+        };
+        self.tabs[idx].selected_sprint_id = new_id;
+        // Reset the kanban column scroll — the new sprint's tickets
+        // are unrelated to the old sprint's rows.
+        self.kanban_col_scroll = [0; 4];
+        self.field_picker = None;
+        self.status = match new_id {
+            Some(id) => format!("sprint: pinned to {id}"),
+            None => "sprint: back to board default (active)".to_string(),
+        };
+        self.refresh_active().await;
+    }
+
+    /// 2026-08-17 (task #893) — Quick-filter picker for board tabs.
+    /// Multi-select. Opens with the currently-active filters ticked;
+    /// Space toggles a row; Enter closes + refetches.
+    pub async fn open_quickfilter_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(board_id) = self.cfg.tabs.get(idx).and_then(|t| t.board_id) else {
+            self.status = "quick filters: this tab has no `board_id`".to_string();
+            return;
+        };
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::QuickFilter,
+            items: Vec::new(),
+            loaded: false,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: Some(BTreeSet::new()),
+        });
+        let filters = if let Some(cached) = self.tabs[idx].quick_filters_cache.clone() {
+            cached
+        } else {
+            match self.client.fetch_quickfilters_for_board(board_id).await {
+                Ok(list) => {
+                    self.tabs[idx].quick_filters_cache = Some(list.clone());
+                    list
+                }
+                Err(e) => {
+                    if let Some(p) = self.field_picker.as_mut() {
+                        p.error = Some(e.to_string());
+                        p.loaded = true;
+                    }
+                    return;
+                }
+            }
+        };
+        if filters.is_empty() {
+            // Nothing to pick ⇒ close + toast instead of an empty modal.
+            self.field_picker = None;
+            self.status = "quick filters: this board defines none".to_string();
+            return;
+        }
+        // Seed multi-select with whatever is already active so re-open
+        // shows the current state, not a blank slate.
+        let mut multi = BTreeSet::new();
+        for qf_id in &self.tabs[idx].active_quick_filter_ids {
+            multi.insert(qf_id.to_string());
+        }
+        let items: Vec<(String, String)> = filters
+            .iter()
+            .map(|qf| (qf.id.to_string(), qf.name.clone()))
+            .collect();
+        if let Some(p) = self.field_picker.as_mut() {
+            p.items = items;
+            p.multi_selected = Some(multi);
+            p.loaded = true;
+        }
+    }
+
+    /// 2026-08-17 (task #893) — Space in the quick-filter picker:
+    /// toggle the row under the cursor in `multi_selected`. No-op
+    /// for pickers without multi-select on.
+    pub fn quickfilter_toggle_selected(&mut self) {
+        let Some(p) = self.field_picker.as_mut() else {
+            return;
+        };
+        let Some(multi) = p.multi_selected.as_mut() else {
+            return;
+        };
+        let Some((id, _)) = p.items.get(p.selected).cloned() else {
+            return;
+        };
+        if !multi.remove(&id) {
+            multi.insert(id);
+        }
+    }
+
+    /// 2026-08-17 (task #893) — commit for the Quick-filter picker.
+    /// Writes `multi_selected` back into the tab's
+    /// `active_quick_filter_ids` set and refetches.
+    pub async fn commit_quickfilter_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(p) = self.field_picker.as_ref() else {
+            return;
+        };
+        let Some(multi) = p.multi_selected.as_ref() else {
+            return;
+        };
+        let new_ids: BTreeSet<u64> = multi.iter().filter_map(|s| s.parse::<u64>().ok()).collect();
+        self.tabs[idx].active_quick_filter_ids = new_ids;
+        self.field_picker = None;
+        let n = self.tabs[idx].active_quick_filter_ids.len();
+        self.status = if n == 0 {
+            "quick filters: cleared".to_string()
+        } else {
+            format!("quick filters: {n} active")
+        };
+        self.refresh_active().await;
+    }
+
+    /// 2026-08-17 (task #893) — open the current board's settings
+    /// page in the system browser. Jira Cloud's canonical URL is
+    /// `${jira_url}/jira/software/c/projects/<PROJECT>/boards/<ID>?config=filter`,
+    /// which jumps straight into the configuration tab.
+    /// Server-hosted / older instances also honor the classic
+    /// `${jira_url}/secure/RapidBoard.jspa?rapidView=<ID>&config=filter`
+    /// URL — we ship the Cloud form because Atlassian Cloud is the
+    /// baseline mnml-tracker-jira targets, and Cloud redirects
+    /// unknown project paths back to the general boards list.
+    pub fn open_board_settings(&mut self) {
+        let idx = self.active_tab;
+        let Some(tab_cfg) = self.cfg.tabs.get(idx) else {
+            return;
+        };
+        let Some(board_id) = tab_cfg.board_id else {
+            self.status = "board settings: this tab has no `board_id`".to_string();
+            return;
+        };
+        let base = self.client.base_url();
+        let url = match tab_cfg.project.as_ref() {
+            Some(project) => {
+                format!("{base}/jira/software/c/projects/{project}/boards/{board_id}?config=filter")
+            }
+            // No project on the tab (unlikely for board_active_sprint
+            // / board_backlog — validate() requires it — but not
+            // impossible for a user-authored `kind=None` tab with
+            // `board_id`). Fall back to the classic RapidBoard URL
+            // which doesn't need a project.
+            None => format!("{base}/secure/RapidBoard.jspa?rapidView={board_id}&config=filter"),
+        };
+        match webbrowser::open(&url) {
+            Ok(()) => self.status = "opened board settings in browser".to_string(),
+            Err(e) => self.status = format!("open failed: {e}"),
+        }
     }
 
     /// 2026-08-06 — Fix Versions tab-view picker. Opens on `V`. Same
@@ -1465,6 +1819,7 @@ impl App {
             cursor: 0,
             selected: 0,
             error: None,
+            multi_selected: None,
         });
         match self.client.fetch_versions(&project).await {
             Ok(versions) => {
@@ -1615,6 +1970,20 @@ impl App {
             self.dispatch_ticket_action(Box::leak(id.clone().into_boxed_str()));
             return;
         }
+        // Sprint picker (task #887): commit updates the tab's
+        // `selected_sprint_id` and refetches. Route before the
+        // per-ticket bulk-write loop.
+        if kind == FieldKind::Sprint {
+            self.commit_sprint_picker(id.clone()).await;
+            return;
+        }
+        // Quick-filter picker (task #893): multi-select commit
+        // updates the tab's `active_quick_filter_ids` set and
+        // refetches. Route before the per-ticket bulk-write loop.
+        if kind == FieldKind::QuickFilter {
+            self.commit_quickfilter_picker().await;
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -1643,7 +2012,11 @@ impl App {
                     };
                     self.client.set_fix_versions(key, &versions).await
                 }
-                FieldKind::Team | FieldKind::TabFixVersion | FieldKind::TicketAction => {
+                FieldKind::Team
+                | FieldKind::TabFixVersion
+                | FieldKind::TicketAction
+                | FieldKind::Sprint
+                | FieldKind::QuickFilter => {
                     unreachable!("routed above")
                 }
             };
@@ -1660,7 +2033,11 @@ impl App {
             let field = match kind {
                 FieldKind::Assignee => "assignee",
                 FieldKind::FixVersion => "fixVersion",
-                FieldKind::Team | FieldKind::TabFixVersion | FieldKind::TicketAction => {
+                FieldKind::Team
+                | FieldKind::TabFixVersion
+                | FieldKind::TicketAction
+                | FieldKind::Sprint
+                | FieldKind::QuickFilter => {
                     unreachable!("routed above")
                 }
             };
@@ -2016,12 +2393,7 @@ impl App {
     /// `board_id` (if any) is cached — the render then reads from
     /// `board_name_cache`.
     pub async fn ensure_board_names_for_active(&mut self) {
-        let Some(bid) = self
-            .cfg
-            .tabs
-            .get(self.active_tab)
-            .and_then(|t| t.board_id)
-        else {
+        let Some(bid) = self.cfg.tabs.get(self.active_tab).and_then(|t| t.board_id) else {
             return;
         };
         self.resolve_board_name(bid).await;
@@ -2253,6 +2625,10 @@ mod tests {
             last_fetched: None,
             last_error: None,
             tree: None,
+            selected_sprint_id: None,
+            sprints_cache: None,
+            active_quick_filter_ids: BTreeSet::new(),
+            quick_filters_cache: None,
         };
         App {
             cfg: Config {
