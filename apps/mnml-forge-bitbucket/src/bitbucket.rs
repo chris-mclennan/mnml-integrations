@@ -327,31 +327,56 @@ impl Client {
         let workspace = workspace.to_string();
         let predicate = bbql_predicate.to_string();
         let state = state.map(str::to_string);
-        // Concurrency 16 (vs 8 in `list_workspace_prs_filtered`)
-        // — the slim `values.id,values.participants.approved`
-        // projection returns ~12KB per response, so twice the
-        // in-flight requests stays comfortably within Bitbucket's
-        // per-user rate ceiling (~1000 rpm) and shaves the fan-out
-        // in half on a 100+ repo workspace. #967 needed this to
-        // clear the 10s poll ceiling.
-        let concurrency = 16usize;
-        let counts: Vec<(usize, usize)> = stream::iter(repos.into_iter().map(|slug| {
+        // Concurrency 8 — matches `list_workspace_prs_filtered`
+        // and keeps us well under Bitbucket's per-user rate
+        // ceiling. Higher concurrency (16+) was tested in #967
+        // but burned rate-limit budget on back-to-back polls,
+        // 429ing the enumeration itself. The slim `values.id,
+        // values.participants.approved` projection keeps
+        // per-request latency low enough (~350ms) that 8-way
+        // fan-out still clears the 10s poll ceiling on a
+        // 100+ repo workspace.
+        let concurrency = 8usize;
+        // Return per-repo `Option<(open, approved)>` so we can
+        // count how many repos silently failed (429 / auth / etc.)
+        // and emit a stderr note. Matches the task-#967 spec —
+        // "if partial, note it on stderr" — without exposing
+        // partial semantics to the caller's return type.
+        let counts: Vec<Option<(usize, usize)>> = stream::iter(repos.into_iter().map(|slug| {
             let ws = workspace.clone();
             let q = predicate.clone();
             let st = state.clone();
             let client = self.clone();
             async move {
-                client
+                match client
                     .count_repo_prs_by_approval(&ws, &slug, st.as_deref(), &q, per_page)
                     .await
-                    .unwrap_or((0, 0))
+                {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        // Log at the per-repo grain so a user
+                        // debugging a low count can spot the
+                        // rate-limited slugs. Kept terse — the
+                        // outer `--values` timeout emits its
+                        // own message on total failure.
+                        eprintln!("repo {slug} skipped: {}", e.short_label());
+                        None
+                    }
+                }
             }
         }))
         .buffer_unordered(concurrency)
         .collect()
         .await;
-        let open = counts.iter().map(|(o, _)| o).sum();
-        let approved = counts.iter().map(|(_, a)| a).sum();
+        let dropped = counts.iter().filter(|c| c.is_none()).count();
+        if dropped > 0 {
+            eprintln!(
+                "warning: {dropped} of {} repos failed to respond — counts are partial",
+                counts.len()
+            );
+        }
+        let open = counts.iter().filter_map(|c| c.map(|(o, _)| o)).sum();
+        let approved = counts.iter().filter_map(|c| c.map(|(_, a)| a)).sum();
         Ok((open, approved))
     }
 
@@ -395,10 +420,7 @@ impl Client {
             .header("Accept", "application/json")
             .query(&[("pagelen", per_page.to_string())])
             .query(&[("q", bbql_predicate)])
-            .query(&[(
-                "fields",
-                "values.id,values.participants.approved,next,size",
-            )]);
+            .query(&[("fields", "values.id,values.participants.approved,next,size")]);
         if let Some(s) = state {
             req = req.query(&[("state", s)]);
         }
@@ -453,8 +475,9 @@ impl Client {
         // read). The slim projection shaves ~65% off enumeration
         // latency, which #967 needed to keep `--values` under
         // the 10s poll ceiling on a workspace with 100+ repos.
-        let mut url =
-            format!("{BASE}/repositories/{workspace}?role=member&pagelen=100&fields=values.slug,next");
+        let mut url = format!(
+            "{BASE}/repositories/{workspace}?role=member&pagelen=100&fields=values.slug,next"
+        );
         loop {
             let resp = self
                 .http
