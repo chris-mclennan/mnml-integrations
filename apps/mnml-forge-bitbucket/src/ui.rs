@@ -689,9 +689,7 @@ fn draw_repo_pr_tree(
                     .and_then(|b| b.branch.as_ref())
                     .map(|b| b.name.clone())
                     .unwrap_or_default();
-                let date = preview
-                    .map(|p| p.updated_date())
-                    .unwrap_or_default();
+                let date = preview.map(|p| p.updated_date()).unwrap_or_default();
                 let title = preview
                     .map(|p| format!("#{} · {}", p.id, p.title))
                     .unwrap_or_default();

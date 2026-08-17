@@ -289,6 +289,151 @@ impl Client {
         Ok(all)
     }
 
+    /// 2026-08-17 (#967) — workspace-wide PR count with per-repo
+    /// approval aggregation. Returns `(open_count, open_with_any_approval_count)`
+    /// summed across every repo in `workspace` that matches
+    /// `bbql_predicate` (e.g. `author.account_id = "..."`).
+    ///
+    /// Uses a slim Bitbucket field selector —
+    /// `fields=values.id,values.participants.approved` — so each
+    /// per-repo response is ~30x smaller than the default list
+    /// projection (see `list_workspace_prs_filtered`). This is
+    /// what keeps `--values` under the 10s poll ceiling on a
+    /// large workspace (400+ mine-authored PRs across many repos)
+    /// — the full-projection fan-out with `+values.participants`
+    /// added ~40% per-request latency AND doubled payload size,
+    /// which busted the ceiling in early testing.
+    ///
+    /// BBQL doesn't support filtering on `.participants.approved`
+    /// (Bitbucket returns "does not support filtering"), so the
+    /// approval count is computed client-side over each PR's
+    /// `participants[].approved` field.
+    ///
+    /// Per-repo errors are silently dropped (matches
+    /// `list_workspace_prs_filtered` — one 403 on an archived
+    /// repo shouldn't blank the whole count).
+    pub async fn count_workspace_prs_by_approval(
+        &self,
+        workspace: &str,
+        bbql_predicate: &str,
+        state: Option<&str>,
+        per_page: u32,
+    ) -> Result<(usize, usize)> {
+        let repos = self.list_workspace_repos(workspace).await?;
+        if repos.is_empty() {
+            return Ok((0, 0));
+        }
+        use futures::stream::{self, StreamExt};
+        let workspace = workspace.to_string();
+        let predicate = bbql_predicate.to_string();
+        let state = state.map(str::to_string);
+        // Concurrency 16 (vs 8 in `list_workspace_prs_filtered`)
+        // — the slim `values.id,values.participants.approved`
+        // projection returns ~12KB per response, so twice the
+        // in-flight requests stays comfortably within Bitbucket's
+        // per-user rate ceiling (~1000 rpm) and shaves the fan-out
+        // in half on a 100+ repo workspace. #967 needed this to
+        // clear the 10s poll ceiling.
+        let concurrency = 16usize;
+        let counts: Vec<(usize, usize)> = stream::iter(repos.into_iter().map(|slug| {
+            let ws = workspace.clone();
+            let q = predicate.clone();
+            let st = state.clone();
+            let client = self.clone();
+            async move {
+                client
+                    .count_repo_prs_by_approval(&ws, &slug, st.as_deref(), &q, per_page)
+                    .await
+                    .unwrap_or((0, 0))
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+        let open = counts.iter().map(|(o, _)| o).sum();
+        let approved = counts.iter().map(|(_, a)| a).sum();
+        Ok((open, approved))
+    }
+
+    /// Per-repo slim-projection count helper for
+    /// `count_workspace_prs_by_approval`. Returns
+    /// `(open_in_this_repo, approved_in_this_repo)`. Only reads
+    /// `values.id` + `values.participants.approved` (~12KB per
+    /// 50 PRs vs ~390KB for the full projection). Single page —
+    /// caller passes `per_page` large enough to cover realistic
+    /// author-authored PR counts per repo (50 is safe for one
+    /// human author).
+    async fn count_repo_prs_by_approval(
+        &self,
+        workspace: &str,
+        repo: &str,
+        state: Option<&str>,
+        bbql_predicate: &str,
+        per_page: u32,
+    ) -> std::result::Result<(usize, usize), FetchErr> {
+        #[derive(Deserialize)]
+        struct SlimPage {
+            #[serde(default)]
+            values: Vec<SlimRow>,
+        }
+        #[derive(Deserialize)]
+        struct SlimRow {
+            #[serde(default)]
+            participants: Vec<SlimParticipant>,
+        }
+        #[derive(Deserialize)]
+        struct SlimParticipant {
+            #[serde(default)]
+            approved: Option<bool>,
+        }
+
+        let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests");
+        let mut req = self
+            .http
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .query(&[("pagelen", per_page.to_string())])
+            .query(&[("q", bbql_predicate)])
+            .query(&[(
+                "fields",
+                "values.id,values.participants.approved,next,size",
+            )]);
+        if let Some(s) = state {
+            req = req.query(&[("state", s)]);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FetchErr::network(e.to_string()))?;
+        let status = resp.status();
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let snippet = text.chars().take(120).collect::<String>();
+            let mut err = FetchErr::http(status.as_u16(), snippet);
+            if let Some(secs) = retry_after {
+                err = err.with_retry_after(secs);
+            }
+            return Err(err);
+        }
+        let body: SlimPage = resp
+            .json()
+            .await
+            .map_err(|e| FetchErr::network(format!("parse: {e}")))?;
+        let open = body.values.len();
+        let approved = body
+            .values
+            .iter()
+            .filter(|r| r.participants.iter().any(|p| p.approved.unwrap_or(false)))
+            .count();
+        Ok((open, approved))
+    }
+
     /// Paginate `/2.0/repositories/{workspace}` and collect every
     /// repo slug. Used by the workspace-wide PR enumerators above.
     pub async fn list_workspace_repos(&self, workspace: &str) -> Result<Vec<String>> {
@@ -302,7 +447,14 @@ impl Client {
             slug: String,
         }
         let mut out: Vec<String> = Vec::new();
-        let mut url = format!("{BASE}/repositories/{workspace}?role=member&pagelen=100");
+        // Field selector `values.slug,next` — Bitbucket's default
+        // repo projection is a 325KB blob per 100-repo page (all
+        // the CI/permissions/branching-model metadata we don't
+        // read). The slim projection shaves ~65% off enumeration
+        // latency, which #967 needed to keep `--values` under
+        // the 10s poll ceiling on a workspace with 100+ repos.
+        let mut url =
+            format!("{BASE}/repositories/{workspace}?role=member&pagelen=100&fields=values.slug,next");
         loop {
             let resp = self
                 .http

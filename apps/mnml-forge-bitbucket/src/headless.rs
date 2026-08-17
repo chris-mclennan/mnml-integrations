@@ -184,25 +184,25 @@ struct SegmentValues {
 
 /// Emit `{"open_mine": N, "approved_mine": K}` on stdout for
 /// mnml's statusline-segment poller. Uses the workspace-wide
-/// author-BBQL fan-out (`list_workspace_prs_filtered`) so the
-/// count reflects every repo in `cfg.workspace`, not just
+/// author-BBQL fan-out (`count_workspace_prs_by_approval`) so
+/// the count reflects every repo in `cfg.workspace`, not just
 /// per-tab configured repos.
 ///
-/// Approval count reads from the PR list response's
-/// `participants[].approved` field. **v1 known limitation:**
-/// Bitbucket's `/pullrequests` list endpoint typically omits
-/// `participants` (that field is populated on the per-PR detail
-/// endpoint), so `approved_mine` will often report 0 even when
-/// the user has approved PRs. Fixing this "correctly" would
-/// require a second per-PR detail fetch for each open PR, which
-/// blows the 10s poll ceiling on any large workspace (398 PRs ×
-/// ~300ms each = ~2min). A future iteration could either
-///   (a) fetch details for a bounded top-N, or
-///   (b) use a second BBQL query `author.account_id = "..." AND
-///       participants.approved = true` as a count-only lookup.
-/// For v1, ship the accurate `open_mine` + best-effort
-/// `approved_mine` and let the user reach for the detail pane
-/// when they need the exact approval breakdown.
+/// 2026-08-17 (#967) — `approved_mine` now populates correctly.
+/// Bitbucket's `/pullrequests` list endpoint omits
+/// `participants[]` from the default projection, so v1 always
+/// reported `0`. BBQL rejects `participants.approved` /
+/// `reviewers.approved` / `participants.role` /
+/// `participants.state` as filterable fields ("does not support
+/// filtering"), which killed the "second BBQL query" approach.
+/// The fix is Bitbucket's field selector — asking for the slim
+/// projection `fields=values.id,values.participants.approved`
+/// expands participants inline in the SAME fan-out that
+/// computes `open_mine`, so we pay zero extra round-trips AND
+/// stay well under the 10s poll ceiling. The full-projection
+/// alternative (adding `+values.participants`) was ~40% slower
+/// per request AND doubled response size (busted the ceiling
+/// on a 400-PR workspace in testing).
 pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
     // Resolve the auth user's account_id — BBQL author filter
     // requires the stable id, not the email.
@@ -215,13 +215,10 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("/2.0/user returned no account_id"))?;
 
     let bbql = format!("author.account_id = \"{account_id}\"");
-    let prs = client
-        .list_workspace_prs_filtered(&cfg.workspace, &bbql, Some("OPEN"), 50)
+    let (open_mine, approved_mine) = client
+        .count_workspace_prs_by_approval(&cfg.workspace, &bbql, Some("OPEN"), 50)
         .await
-        .context("fetching open PRs authored by you")?;
-
-    let open_mine = prs.len();
-    let approved_mine = prs.iter().filter(|p| p.approval_count() > 0).count();
+        .context("counting open PRs authored by you")?;
 
     let out = SegmentValues {
         open_mine,
