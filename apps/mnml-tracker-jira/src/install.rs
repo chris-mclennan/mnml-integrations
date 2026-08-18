@@ -92,11 +92,77 @@ pub fn install() -> Result<()> {
     for chip in SPLITS {
         let spec = build_spec(chip);
         let path = install_integration(&spec)?;
+        // mnml 0.2.11+ generic statusline-segment surface. Bridge
+        // 0.7 doesn't know about `[[values_sources]]` /
+        // `[[statusline_segments]]`, so we append them as raw TOML
+        // after the bridge writes the manifest. Only the Work chip
+        // carries a segment for now — Fix Versions and Boards don't
+        // have a bounded "how many things need me" summary that fits
+        // a right-side chip. Same pattern as mnml-forge-bitbucket.
+        // Task #1014.
+        if let Err(e) = append_segment_blocks(chip.id, &path) {
+            eprintln!(
+                "note: couldn't append [[values_sources]] to {} ({e}) — hand-edit that file to add the chip",
+                path.display()
+            );
+        }
         println!("wrote manifest: {}", path.display());
     }
     println!("\nrun mnml + `integrations.refresh` (or restart) to pick up the new chips");
     println!("chords: <leader>ijw / ijv / ijb  ·  right-click chip for options");
     Ok(())
+}
+
+/// Append mnml 0.2.11+ statusline-segment TOML blocks to a freshly-
+/// written Work manifest. Idempotent: re-installing does NOT double-
+/// append (we grep the file for the segment `id` first). No-op for
+/// chips that don't declare a segment. See main.rs `--values` for
+/// the paired data source. Task #1014.
+fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Result<()> {
+    // Only the Work chip has a segment declaration today. Fix
+    // Versions and Boards render tab-scoped views without a natural
+    // "N need me" summary.
+    if chip_id != "jira_work" {
+        return Ok(());
+    }
+    let current = std::fs::read_to_string(path)?;
+    const SEGMENT_ID: &str = "jira_work_assigned";
+    if current.contains(SEGMENT_ID) {
+        return Ok(());
+    }
+    // Raw TOML append. Glyph is nf-md-jira (U+F0303) — same family
+    // as the pane chip so it's obviously the Jira chip. Purple to
+    // distinguish from the cyan Bitbucket chip. Format is a single
+    // number (no parens) because Jira has no clean sub-count like
+    // approved/unapproved for PRs — the count IS the number of
+    // tickets in Jira Work Assigned. Poll every 5 min matches
+    // Bitbucket's rhythm; Jira's rate limit is per-user 100/min so
+    // headroom is generous.
+    let block = concat!(
+        "\n",
+        "# mnml 0.2.11+ statusline segment — appended by\n",
+        "# mnml-tracker-jira --install. Idempotent: re-install skips\n",
+        "# this if `jira_work_assigned` is already present.\n",
+        "[[values_sources]]\n",
+        "id = \"jira_work_values\"\n",
+        "command = \"mnml-tracker-jira --values\"\n",
+        "poll_interval_secs = 300\n",
+        "\n",
+        "[[statusline_segments]]\n",
+        "id = \"jira_work_assigned\"\n",
+        "source = \"jira_work_values\"\n",
+        "glyph = \"\u{F0303}\"\n",
+        "color = \"magenta\"\n",
+        "format = \"{assigned_open}\"\n",
+        "tooltip = \"Jira tickets assigned to you (non-Done). Click to open Jira Work.\"\n",
+        "click_command = \"jira_work.open\"\n",
+    );
+    let mut out = current;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(block);
+    std::fs::write(path, out)
 }
 
 /// Auth-field schema shared across all three chips (Work / Fix Versions /

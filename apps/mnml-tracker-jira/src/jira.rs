@@ -71,27 +71,48 @@ impl Client {
         // tracker config). Lands in `Fields.extras` via
         // `#[serde(flatten)]`.
         fields.extend(extra_fields.iter().cloned());
-        let body = serde_json::json!({
-            "jql": jql,
-            "maxResults": max_results,
-            "fields": fields,
-        });
-        let resp = self
-            .http
-            .post(&url)
-            .basic_auth(&self.email, Some(&self.token))
-            .header("Accept", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("Jira search request failed")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("Jira search failed: {status}: {text}"));
+        // Paginate — the new /search/jql endpoint returns `isLast`
+        // + `nextPageToken` when there are more pages. Prior code
+        // silently truncated at `max_results`. Task #1016.
+        let mut all: Vec<Issue> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut body = serde_json::json!({
+                "jql": jql,
+                "maxResults": max_results,
+                "fields": fields,
+            });
+            if let Some(tok) = next_token.as_ref() {
+                body["nextPageToken"] = serde_json::Value::String(tok.clone());
+            }
+            let resp = self
+                .http
+                .post(&url)
+                .basic_auth(&self.email, Some(&self.token))
+                .header("Accept", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .context("Jira search request failed")?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(anyhow!("Jira search failed: {status}: {text}"));
+            }
+            let sr: SearchResult = resp.json().await.context("parsing Jira search response")?;
+            all.extend(sr.issues);
+            if all.len() >= MAX_PAGINATION_ISSUES {
+                all.truncate(MAX_PAGINATION_ISSUES);
+                break;
+            }
+            match sr.next_page_token {
+                Some(tok) if !sr.is_last.unwrap_or(false) => {
+                    next_token = Some(tok);
+                }
+                _ => break,
+            }
         }
-        let sr: SearchResult = resp.json().await.context("parsing Jira search response")?;
-        Ok(sr.issues)
+        Ok(all)
     }
 
     /// Fetch the unreleased versions of `project`, ordered by start
@@ -387,28 +408,67 @@ impl Client {
         fields.extend(extra_fields.iter().cloned());
         let fields_csv = fields.join(",");
         let url = format!("{}/rest/agile/1.0/board/{board_id}/issue", self.base);
-        let mut req = self
-            .http
-            .get(&url)
-            .basic_auth(&self.email, Some(&self.token))
-            .header("Accept", "application/json")
-            .query(&[("fields", fields_csv.as_str()), ("maxResults", "100")]);
-        if let Some(j) = extra_jql
-            && !j.trim().is_empty()
-        {
-            req = req.query(&[("jql", j)]);
+        // Paginate — Agile REST caps at maxResults=100 per page and
+        // returns startAt/total for the caller to loop on. Prior
+        // single-page code silently truncated every board bigger than
+        // 100 (user report 2026-08-18: "Sprint · 100 issues" on
+        // HeliOS was actually 100+, not exactly 100). Task #1016.
+        let mut all: Vec<Issue> = Vec::new();
+        let mut start_at: u32 = 0;
+        let page_size: u32 = 100;
+        loop {
+            let start_str = start_at.to_string();
+            let max_str = page_size.to_string();
+            let mut req = self
+                .http
+                .get(&url)
+                .basic_auth(&self.email, Some(&self.token))
+                .header("Accept", "application/json")
+                .query(&[
+                    ("fields", fields_csv.as_str()),
+                    ("maxResults", max_str.as_str()),
+                    ("startAt", start_str.as_str()),
+                ]);
+            if let Some(j) = extra_jql
+                && !j.trim().is_empty()
+            {
+                req = req.query(&[("jql", j)]);
+            }
+            let resp = req
+                .send()
+                .await
+                .with_context(|| format!("board {board_id} issues fetch"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(anyhow!("board {board_id} issues fetch: {status}: {text}"));
+            }
+            let sr: SearchResult = resp.json().await.context("parsing board issues response")?;
+            let got = sr.issues.len() as u32;
+            all.extend(sr.issues);
+            if all.len() >= MAX_PAGINATION_ISSUES {
+                // Sanity ceiling. Truncate + stop. Caller sees a
+                // capped list; a follow-up toast at the app layer
+                // could surface the truncation but that's optional.
+                all.truncate(MAX_PAGINATION_ISSUES);
+                break;
+            }
+            // Terminate when the page returned less than requested
+            // (last page) or when startAt + got >= total (Agile
+            // returns `total` reliably; new /search/jql doesn't, so
+            // check `is_last` too).
+            let done_by_size = got < page_size;
+            let done_by_total = sr
+                .total
+                .map(|t| (start_at + got) >= t)
+                .unwrap_or(false);
+            let done_by_flag = sr.is_last.unwrap_or(false);
+            if done_by_size || done_by_total || done_by_flag {
+                break;
+            }
+            start_at += page_size;
         }
-        let resp = req
-            .send()
-            .await
-            .with_context(|| format!("board {board_id} issues fetch"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("board {board_id} issues fetch: {status}: {text}"));
-        }
-        let sr: SearchResult = resp.json().await.context("parsing board issues response")?;
-        Ok(sr.issues)
+        Ok(all)
     }
 
     /// 2026-08-07 — fetch a single board's metadata by id. Used by
@@ -958,7 +1018,29 @@ fn walk_adf(node: &serde_json::Value, out: &mut String) {
 #[derive(Debug, Deserialize)]
 struct SearchResult {
     issues: Vec<Issue>,
+    /// Agile API returns `startAt` + `maxResults` + `total`; the
+    /// newer `/rest/api/3/search/jql` returns `isLast` +
+    /// `nextPageToken`. We accept either shape (all optional) and
+    /// let the caller loop on whichever fires.
+    #[serde(default)]
+    start_at: Option<u32>,
+    #[serde(default, rename = "maxResults")]
+    max_results: Option<u32>,
+    #[serde(default)]
+    total: Option<u32>,
+    #[serde(default, rename = "isLast")]
+    is_last: Option<bool>,
+    #[serde(default, rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
+
+/// Sanity ceiling on pagination — never fetch more than this many
+/// issues from one endpoint. Prevents runaway loops on misconfigured
+/// boards / broken filters that would otherwise iterate forever.
+/// 500 covers every realistic sprint / release / assigned-work scope
+/// (Bitbucket workspace-wide open PRs is a rare exception, but that
+/// lives in a different sibling).
+const MAX_PAGINATION_ISSUES: usize = 500;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Issue {

@@ -307,9 +307,22 @@ impl TabKind {
     /// name — see `ResolveMode` handling in app.rs).
     pub fn default_jql(self) -> Option<&'static str> {
         match self {
+            // 2026-08-18 (#1017) — belt-and-suspenders Done filter.
+            // `resolution = Unresolved` is the primary signal (works
+            // on Tattle's workflow where every Done* transition sets
+            // resolution). `status not in (...)` is the defensive
+            // backup — catches any workflow that transitions without
+            // setting the resolution field. If either filter fires,
+            // the ticket drops out.
+            //
+            // Status list matches Tattle's Jira taxonomy — "Done",
+            // "Done in Staging", "Done in Production" (spelled out,
+            // not "Prod"). Users on non-tattle workflows can override
+            // the whole JQL via `[[tabs]] jql = "..."`.
             Self::WorkAssigned => Some(
                 "assignee = currentUser() \
                  AND resolution = Unresolved \
+                 AND status not in (\"Done\", \"Done in Staging\", \"Done in Production\") \
                  ORDER BY updated DESC",
             ),
             Self::WorkRecentlyDone => Some(
@@ -779,7 +792,15 @@ mod tests {
     fn work_assigned_default_jql_filters_by_current_user() {
         let jql = TabKind::WorkAssigned.default_jql().unwrap();
         assert!(jql.contains("assignee = currentUser()"));
+        // 2026-08-18 (#1017) — belt-and-suspenders: BOTH resolution
+        // filter and explicit status list. Either fires, ticket
+        // drops out. Prevents both false-positives (workflow forgot
+        // to set resolution) and false-negatives (weird custom
+        // resolution values).
         assert!(jql.contains("resolution = Unresolved"));
+        assert!(jql.contains("status not in"));
+        assert!(jql.contains("Done in Staging"));
+        assert!(jql.contains("Done in Production"));
     }
 
     #[test]

@@ -56,6 +56,14 @@ struct Cli {
     /// supported; either migrate the config or omit --only.
     #[arg(long)]
     only: Option<String>,
+
+    /// mnml 0.2.11+ statusline-segment poller invokes this. Fetches
+    /// `assignee = currentUser()` + non-Done filter and prints a
+    /// JSON payload matching `[[statusline_segments]] format =
+    /// "{assigned_open}"`. See #1014. Runs headless: no TUI, no
+    /// stdin/stdout drawing — must exit quickly (< poller ceiling).
+    #[arg(long)]
+    values: bool,
 }
 
 #[tokio::main]
@@ -110,8 +118,44 @@ async fn main() -> Result<()> {
     let token = auth::load_token()?;
     let client = jira::Client::new(&cfg.jira_url, &cfg.email, &token)?;
 
+    if cli.values {
+        // Wrap the fetch in a 10s timeout matching mnml's poller
+        // ceiling. If Jira is slow, we'd rather emit nothing than
+        // block the poller's worker thread — mnml's chip renders as
+        // dim/`!` on empty stdout, which is a legit "still fetching"
+        // signal to the user.
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            list_values(&cfg, &client),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow::anyhow!("--values timed out after 10s")),
+        };
+    }
+
     let mut app = app::App::new(cfg, client).await?;
     app.hide_tab_strip = force_hide_strip;
     ui::run(&mut app).await?;
+    Ok(())
+}
+
+/// Emit `{"assigned_open": N}` on stdout for the statusline chip.
+/// Uses the SAME JQL as `TabKind::WorkAssigned` so the chip count
+/// matches what the Jira Work Assigned tab displays. Task #1014.
+async fn list_values(cfg: &config::Config, client: &jira::Client) -> Result<()> {
+    let jql = config::TabKind::WorkAssigned
+        .default_jql()
+        .ok_or_else(|| anyhow::anyhow!("WorkAssigned kind has no default_jql"))?;
+    // No extra fields needed — we only count. Cap at MAX_PAGINATION_ISSUES
+    // (500) is fine; any user with >500 assigned open tickets has bigger
+    // problems than a wrong chip.
+    let issues = client
+        .search(jql, 100, &[])
+        .await
+        .map_err(|e| anyhow::anyhow!("chip fetch failed: {e}"))?;
+    let out = serde_json::json!({ "assigned_open": issues.len() });
+    println!("{out}");
     Ok(())
 }
