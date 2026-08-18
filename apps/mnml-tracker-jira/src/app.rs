@@ -2515,16 +2515,17 @@ impl App {
         }
     }
 
-    /// Bump the visible-PR count for `key` by 3 on the active tab.
-    /// PRs are stored on TreeState (per-tab) so the count lives
-    /// there too — a "show more" click on tab A doesn't reveal PRs
-    /// on tab B's copy of the same ticket.
+    /// Reveal ALL remaining linked PRs for `key` on the active tab.
+    /// 2026-08-18 (#994) — was `cur + 3` which produced a staircase
+    /// ("show 10 more" → 6 visible → "show 7 more" → 9 visible → ...
+    /// taking 4+ clicks to see everything). Now one click reveals
+    /// everything. Setting to usize::MAX is fine — the render clamps
+    /// to the actual issue.linked_prs.len().
     pub fn pr_show_more(&mut self, key: &str) {
         let Some(tree) = self.active_mut().tree.as_mut() else {
             return;
         };
-        let cur = tree.pr_show_counts.get(key).copied().unwrap_or(3);
-        tree.pr_show_counts.insert(key.to_string(), cur + 3);
+        tree.pr_show_counts.insert(key.to_string(), usize::MAX);
     }
 }
 

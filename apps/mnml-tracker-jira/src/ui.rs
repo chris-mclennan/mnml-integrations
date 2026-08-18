@@ -390,18 +390,25 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Split off a 1-row filter strip above the table when there is
-    // any filter at all (open or committed). Otherwise the table
-    // gets the full body region.
-    let (filter_area, table_area) = if app.filter.is_some() {
-        let parts = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .split(area);
-        (Some(parts[0]), parts[1])
-    } else {
-        (None, area)
-    };
+    // 2026-08-18 (#1001) — split off a 1-row title strip above the
+    // table so we can render the title without the wrapping Block
+    // border. The border was inconsistent with Bitbucket + kanban
+    // panes and visually redundant with the bufferline tab. Filter
+    // strip stacks below the title when present.
+    let title_h: u16 = 1;
+    let filter_h: u16 = if app.filter.is_some() { 1 } else { 0 };
+    let mut constraints: Vec<Constraint> = vec![Constraint::Length(title_h)];
+    if filter_h > 0 {
+        constraints.push(Constraint::Length(filter_h));
+    }
+    constraints.push(Constraint::Min(1));
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+    let title_area = parts[0];
+    let filter_area = if filter_h > 0 { Some(parts[1]) } else { None };
+    let table_area = parts[parts.len() - 1];
     if let Some(a) = filter_area {
         draw_filter_strip(f, a, app);
     }
@@ -459,14 +466,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let title = if app.filter.is_some() && visible.len() != total {
-        format!(" {} ({}/{}) ", tab.name, visible.len(), total)
+        format!("{} · {} of {} tickets", tab.name, visible.len(), total)
     } else {
-        format!(" {} ", tab.name)
+        format!("{} · {} tickets", tab.name, total)
     };
+    // Title on its own row, no wrapping border. Matches Bitbucket
+    // pane style (no border on the flat table). #1001.
+    let title_para = Paragraph::new(Line::from(vec![Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    f.render_widget(title_para, title_area);
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1034,7 +1049,7 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         .count();
     let title = if let Some(v) = fixv {
         format!(
-            " {} · {} · {} ticket{} ",
+            "{} · {} · {} ticket{}",
             tab.name,
             v,
             ticket_count,
@@ -1042,15 +1057,33 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         )
     } else {
         format!(
-            " {} · {} ticket{} ",
+            "{} · {} ticket{}",
             tab.name,
             ticket_count,
             if ticket_count == 1 { "" } else { "s" }
         )
     };
+
+    // 2026-08-18 (#1001) — split off a 1-row title strip above the
+    // table. Was wrapped in Block::borders(ALL) with title-in-border;
+    // border removed for visual parity with Bitbucket + Boards. Title
+    // renders as a plain header row above the table body.
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    let title_area = parts[0];
+    let body_area = parts[1];
+    let title_para = Paragraph::new(Line::from(vec![Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    f.render_widget(title_para, title_area);
+
     let table = Table::new(table_rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1060,20 +1093,20 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
 
     let mut state = TableState::default();
     state.select(Some(tab.selected.min(rows.len().saturating_sub(1))));
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, body_area, &mut state);
 
     // 2026-08-07 — register mouse rects for "show N more" rows.
-    // Row 0 sits at area.y + 2 (border top + header). Ratatui may
-    // auto-scroll if the selection is off-screen; for the tree tab
-    // that's rare in practice (short trees). Rects are approximate.
+    // Post-#1001 (2026-08-18): body starts at body_area.y + 1
+    // (header row), no border row above. Was `+ 2` when a border
+    // added an extra row.
     for (i, maybe_key) in show_more_keys.iter().enumerate() {
         if let Some(key) = maybe_key {
-            let y = area.y + 2 + i as u16;
-            if y < area.y + area.height {
+            let y = body_area.y + 1 + i as u16;
+            if y < body_area.y + body_area.height {
                 let r = Rect {
-                    x: area.x + 1,
+                    x: body_area.x,
                     y,
-                    width: area.width.saturating_sub(2),
+                    width: body_area.width,
                     height: 1,
                 };
                 app.rects.pr_show_more.push((r, key.clone()));
@@ -1358,8 +1391,11 @@ fn tree_row_for<'a>(
             Row::new(vec![Cell::from(line)])
         }
         VisibleRow::PrShowMore { hidden, .. } => Row::new(vec![
+            // 2026-08-18 (#994) — was "show N more" with a staircase
+            // reveal (+3 per click). Now one click reveals everything.
+            // Label matches: "Show all N".
             Cell::from(format!(
-                "        ▸ show {} more PR{}",
+                "        ▸ Show all {} PR{}",
                 hidden,
                 if *hidden == 1 { "" } else { "s" }
             ))
