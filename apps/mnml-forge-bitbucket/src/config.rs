@@ -61,6 +61,33 @@ pub struct Config {
     /// mnml-aws-amplify's `app_order`.
     #[serde(default)]
     pub repo_order: Vec<String>,
+
+    // ── statusline chip scoping (2026-08-17, task #996) ─────────────
+    // The chip's "open PRs authored by you" count was showing 160+ for
+    // users with long histories — Bitbucket honestly returns every OPEN
+    // PR the account ever authored, including years-old zombies that
+    // never got closed. These knobs narrow to "PRs I actually need to
+    // think about" — matches Chris's Slack "Open PRs · N unapproved"
+    // semantic.
+    /// Ignore PRs whose `updated_on` is older than this many days when
+    /// counting for the statusline chip. Default 30 = last month's
+    /// activity. `0` disables (count all OPEN, regardless of age).
+    #[serde(default = "default_chip_stale_after_days")]
+    pub chip_stale_after_days: u32,
+    /// Regex patterns matching branch names to EXCLUDE from the chip
+    /// count (matched against `source.branch.name`). Default excludes
+    /// release/hotfix branches — those are release-train PRs, not
+    /// day-to-day work. Empty list = no branch exclusion.
+    #[serde(default = "default_chip_excluded_branch_patterns")]
+    pub chip_excluded_branch_patterns: Vec<String>,
+}
+
+fn default_chip_stale_after_days() -> u32 {
+    30
+}
+
+fn default_chip_excluded_branch_patterns() -> Vec<String> {
+    vec!["^release/".to_string(), "^hotfix/".to_string()]
 }
 
 fn default_refresh() -> u64 {

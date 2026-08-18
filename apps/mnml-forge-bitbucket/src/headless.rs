@@ -170,15 +170,26 @@ pub async fn find_pipeline_for_pr(
 #[derive(Serialize)]
 struct SegmentValues {
     /// Count of OPEN pull requests authored by the auth user
-    /// across the configured workspace. `0` when the user has no
-    /// open PRs (rendered as the plain number; the chip only shows
-    /// `!` on a fetch error, not on a legitimate zero).
+    /// across the configured workspace, scoped by
+    /// `chip_stale_after_days` (default 30 days) and
+    /// `chip_excluded_branch_patterns` (default excludes
+    /// release/hotfix). "PRs I need to think about", not "every
+    /// OPEN PR I've ever authored" (Bitbucket returns 100s for
+    /// long-history accounts otherwise — see task #996).
     open_mine: usize,
-    /// Subset of `open_mine` that has at least one approval on it
-    /// (any non-author approver counts — the user's own
-    /// participant record won't have `approved = true` on a PR
-    /// they authored). Rendered in the chip's parenthesized
-    /// suffix (`2(1)` = 2 open, 1 approved).
+    /// Subset of `open_mine` that STILL NEEDS review (participants
+    /// list has zero `approved = true`). Rendered in the chip's
+    /// parenthesized suffix as `{open_mine}({unapproved_mine})` —
+    /// e.g. `4(2)` = 4 open, 2 still need review. Renamed from
+    /// `approved_mine` on 2026-08-17 (task #996): the old meaning
+    /// ("has ≥1 approval") read backwards to users — 145/160
+    /// approved sounds green, but the actionable signal is the
+    /// unapproved count.
+    unapproved_mine: usize,
+    /// Back-compat: emit the old `approved_mine` field so existing
+    /// installed manifests with `format = "{open_mine}({approved_mine})"`
+    /// keep working through a version transition. New installs write
+    /// `format = "{open_mine}({unapproved_mine})"`.
     approved_mine: usize,
 }
 
@@ -214,15 +225,46 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
         .account_id
         .ok_or_else(|| anyhow::anyhow!("/2.0/user returned no account_id"))?;
 
-    let bbql = format!("author.account_id = \"{account_id}\"");
+    // Build the BBQL predicate: author.account_id = "..." AND
+    // updated_on >= <cutoff> AND NOT source.branch.name ~ "<pat>"...
+    // The staleness cutoff is the big one — accounts with long
+    // histories have 100s of zombie OPEN PRs Bitbucket honestly
+    // returns without one. Release-train pattern exclusion is the
+    // smaller second cut (matches the "Release trains excluded"
+    // Slack report semantic).
+    let mut clauses: Vec<String> = vec![format!("author.account_id = \"{account_id}\"")];
+    if cfg.chip_stale_after_days > 0 {
+        // Bitbucket accepts ISO-8601 date literals in BBQL — no
+        // quotes needed for `>=` on `updated_on`. Format as
+        // `updated_on >= 2026-07-18` (YYYY-MM-DD, UTC).
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(cfg.chip_stale_after_days as i64);
+        clauses.push(format!("updated_on >= {}", cutoff.format("%Y-%m-%d")));
+    }
+    // NOT source.branch.name ~ "^release/" etc. BBQL's `~` is regex.
+    // Grouped inside parens so the NOT applies to the OR.
+    if !cfg.chip_excluded_branch_patterns.is_empty() {
+        let ors = cfg
+            .chip_excluded_branch_patterns
+            .iter()
+            .map(|p| format!("source.branch.name ~ \"{}\"", p.replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        clauses.push(format!("NOT ({ors})"));
+    }
+    let bbql = clauses.join(" AND ");
+
+    // Fetch open + approved counts (approved = has ≥1 approval).
+    // Derive unapproved = open - approved.
     let (open_mine, approved_mine) = client
         .count_workspace_prs_by_approval(&cfg.workspace, &bbql, Some("OPEN"), 50)
         .await
         .context("counting open PRs authored by you")?;
+    let unapproved_mine = open_mine.saturating_sub(approved_mine);
 
     let out = SegmentValues {
         open_mine,
-        approved_mine,
+        unapproved_mine,
+        approved_mine, // back-compat for old manifests still using {approved_mine}
     };
     println!("{}", serde_json::to_string(&out)?);
     Ok(())

@@ -221,8 +221,8 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         "source = \"bitbucket_values\"\n",
         "glyph = \"\u{F062D}\"\n",
         "color = \"cyan\"\n",
-        "format = \"{open_mine}({approved_mine})\"\n",
-        "tooltip = \"Open PRs authored by you — parens = approved count. Click to open the PRs pane.\"\n",
+        "format = \"{open_mine}({unapproved_mine})\"\n",
+        "tooltip = \"Open PRs you authored (last 30 days, non-release) — parens = still-needs-review count. Click to open the PRs pane.\"\n",
         "click_command = \"bitbucket_prs.open\"\n",
     );
     // Ensure a trailing newline before we append so we never fuse
