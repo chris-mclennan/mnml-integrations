@@ -284,7 +284,24 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('V') if is_fix_version_tree_tab(app) => Some(Action::DispatchReview),
         // `a` opens the assignee picker; `f` the fixVersion picker.
         // Both work on selection if non-empty, else focused row.
+        //
+        // 2026-08-17 — on fix_version_tree tabs `f` switches the tab
+        // view (the natural intent from a "Current Release" pane) not
+        // per-ticket assign. `V` was previously bound to the tab-view
+        // picker unconditionally BUT `V` shadowed here for
+        // DispatchReview on fix_version_tree tabs, meaning the tab-
+        // view picker was UNREACHABLE from this tab type — users hit
+        // `f`, got the per-ticket picker, reassigned one ticket, and
+        // the tab view never changed. Now `f` = tab-view on tree tabs,
+        // per-ticket assign is `F` (uppercase-F, same tab type). Non-
+        // tree tabs keep `f` = per-ticket (their historical behavior).
         KeyCode::Char('a') => Some(Action::OpenAssigneePicker),
+        KeyCode::Char('f') if is_fix_version_tree_tab(app) => {
+            Some(Action::OpenTabFixVersionPicker)
+        }
+        KeyCode::Char('F') if is_fix_version_tree_tab(app) => {
+            Some(Action::OpenFixVersionPicker)
+        }
         KeyCode::Char('f') => Some(Action::OpenFixVersionPicker),
         KeyCode::Char('T') => Some(Action::OpenTeamPicker),
         KeyCode::Char('V') => Some(Action::OpenTabFixVersionPicker),
@@ -434,4 +451,61 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         app.ensure_focused_detail().await;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::config::TabKind;
+
+    fn app_with_active_tab_kind(kind: Option<TabKind>) -> App {
+        let mut app = App::test_app_empty();
+        // Mirror the runtime invariant: cfg.tabs[active_tab] carries
+        // the kind consulted by is_fix_version_tree_tab.
+        if let Some(t) = app.cfg.tabs.get_mut(0) {
+            t.kind = kind;
+        }
+        app
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn f_on_fix_version_tree_tab_opens_tab_view_picker() {
+        // Regression: user pressed `f` expecting the fix_version_tree
+        // tab to switch views. Prior binding fired the per-ticket
+        // picker; the tab-view picker was unreachable because `V`
+        // was shadowed by DispatchReview on this tab type. Task #989.
+        let app = app_with_active_tab_kind(Some(TabKind::FixVersionTree));
+        assert!(matches!(
+            handle(key('f'), &app),
+            Some(Action::OpenTabFixVersionPicker)
+        ));
+    }
+
+    #[test]
+    fn capital_f_on_fix_version_tree_tab_opens_per_ticket_picker() {
+        // The prior lowercase-f behaviour lives on uppercase-F for
+        // fix_version_tree tabs — needed for the "reassign one
+        // ticket out of this view" case.
+        let app = app_with_active_tab_kind(Some(TabKind::FixVersionTree));
+        assert!(matches!(
+            handle(key('F'), &app),
+            Some(Action::OpenFixVersionPicker)
+        ));
+    }
+
+    #[test]
+    fn f_on_non_tree_tab_still_opens_per_ticket_picker() {
+        // Historical behaviour preserved for non-tree tabs (Work,
+        // Boards, etc.) where per-ticket assign is the natural default.
+        let app = app_with_active_tab_kind(None);
+        assert!(matches!(
+            handle(key('f'), &app),
+            Some(Action::OpenFixVersionPicker)
+        ));
+    }
 }

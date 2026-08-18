@@ -2084,6 +2084,17 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         " switch sprint ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::QuickFilter) {
         " toggle quick filters (Space) ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::FixVersion) && target_count == 1 {
+        // Disambiguate from the tab-view picker — "on ticket" makes
+        // it obvious this is a per-row assign, not a view switch.
+        // Users who pressed `f` expecting a view switch bounced off
+        // this picker for months (task #989).
+        let focused = app.focused_key().unwrap_or_default();
+        if focused.is_empty() {
+            " assign fixVersion on ticket ".to_string()
+        } else {
+            format!(" assign fixVersion on {focused} ")
+        }
     } else if target_count == 1 {
         format!(" set {field_label} ")
     } else {

@@ -2528,6 +2528,74 @@ impl App {
     }
 }
 
+#[cfg(test)]
+impl App {
+    /// Build a minimal App for unit tests in sibling modules (e.g.
+    /// keys.rs). Single tab with no kind; sync (no jira client init).
+    /// Sibling tests tweak cfg.tabs[0].kind or state as needed.
+    pub(crate) fn test_app_empty() -> Self {
+        let client = Client::new("https://example.atlassian.net", "x@y.z", "tok").unwrap();
+        Self {
+            cfg: Config {
+                jira_url: "https://example.atlassian.net".to_string(),
+                email: "x@y.z".to_string(),
+                refresh_interval_secs: 60,
+                tabs: vec![Tab {
+                    name: "Test".to_string(),
+                    kind: None,
+                    jql: Some("project = TE".to_string()),
+                    mode: None,
+                    project: Some("TE".to_string()),
+                    component: None,
+                    version_name_contains: None,
+                    board_id: None,
+                    team: None,
+                    columns: None,
+                    bumps: Default::default(),
+                    status_order: None,
+                }],
+                release_cut: false,
+                team_field_id: None,
+                team_field_name: None,
+                dispatch_workspace: None,
+                detail_modal: crate::config::DetailModalConfig::default(),
+            },
+            client,
+            tabs: vec![TabState {
+                name: "Test".to_string(),
+                jql: String::new(),
+                issues: Vec::new(),
+                selected: 0,
+                last_fetched: None,
+                last_error: None,
+                tree: None,
+                selected_sprint_id: None,
+                sprints_cache: None,
+                active_quick_filter_ids: BTreeSet::new(),
+                quick_filters_cache: None,
+            }],
+            active_tab: 0,
+            status: String::new(),
+            details_visible: false,
+            details_scroll: 0,
+            detail_cache: HashMap::new(),
+            detail_in_flight: None,
+            filter: None,
+            transition_picker: None,
+            my_account_id: None,
+            comment_editor: None,
+            selection: BTreeSet::new(),
+            field_picker: None,
+            hide_tab_strip: false,
+            board_name_cache: HashMap::new(),
+            rects: Rects::default(),
+            kanban_col_scroll: [0; 4],
+            kanban_expanded: HashSet::new(),
+            detail_modal: None,
+        }
+    }
+}
+
 /// Resolve a tab's `mode = ...` into a concrete JQL string, or pass
 /// through a literal `jql = "..."` unchanged.
 async fn resolve_tab_jql(tab: &Tab, client: &Client) -> Result<String> {
