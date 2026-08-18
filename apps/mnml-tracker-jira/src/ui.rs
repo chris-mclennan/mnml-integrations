@@ -1469,13 +1469,10 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         .and_then(|t| t.team.as_ref())
         .map(|t| format!("Team: {t} ▾"))
         .unwrap_or_else(|| "Team ▾".to_string());
-    // 2026-08-07 — design-critic r1 #2 SEV-high: `Version ▾` was
-    // rendered pixel-identical to the four inert "coming soon"
-    // placeholders even though it's fully wired to the same picker
-    // as `V`. Extract the currently-filtered fixVersion from the
-    // tab's JQL (reuse `extract_fix_version`, the same helper the
-    // tree-table title uses) and reflect it in the chip label so
-    // it reads as an active filter, not vaporware.
+    // 2026-08-07 — Version chip reflects the currently-filtered
+    // fixVersion in its label. Extracts from the tab's JQL (reuse
+    // `extract_fix_version`, the same helper the tree-table title
+    // uses) so the chip reads as an active filter when set.
     let version_label = cfg_tab
         .and_then(|t| t.jql.as_ref())
         .and_then(|jql| extract_fix_version(jql))
