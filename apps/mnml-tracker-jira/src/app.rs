@@ -354,6 +354,7 @@ impl App {
                 Some(TabKind::FixVersionTree)
                     | Some(TabKind::WorkAssigned)
                     | Some(TabKind::WorkRecentlyDone)
+                    | Some(TabKind::WorkRecent)
                     | Some(TabKind::BoardActiveSprint)
                     | Some(TabKind::BoardBacklog)
             ) {

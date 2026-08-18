@@ -277,6 +277,13 @@ pub enum TabKind {
     WorkAssigned,
     /// Jira Work: recently transitioned to Done / Closed (last 30d).
     WorkRecentlyDone,
+    /// 2026-08-18 (#1015) — Jira Work: tickets I've engaged with in
+    /// the last 30 days regardless of current assignee. Covers the
+    /// after-hand-off case: a ticket I was authoring, reviewing, or
+    /// mentioned in that got reassigned away — still want to see
+    /// it. Broader net than `WorkAssigned` (assignee = me now) OR
+    /// `WorkRecentlyDone` (I closed it recently).
+    WorkRecent,
     /// Jira Fix Versions: expandable tree grouped by status, one
     /// row per ticket. `project` required. Default = current
     /// unreleased fixVersion; override with `mode = "next_release"`
@@ -295,7 +302,7 @@ impl TabKind {
     /// `--only <family>`.
     pub fn family(self) -> TabFamily {
         match self {
-            Self::WorkAssigned | Self::WorkRecentlyDone => TabFamily::Work,
+            Self::WorkAssigned | Self::WorkRecentlyDone | Self::WorkRecent => TabFamily::Work,
             Self::FixVersionTree => TabFamily::FixVersions,
             Self::BoardActiveSprint | Self::BoardBacklog => TabFamily::Boards,
         }
@@ -330,6 +337,19 @@ impl TabKind {
                  AND status in (Done, Closed, Resolved) \
                  AND resolved >= -30d \
                  ORDER BY resolved DESC",
+            ),
+            // 2026-08-18 (#1015) — touched-by-me in the last 30d,
+            // regardless of current assignee. Uses `assignee was`
+            // (historical) + `reporter` + `worklogAuthor` +
+            // `commentedBy` — any signal that I engaged with the
+            // ticket. After-hand-off + code-review use cases.
+            Self::WorkRecent => Some(
+                "(assignee was currentUser() \
+                   OR reporter = currentUser() \
+                   OR worklogAuthor = currentUser() \
+                   OR commentedBy = currentUser()) \
+                 AND updated >= -30d \
+                 ORDER BY updated DESC",
             ),
             Self::FixVersionTree => None,
             Self::BoardActiveSprint => Some("sprint in openSprints() ORDER BY rank ASC"),
@@ -494,14 +514,14 @@ release_cut = false
 
 # ── Tabs ─────────────────────────────────────────────────────────
 # 2026-07-25: `kind = "..."` is the recommended entry point — one of
-#   "work_assigned"       "work_recently_done"
+#   "work_assigned"       "work_recently_done"    "work_recent"
 #   "fix_version_tree"
 #   "board_active_sprint" "board_backlog"
 # Each kind implies a default JQL; `jql = "..."` overrides it.
 # Legacy configs (no `kind`, just `jql` or `mode`) still work.
 #
 # The launcher chips filter these tabs via `--only <family>`:
-#   Jira Work         → work_assigned, work_recently_done
+#   Jira Work         → work_assigned, work_recently_done, work_recent
 #   Jira Fix Versions → fix_version_tree
 #   Jira Boards       → board_active_sprint, board_backlog
 
@@ -514,6 +534,13 @@ kind = "work_assigned"
 [[tabs]]
 name = "Recently Done"
 kind = "work_recently_done"
+
+# Jira Work — touched by me in last 30d, regardless of current
+# assignee. Covers after-hand-off / code-review cases where the
+# ticket left "Assigned" but you're still tracking it. Task #1015.
+[[tabs]]
+name = "Recently Worked"
+kind = "work_recent"
 
 # Jira Fix Versions — the current unreleased version, grouped by
 # status. Toggle `m` to switch to next release; toggle release-cut
@@ -626,7 +653,9 @@ project = "TE"
                             ));
                         }
                     }
-                    TabKind::WorkAssigned | TabKind::WorkRecentlyDone => {}
+                    TabKind::WorkAssigned
+                    | TabKind::WorkRecentlyDone
+                    | TabKind::WorkRecent => {}
                 }
                 continue;
             }
