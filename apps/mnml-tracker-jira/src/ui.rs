@@ -171,6 +171,16 @@ async fn event_loop(
                             }
                             continue;
                         }
+                        // 2026-08-18 (#991) — version chip in the
+                        // tree-table title bar. Click opens the tab-
+                        // view fix-version picker (same as `f` on
+                        // fix_version_tree tabs).
+                        if let Some(r) = app.rects.version_chip
+                            && rect_hit(r, m.column, m.row)
+                        {
+                            app.open_tab_fix_version_picker().await;
+                            continue;
+                        }
                         // Non-kanban tabs: original flat/tree row model.
                         let Some(row_idx) = table_row_at(m.row, app) else {
                             continue;
@@ -265,6 +275,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.rects.kanban_cols = [None; 4];
     app.rects.modal_close = None;
     app.rects.pr_show_more.clear();
+    app.rects.version_chip = None;
     let size = f.area();
     // 2026-07-25 — hide the tab strip entirely when the caller
     // passed `--only` OR there's only one tab (the strip becomes
@@ -1004,7 +1015,14 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             _ => None,
         })
         .collect();
+    // 2026-08-18 (#991) — snapshot the two tab-state strings we need
+    // in the title before letting the borrow end, so we can mutably
+    // register the version-chip rect on app.rects later without
+    // holding a &tab across the mutation.
     let tab = app.active();
+    let tab_name = tab.name.clone();
+    let tab_jql = tab.jql.clone();
+    let tab_selected = tab.selected;
     if rows.is_empty() {
         let p = Paragraph::new("(no issues)").style(Style::default().fg(Color::DarkGray));
         f.render_widget(p, area);
@@ -1042,45 +1060,54 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // hidden). Extract the version name from the tab's JQL
     // (`fixVersion = "13.15.0"` → `13.15.0`); falls back to just
     // the tab name if the pattern doesn't match.
-    let fixv = extract_fix_version(&tab.jql);
+    let fixv = extract_fix_version(&tab_jql);
     let ticket_count = rows
         .iter()
         .filter(|r| matches!(r, crate::tree::VisibleRow::Ticket { .. }))
         .count();
-    let title = if let Some(v) = fixv {
-        format!(
-            "{} · {} · {} ticket{}",
-            tab.name,
-            v,
-            ticket_count,
-            if ticket_count == 1 { "" } else { "s" }
-        )
-    } else {
-        format!(
-            "{} · {} ticket{}",
-            tab.name,
-            ticket_count,
-            if ticket_count == 1 { "" } else { "s" }
-        )
-    };
+    let ticket_suffix = if ticket_count == 1 { "" } else { "s" };
 
     // 2026-08-18 (#1001) — split off a 1-row title strip above the
     // table. Was wrapped in Block::borders(ALL) with title-in-border;
-    // border removed for visual parity with Bitbucket + Boards. Title
-    // renders as a plain header row above the table body.
+    // border removed for visual parity with Bitbucket + Boards.
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
     let title_area = parts[0];
     let body_area = parts[1];
-    let title_para = Paragraph::new(Line::from(vec![Span::styled(
-        title,
-        Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    f.render_widget(title_para, title_area);
+
+    // 2026-08-18 (#991) — render the version segment as a
+    // clickable chip with `▾` dropdown indicator. Click opens the
+    // tab-view fix-version picker (same as pressing `f` on this
+    // tab). Discoverability win over the hidden `f` keychord.
+    let bold = Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD);
+    let leading = format!("{tab_name} · ");
+    let leading_w = leading.chars().count() as u16;
+    let chip_label = match &fixv {
+        Some(v) => format!(" {v} ▾ "),
+        None => " Set fixVersion ▾ ".to_string(),
+    };
+    let chip_w = chip_label.chars().count() as u16;
+    let chip_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let trailing = format!(" · {ticket_count} ticket{ticket_suffix}");
+    let spans: Vec<Span<'static>> = vec![
+        Span::styled(leading, bold),
+        Span::styled(chip_label, chip_style),
+        Span::styled(trailing, bold),
+    ];
+    f.render_widget(Paragraph::new(Line::from(spans)), title_area);
+    // Chip rect (computed here; assigned after render_stateful_widget
+    // consumes table_rows and drops the &app borrow).
+    let chip_rect = Rect {
+        x: title_area.x + leading_w,
+        y: title_area.y,
+        width: chip_w,
+        height: 1,
+    };
 
     let table = Table::new(table_rows, widths)
         .header(header)
@@ -1092,8 +1119,11 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         .highlight_symbol("");
 
     let mut state = TableState::default();
-    state.select(Some(tab.selected.min(rows.len().saturating_sub(1))));
+    state.select(Some(tab_selected.min(rows.len().saturating_sub(1))));
     f.render_stateful_widget(table, body_area, &mut state);
+    // Register the version-chip click rect now that table_rows is
+    // consumed and the &app borrow has ended (#991).
+    app.rects.version_chip = Some(chip_rect);
 
     // 2026-08-07 — register mouse rects for "show N more" rows.
     // Post-#1001 (2026-08-18): body starts at body_area.y + 1

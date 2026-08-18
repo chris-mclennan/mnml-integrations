@@ -113,6 +113,10 @@ pub struct Rects {
     /// Show-more PR row rects → issue key. Bumps that key's
     /// `pr_show_count` by 3.
     pub pr_show_more: Vec<(Rect, String)>,
+    /// 2026-08-18 (#991) — fix-version chip in the tree-table
+    /// title bar. Click opens `open_tab_fix_version_picker` so the
+    /// user doesn't need to remember the `f` keychord.
+    pub version_chip: Option<Rect>,
 }
 
 /// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
