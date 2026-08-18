@@ -318,8 +318,18 @@ impl Client {
         bbql_predicate: &str,
         state: Option<&str>,
         per_page: u32,
+        explicit_repos: Option<&[String]>,
     ) -> Result<(usize, usize)> {
-        let repos = self.list_workspace_repos(workspace).await?;
+        // #1028 (2026-08-18) — when the integration manifest specifies
+        // `repos = [...]`, use exactly those instead of enumerating
+        // every repo in the workspace. Cuts the chip poll from N (all
+        // repos) to len(explicit) — for tattledevs that's 119 → ~13,
+        // an ~8× reduction that keeps the poll well under Bitbucket's
+        // rate ceiling even under contention.
+        let repos: Vec<String> = match explicit_repos {
+            Some(list) if !list.is_empty() => list.to_vec(),
+            _ => self.list_workspace_repos(workspace).await?,
+        };
         if repos.is_empty() {
             return Ok((0, 0));
         }

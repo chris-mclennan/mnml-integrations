@@ -80,6 +80,16 @@ pub struct Config {
     /// day-to-day work. Empty list = no branch exclusion.
     #[serde(default = "default_chip_excluded_branch_patterns")]
     pub chip_excluded_branch_patterns: Vec<String>,
+    /// #1028 (2026-08-18) — integration-level repo allowlist. When
+    /// non-empty, the chip poll (`--values`) queries ONLY these
+    /// repos instead of enumerating every workspace repo. Cuts
+    /// what was 120 API calls / 5 min to N. Prevents the 429
+    /// storm on large workspaces (tattledevs = 119 repos). Empty
+    /// (default) preserves backward-compat: enumerate all repos.
+    /// Same list is intended to be honored by the workspace pane
+    /// tabs too — filed as #1031.
+    #[serde(default)]
+    pub repos: Vec<String>,
 }
 
 fn default_chip_stale_after_days() -> u32 {

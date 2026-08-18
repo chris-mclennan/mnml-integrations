@@ -255,8 +255,16 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
 
     // Fetch open + approved counts (approved = has ≥1 approval).
     // Derive unapproved = open - approved.
+    // #1028 — pass `cfg.repos` as the explicit scope. When it's
+    // set, the fn skips workspace enumeration and only queries
+    // those. Empty preserves the old behavior (enumerate all).
+    let explicit = if cfg.repos.is_empty() {
+        None
+    } else {
+        Some(cfg.repos.as_slice())
+    };
     let (open_mine, approved_mine) = client
-        .count_workspace_prs_by_approval(&cfg.workspace, &bbql, Some("OPEN"), 50)
+        .count_workspace_prs_by_approval(&cfg.workspace, &bbql, Some("OPEN"), 50, explicit)
         .await
         .context("counting open PRs authored by you")?;
     let unapproved_mine = open_mine.saturating_sub(approved_mine);
