@@ -813,8 +813,12 @@ fn draw_repo_pr_tree(
     // toggle between them with `m` (see keys.rs), not via a tab
     // strip. Border block only shows in standalone mode; when
     // inside mnml we skip it to avoid a double-border.
+    // 2026-08-18 (#998) — `↔` after the tab name signals the `m`
+    // toggle exists so mouse users see it's cyclable state, not a
+    // fixed label. Full dropdown chip design deferred; this is the
+    // minimum discoverability bump.
     let title = format!(
-        " Bitbucket Pull Requests ({}) · {} repos · {} PRs ",
+        " Bitbucket Pull Requests ({} ↔) · {} repos · {} PRs ",
         tab.name,
         rows.len(),
         total_prs
@@ -1328,7 +1332,10 @@ fn pipeline_state_color(state: &str) -> Color {
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let hint = " 1-9 tab · ↑↓/jk move · Enter expand · o open on web · d detail · a approve · r refresh · q quit ";
+    // 2026-08-18 (#998) — added `m` to the hint line so mouse
+    // users can discover the Open+Draft ↔ Merged tab toggle.
+    // Was: hidden entirely (only vim users who read source knew).
+    let hint = " 1-9 tab · ↑↓/jk move · Enter expand · o open on web · d detail · a approve · m open↔merged · r refresh · q quit ";
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.status),
