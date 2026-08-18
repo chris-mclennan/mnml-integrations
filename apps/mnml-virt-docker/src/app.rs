@@ -341,9 +341,6 @@ pub struct App {
     /// Queue of commands the UI loop should spawn as pty / external
     /// processes (logs, exec, sibling launches). The crossterm `ui`
     /// loop spawns them directly via `std::process::Command::spawn`.
-    /// The blit loop drops them on the floor today (v0.1 standalone
-    /// only — blit is wired through but the host-side pty hand-off
-    /// is a v0.2 follow-up).
     pub pending_spawns: Vec<Vec<String>>,
     loader_tx: Option<Sender<LoadJob>>,
     loader_rx: Option<Receiver<LoadResult>>,

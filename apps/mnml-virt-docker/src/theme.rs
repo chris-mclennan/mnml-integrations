@@ -135,8 +135,8 @@ pub fn poll_refresh() {
 
 /// Remap a ratatui named colour onto mnml's palette when a theme file is
 /// present (else returns it unchanged). Apply at the render chokepoint
-/// (`color_to_rgba` for blit, or per-widget for standalone) so the app follows
-/// mnml's theme — most importantly `DarkGray → dim` (the dim/secondary text).
+/// per-widget so the app follows mnml's theme — most importantly
+/// `DarkGray → dim` (the dim/secondary text).
 pub fn remap(c: Color) -> Color {
     let p = match palette() {
         Some(p) => p,
