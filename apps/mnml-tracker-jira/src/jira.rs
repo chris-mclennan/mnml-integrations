@@ -575,26 +575,70 @@ impl Client {
     ///   sprints simply don't surface — the caller trims to
     ///   `last N closed` anyway.
     pub async fn fetch_sprints_for_board(&self, board_id: u64) -> Result<Vec<Sprint>> {
+        // 2026-08-18 (task #887 follow-up) — Jira's `/board/{id}/sprint`
+        // paginates in CREATION ORDER (oldest first). On boards with
+        // 700+ closed sprints, the first-page combined query returned
+        // only ancient closed sprints — the current active sprint
+        // (highest id) never appeared. Fix: request each state
+        // SEPARATELY. Active + future are cheap (usually <10 total).
+        // Closed uses startAt=(total - N) to grab the MOST RECENT
+        // closed sprints; the picker caps at 5 anyway, take 20 for
+        // sort headroom.
+        let mut out: Vec<Sprint> = Vec::new();
+        for state in ["active", "future"] {
+            match self.fetch_sprints_state(board_id, state, 0, 50).await {
+                Ok(mut list) => out.append(&mut list),
+                // 400 = kanban board (no sprints on ANY state). Same
+                // handling as the prior single-request path.
+                Err(e) if e.to_string().contains(" 400") => return Ok(Vec::new()),
+                Err(e) => return Err(e),
+            }
+        }
+        // Closed: get total, jump to (total - headroom) for the recent tail.
+        let closed_headroom = 20u32;
+        match self.fetch_sprints_state_total(board_id, "closed").await {
+            Ok(total) => {
+                let start = total.saturating_sub(closed_headroom);
+                if let Ok(mut recent) = self
+                    .fetch_sprints_state(board_id, "closed", start, closed_headroom)
+                    .await
+                {
+                    out.append(&mut recent);
+                }
+            }
+            Err(_) => { /* no closed sprints or transient; active/future already in out */ }
+        }
+        Ok(out)
+    }
+
+    async fn fetch_sprints_state(
+        &self,
+        board_id: u64,
+        state: &str,
+        start_at: u32,
+        max_results: u32,
+    ) -> Result<Vec<Sprint>> {
         let url = format!("{}/rest/agile/1.0/board/{board_id}/sprint", self.base);
+        let start_str = start_at.to_string();
+        let max_str = max_results.to_string();
         let resp = self
             .http
             .get(&url)
             .basic_auth(&self.email, Some(&self.token))
             .header("Accept", "application/json")
-            .query(&[("state", "active,future,closed"), ("maxResults", "50")])
+            .query(&[
+                ("state", state),
+                ("startAt", start_str.as_str()),
+                ("maxResults", max_str.as_str()),
+            ])
             .send()
             .await
-            .with_context(|| format!("fetching sprints for board {board_id}"))?;
+            .with_context(|| format!("fetching {state} sprints for board {board_id}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
-            // 400 = kanban board (no sprints) — treat as empty list,
-            // not an error, so the UI can quietly hide the chip.
-            if status == reqwest::StatusCode::BAD_REQUEST {
-                return Ok(Vec::new());
-            }
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "sprint list fetch failed for board {board_id}: {status}: {text}"
+                "sprint list fetch failed for board {board_id} state={state}: {status}: {text}"
             ));
         }
         let sr: SprintListResponse = resp
@@ -602,6 +646,29 @@ impl Client {
             .await
             .with_context(|| format!("parsing sprint list for board {board_id}"))?;
         Ok(sr.values)
+    }
+
+    async fn fetch_sprints_state_total(&self, board_id: u64, state: &str) -> Result<u32> {
+        #[derive(serde::Deserialize)]
+        struct TotalOnly {
+            #[serde(default)]
+            total: u32,
+        }
+        let url = format!("{}/rest/agile/1.0/board/{board_id}/sprint", self.base);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.email, Some(&self.token))
+            .header("Accept", "application/json")
+            .query(&[("state", state), ("startAt", "0"), ("maxResults", "1")])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("sprint total fetch failed: {text}"));
+        }
+        let t: TotalOnly = resp.json().await?;
+        Ok(t.total)
     }
 
     /// 2026-08-17 (task #893) — list the board's saved "quick
