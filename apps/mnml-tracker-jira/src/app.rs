@@ -756,18 +756,49 @@ impl App {
                 }
             }
             VisibleRow::LinkedPr { issue_idx, pr_idx } => {
+                // #995 (2026-08-18) — Enter/Space toggle inline
+                // expand for MERGED PRs (mirrors TreeExpand's
+                // policy at :796); OPEN/DRAFT PRs have no expand
+                // target so keep the original "open in browser"
+                // behavior for them. `o` always opens in browser
+                // regardless of merge state.
                 let key = self.active().issues[issue_idx].key.clone();
-                if let Some(url) = self
+                let Some((pr_id, pr_url, is_merged)) = self
                     .active()
                     .tree
                     .as_ref()
                     .and_then(|t| t.pr_cache.get(&key))
                     .and_then(|prs| prs.get(pr_idx))
-                    .map(|pr| pr.url.clone())
-                    && !url.is_empty()
-                {
-                    let _ = webbrowser::open(&url);
-                    self.status = format!("opened {url}");
+                    .map(|pr| {
+                        (
+                            pr.id.clone(),
+                            pr.url.clone(),
+                            pr.status.eq_ignore_ascii_case("MERGED"),
+                        )
+                    })
+                else {
+                    return;
+                };
+                if is_merged {
+                    let pkey = (key.clone(), pr_id.clone());
+                    let already = self
+                        .active()
+                        .tree
+                        .as_ref()
+                        .is_some_and(|t| t.expanded_prs.contains(&pkey));
+                    if already {
+                        if let Some(tree) = self.active_mut().tree.as_mut() {
+                            tree.expanded_prs.remove(&pkey);
+                        }
+                    } else {
+                        if let Some(tree) = self.active_mut().tree.as_mut() {
+                            tree.expanded_prs.insert(pkey.clone());
+                        }
+                        self.ensure_pr_pipelines(&key, &pr_id, &pr_url).await;
+                    }
+                } else if !pr_url.is_empty() {
+                    let _ = webbrowser::open(&pr_url);
+                    self.status = format!("opened {pr_url}");
                 }
             }
             VisibleRow::PrShowMore { issue_idx, .. } => {
