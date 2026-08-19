@@ -611,12 +611,40 @@ impl App {
         };
         match fetch_result {
             Ok(issues) => {
+                // #1050 (2026-08-19). Auto-expand unresolved tickets
+                // on Work-family tabs so linked-PR context (open /
+                // merged / declined PRs, plus the ticket-row "expand
+                // for detail" content) shows without a click.
+                // Resolved tickets stay collapsed to keep the history
+                // pane scannable. User ask 2026-08-19:
+                //   "unresolved view — there won't be many, I want
+                //   to see all the context like merged / open PRs.
+                //   For resolved we should probably not auto-expand."
+                //
+                // Runs on every fetch — a manual collapse survives
+                // until the next refresh, then re-expands. That
+                // matches the "refresh = fresh look" gesture; can
+                // add a sticky-collapse mode later if it annoys.
+                //
+                // Collect keys BEFORE moving `issues` into the tab so
+                // the borrow checker stays happy (tree is on the same
+                // TabState struct).
+                let unresolved_keys: Vec<String> = issues
+                    .iter()
+                    .filter(|i| is_unresolved_issue(i))
+                    .map(|i| i.key.clone())
+                    .collect();
                 self.tabs[idx].issues = issues;
                 self.tabs[idx].last_fetched = Some(std::time::Instant::now());
                 self.tabs[idx].last_error = None;
                 self.tabs[idx].selected = self.tabs[idx]
                     .selected
                     .min(self.tabs[idx].issues.len().saturating_sub(1));
+                if let Some(tree) = self.tabs[idx].tree.as_mut() {
+                    for key in unresolved_keys {
+                        tree.expanded_tickets.insert(key);
+                    }
+                }
                 self.status = format!(
                     "{} · {} issues",
                     self.tabs[idx].name,
@@ -1282,6 +1310,27 @@ pub fn split_order_by(jql: &str) -> (String, String) {
 pub fn team_value_of(issue: &crate::jira::Issue, field_id: &str) -> Option<String> {
     let raw = issue.fields.extras.get(field_id)?;
     raw.get("value")?.as_str().map(|s| s.to_string())
+}
+
+/// #1050 (2026-08-19). True when an issue's status is NOT in Jira's
+/// terminal set (Done / Closed / Resolved / Released). Case-insensitive.
+/// A missing `status` object is treated as unresolved — safer default
+/// for "should we show the PR context" (unresolved gets it, and this
+/// is a rare edge case for issues freshly created without a workflow
+/// status yet).
+///
+/// Kept as a free function next to `team_value_of` so the auto-expand
+/// hook in Work-family refresh can pattern-match without pulling in
+/// App state. Same terminal set the status-rank ordering in
+/// `status_rank_for_bump` uses; if that list ever grows (some Jira
+/// instances add "Abandoned" or "Won't Do" as a terminal state), sync
+/// both.
+pub fn is_unresolved_issue(issue: &crate::jira::Issue) -> bool {
+    let Some(status) = issue.fields.status.as_ref() else {
+        return true;
+    };
+    let name = status.name.to_ascii_lowercase();
+    !matches!(name.as_str(), "done" | "closed" | "resolved" | "released")
 }
 
 /// How `close_filter` should treat the in-progress buffer.
