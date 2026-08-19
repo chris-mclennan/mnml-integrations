@@ -2608,6 +2608,18 @@ async fn resolve_tab_jql(tab: &Tab, client: &Client) -> Result<String> {
     if let Some(jql) = &tab.jql {
         return Ok(jql.clone());
     }
+    // #1035 (2026-08-18) — Filter kind delegates to a Jira saved
+    // filter by id. `filter = <id>` is expanded server-side to the
+    // filter's saved JQL, so any query the user can view (QA queue,
+    // roadmap, custom search) becomes a tab without duplicating JQL
+    // into the config. `filter_id` is required for this kind (see
+    // validate() below).
+    if let Some(TabKind::Filter) = tab.kind {
+        let id = tab
+            .filter_id
+            .context("kind=filter requires `filter_id = <n>`")?;
+        return Ok(format!("filter = {id} ORDER BY updated DESC"));
+    }
     // 2026-08-06 — honor `kind = "..."` tabs whose default_jql is a
     // static string (work_assigned / work_recently_done /
     // board_active_sprint / board_backlog). Fix-version kinds return
