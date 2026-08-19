@@ -441,6 +441,13 @@ pub struct App {
     /// this repo in depth" mental model. Empty on startup → every
     /// repo starts with the 24-hour recency filter applied.
     pub show_all_repos: HashSet<String>,
+    /// #1000 (2026-08-18) — clickable footer chord chips. Rebuilt
+    /// every render frame in `ui::draw_status`. Each entry is
+    /// `(chip_rect, synthesized_KeyEvent)`; on left-click we route
+    /// through the same `keys::handle` → `keys::apply` pipeline as
+    /// physical key presses, so mouse and keyboard stay one code
+    /// path. Empty until first `draw`.
+    pub hint_chip_rects: Vec<(ratatui::layout::Rect, crossterm::event::KeyEvent)>,
 }
 
 /// Cached PR detail + comments. Fetched lazily on first focus while
@@ -642,6 +649,7 @@ impl App {
             expanded_prs: HashSet::new(),
             pr_pipeline_cache: HashMap::new(),
             show_all_repos: HashSet::new(),
+            hint_chip_rects: Vec::new(),
         };
         // Startup prefetch: refresh EVERY configured tab up front so
         // subsequent 1/2/3 (or click) tab-switches show cached data
