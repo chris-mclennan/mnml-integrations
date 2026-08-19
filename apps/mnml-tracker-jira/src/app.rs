@@ -117,6 +117,10 @@ pub struct Rects {
     /// title bar. Click opens `open_tab_fix_version_picker` so the
     /// user doesn't need to remember the `f` keychord.
     pub version_chip: Option<Rect>,
+    /// 2026-08-19 (#1053) — refresh chip on the tree-table title
+    /// bar (right-aligned). Click fires `refresh_active` so mouse-
+    /// only users don't need the `r` keychord.
+    pub refresh_chip: Option<Rect>,
 }
 
 /// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
