@@ -85,6 +85,17 @@ async fn event_loop(
                                 app.refresh_active().await;
                                 last_refresh = Instant::now();
                             }
+                        } else if state_chip_at(m.row, app) {
+                            // #998 (2026-08-18) — click the compact
+                            // state-switcher chip → cycle to next
+                            // tab. Mirrors the `m` chord. Fires only
+                            // in mnml-hosted mode (hide_tab_strip on).
+                            let next = (app.active_tab + 1) % app.tabs.len();
+                            app.switch_tab(next);
+                            if app.tabs[app.active_tab].last_fetched.is_none() {
+                                app.refresh_active().await;
+                                last_refresh = Instant::now();
+                            }
                         } else if let Some(row_idx) = table_row_at(m.row, app) {
                             // 2026-07-19 — click a tree row: focus
                             // it, and if it's a repo header, toggle
@@ -139,7 +150,18 @@ async fn event_loop(
 /// that row. tree-redesign 2026-07-19 mouse pass.
 fn table_row_at(row: u16, app: &App) -> Option<usize> {
     let show_tabs = !app.hide_tab_strip && app.tabs.len() > 1;
-    let area_y: u16 = if show_tabs { 3 } else { 0 };
+    // #998 (2026-08-18) — the state switcher chip eats row 0 when
+    // it's visible (mnml-hosted mode with multiple tabs). Push the
+    // table area down by 1 in that case so row-index math stays
+    // aligned.
+    let show_state_chip = app.hide_tab_strip && app.tabs.len() > 1;
+    let area_y: u16 = if show_tabs {
+        3
+    } else if show_state_chip {
+        1
+    } else {
+        0
+    };
     // 2026-07-24 — body starts 1 row below area_y when running
     // inside mnml (no border, just the header row), 2 rows below
     // when standalone (border top + header). All the RepoPrTree /
@@ -331,7 +353,20 @@ pub fn draw(f: &mut Frame, app: &App) {
     // = "this session is a single-purpose view; the switcher just
     // wastes a row."
     let show_tabs = !app.hide_tab_strip && app.tabs.len() > 1;
-    let tab_height = if show_tabs { 3 } else { 0 };
+    // #998 (2026-08-18) — mnml-hosted view (`--only prs`) suppresses
+    // the tab strip AND the outer border/title, so the only way to
+    // switch state was the `m` chord — completely invisible to
+    // mouse users. When we're in that mode and there ARE multiple
+    // tabs (rare — `--only prs` normally leaves the family's tabs),
+    // paint a compact single-row state switcher chip at the top.
+    let show_state_chip = app.hide_tab_strip && app.tabs.len() > 1;
+    let tab_height = if show_tabs {
+        3
+    } else if show_state_chip {
+        1
+    } else {
+        0
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -342,6 +377,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(size);
     if show_tabs {
         draw_tabs(f, chunks[0], app);
+    } else if show_state_chip {
+        draw_state_switcher_chip(f, chunks[0], app);
     }
     if app.details_visible {
         let body = Layout::default()
@@ -496,6 +533,43 @@ fn state_color(state: &str) -> Color {
         "SUPERSEDED" => Color::DarkGray,
         _ => Color::Gray,
     }
+}
+
+/// #998 (2026-08-18) — one-row state switcher chip for the mnml-
+/// hosted view. Renders as ` ▸ <tab.name> ↔ (i/n) ` at the top row
+/// so mouse users see the current state AND that it's cyclable.
+/// Left-click anywhere on the row cycles to the next tab (mirrors
+/// the `m` chord).
+fn draw_state_switcher_chip(f: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let tab = &app.tabs[app.active_tab];
+    let n = tab.data.len();
+    let idx = app.active_tab + 1;
+    let total = app.tabs.len();
+    let count_seg = if tab.last_fetched.is_some() {
+        format!(" ({n})")
+    } else {
+        String::new()
+    };
+    let label = format!(" ▸ {}{} ↔ ({idx}/{total}) ", tab.name, count_seg);
+    let para = Paragraph::new(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    f.render_widget(para, area);
+}
+
+/// True if the click landed on the state switcher chip. Used by the
+/// mouse handler to route the click to `NextTab`. Only meaningful
+/// when `hide_tab_strip && tabs.len() > 1` (matches the render
+/// gate in `draw`).
+fn state_chip_at(row: u16, app: &App) -> bool {
+    row == 0 && app.hide_tab_strip && app.tabs.len() > 1
 }
 
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
