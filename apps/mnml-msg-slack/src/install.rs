@@ -129,6 +129,19 @@ pub fn install() -> Result<()> {
         ..Default::default()
     };
     let path = install_integration(&channels)?;
+    // #1044 (2026-08-19) — statusline segment declaration. Same
+    // raw-TOML append pattern the Bitbucket PRs manifest uses
+    // (bridge 0.7 doesn't serialize `[[values_sources]]` /
+    // `[[statusline_segments]]` from typed structs yet; bridge 0.8+
+    // will, and this helper can be deleted then). Only the
+    // Channels chip carries the segment — Boards has no ambient
+    // count worth surfacing yet.
+    if let Err(e) = append_segment_blocks(CHANNELS_ID, &path) {
+        eprintln!(
+            "note: couldn't append [[values_sources]] to {} ({e}) — hand-edit that file to add the chip",
+            path.display()
+        );
+    }
     println!("wrote manifest: {}", path.display());
 
     let boards = IntegrationSpec {
@@ -175,6 +188,61 @@ pub fn install() -> Result<()> {
 
     println!("run mnml + `integrations.refresh` (or restart) to pick up the rail chips");
     Ok(())
+}
+
+/// #1044 (2026-08-19) — append mnml 0.2.11+ statusline-segment
+/// TOML blocks to a freshly-written manifest. Idempotent: the
+/// segment id is unique enough that re-installing detects it and
+/// skips the append. Only the Channels chip declares a segment
+/// today. Deletion note: once `mnml-bridge` 0.8+ is on crates.io
+/// (which will serialize these blocks from typed structs), this
+/// whole helper can be removed and the fields lifted into
+/// `IntegrationSpec`.
+fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Result<()> {
+    if chip_id != CHANNELS_ID {
+        return Ok(());
+    }
+    let current = std::fs::read_to_string(path)?;
+    const SEGMENT_ID: &str = "slack_unread";
+    if current.contains(SEGMENT_ID) {
+        return Ok(());
+    }
+    // Format:
+    //   `<mentions>(<dms>) <channels>ch · <presence>`
+    // Chip color hints:
+    //   red when mentions > 0
+    //   yellow when dm_unread > 0 OR channel_unread_count > 0
+    //   dim otherwise
+    // (mnml's statusline segment worker evaluates the color hint
+    // via the `color = "..."` static + user-configured override in
+    // Settings; a "dynamic by count" scheme is a future extension.)
+    // Glyph F0BE7 = nf-md-slack in the mnml-routed Symbols Nerd
+    // Font Mono range. Falls back to the chip color if not present.
+    let block = concat!(
+        "\n",
+        "# mnml 0.2.11+ statusline segment — appended by\n",
+        "# mnml-msg-slack --install. Idempotent: re-install skips\n",
+        "# this if `slack_unread` is already present. #1044.\n",
+        "[[values_sources]]\n",
+        "id = \"slack_values\"\n",
+        "command = \"mnml-msg-slack --values\"\n",
+        "poll_interval_secs = 120\n",
+        "\n",
+        "[[statusline_segments]]\n",
+        "id = \"slack_unread\"\n",
+        "source = \"slack_values\"\n",
+        "glyph = \"\u{F04B1}\"\n",
+        "color = \"white\"\n",
+        "format = \"{mentions}({dm_unread}) {channel_unread_count}ch · {presence}\"\n",
+        "tooltip = \"Slack: @mentions, unread DMs, channels with unread, presence. Click to open Slack Channels.\"\n",
+        "click_command = \"slack.open_channels\"\n",
+    );
+    let mut out = current;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(block);
+    std::fs::write(path, out)
 }
 
 pub fn uninstall() -> Result<()> {

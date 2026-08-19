@@ -39,6 +39,14 @@ struct Cli {
     /// vs. Slack Canvases). Omitted → full multi-tab UI.
     #[arg(long)]
     only: Option<String>,
+    /// #1044 (2026-08-19). Emit a JSON blob mnml's statusline
+    /// segment poller can render as
+    /// `{mentions}({dms}) {channels}ch · {presence}` (or any other
+    /// format the user configures via `[[statusline_segments]]`).
+    /// Runs a bounded 10s fetch; a hung network never freezes the
+    /// polling worker.
+    #[arg(long)]
+    values: bool,
 }
 
 fn main() -> Result<()> {
@@ -66,6 +74,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.values {
+        // #1044 (2026-08-19) — mnml statusline segment. Emits the
+        // JSON shape `UnreadSummary` serializes to; see the
+        // `[[statusline_segments]]` block in `install.rs` for the
+        // default format string. Bounded 10s to survive the polling
+        // worker's shorter interval (60s+).
+        let auth = slack::Auth::from_env()?;
+        // std threads because the whole sibling is sync — reqwest
+        // blocking client under the hood.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(slack::fetch_unread_summary(&auth));
+        });
+        let summary = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(r) => r?,
+            Err(_) => anyhow::bail!("--values timed out after 10s"),
+        };
+        println!("{}", serde_json::to_string(&summary)?);
+        return Ok(());
+    }
     if cli.check {
         let cfg = config::load();
         let auth = slack::Auth::from_env();
