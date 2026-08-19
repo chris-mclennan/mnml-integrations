@@ -267,6 +267,16 @@ pub struct Tab {
     /// Ignored on non-board kinds.
     #[serde(default)]
     pub team: Option<String>,
+    /// #1004 (2026-08-18) — Board tabs: Issue Type filter. Narrows to
+    /// issues whose `issuetype.name` matches (case-insensitive equal).
+    /// Set via the Type chip click. `None` = show all types.
+    #[serde(default)]
+    pub issue_type: Option<String>,
+    /// #1004 (2026-08-18) — Board tabs: Label filter. Narrows to
+    /// issues that carry the exact label. Set via the Label chip click.
+    /// `None` = don't filter by label.
+    #[serde(default)]
+    pub label: Option<String>,
     /// 2026-08-07 — Board tabs: back this tab with a Jira-defined
     /// board's data. When set, the tracker fetches from
     /// `/rest/agile/1.0/board/{id}/…` instead of composing JQL, so
