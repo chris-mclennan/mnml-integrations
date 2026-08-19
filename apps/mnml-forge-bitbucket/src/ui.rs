@@ -76,7 +76,32 @@ async fn event_loop(
                 }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(idx) = tab_at(m.column, m.row, app) {
+                        // #1000 — footer chord chip hit-test first,
+                        // so a click on the bottom row doesn't
+                        // accidentally fall through to whatever row
+                        // math thinks is at that y (which for a
+                        // 1-row-tall status bar is technically None,
+                        // but this keeps the intent explicit and
+                        // survives future footer-height changes).
+                        let footer_hit = app
+                            .hint_chip_rects
+                            .iter()
+                            .find(|(r, _)| {
+                                m.column >= r.x
+                                    && m.column < r.x + r.width
+                                    && m.row >= r.y
+                                    && m.row < r.y + r.height
+                            })
+                            .map(|(_, key)| *key);
+                        if let Some(key) = footer_hit {
+                            if let Some(action) = keys::handle(key, app) {
+                                let quit = keys::apply(action, app).await;
+                                if quit {
+                                    break;
+                                }
+                                last_refresh = Instant::now();
+                            }
+                        } else if let Some(idx) = tab_at(m.column, m.row, app) {
                             app.switch_tab(idx);
                             // If clicked tab has no data yet, kick
                             // off a refresh so it populates (mirror
@@ -346,7 +371,7 @@ fn inside_mnml() -> bool {
     std::env::var_os("MNML_PANE").is_some()
 }
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
     // Hide the tab strip when the caller passed `--only <family>` (mnml
     // split chips) or when only a single tab is configured. Both cases
@@ -1405,22 +1430,179 @@ fn pipeline_state_color(state: &str) -> Color {
     }
 }
 
-fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    // 2026-08-18 (#998) — added `m` to the hint line so mouse
-    // users can discover the Open+Draft ↔ Merged tab toggle.
-    // Was: hidden entirely (only vim users who read source knew).
-    let hint = " 1-9 tab · ↑↓/jk move · Enter expand · o open on web · d detail · a approve · m open↔merged · r refresh · q quit ";
-    let line = Line::from(vec![
-        Span::styled(
-            format!(" {} ", app.status),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(
-            hint,
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+fn draw_status(f: &mut Frame, area: Rect, app: &mut App) {
+    // Status prefix on the left — same as before, uncolored.
+    let status_prefix = format!(" {} ", app.status);
+    let status_line = Line::from(Span::styled(
+        status_prefix.clone(),
+        Style::default().fg(Color::White),
+    ));
+    f.render_widget(Paragraph::new(status_line), area);
+
+    // #1000 (2026-08-18) — split the hint bar into per-chord chips
+    // and register a click rect for each so mouse users get parity
+    // with the keyboard. Chords with no single keystroke to
+    // synthesize (like "1-9 tab", which is a range) fall back to
+    // static labels with no click target — the affordance still
+    // reads; the user can also click the tab strip. Layout: chord
+    // label in a brighter Gray, description in the previous dim
+    // DarkGray, each chip separated by " · " painted dim. Cluster
+    // right-aligned; drops chips from the FRONT under overflow so
+    // quit / refresh stay visible on narrow panes.
+    let chips = footer_chips();
+    app.hint_chip_rects.clear();
+    if area.width == 0 || chips.is_empty() {
+        return;
+    }
+    let prefix_w = status_prefix.chars().count() as u16;
+    let budget = area.width.saturating_sub(prefix_w);
+    if budget == 0 {
+        return;
+    }
+    let sep = " · ";
+    let sep_w = sep.chars().count() as u16;
+    let mut total: u16 = 0;
+    let mut widths: Vec<u16> = Vec::with_capacity(chips.len());
+    for (i, chip) in chips.iter().enumerate() {
+        let cw = chip.width();
+        widths.push(cw);
+        total = total.saturating_add(cw);
+        if i + 1 < chips.len() {
+            total = total.saturating_add(sep_w);
+        }
+    }
+    let mut first_visible = 0usize;
+    while total > budget && first_visible < chips.len() {
+        total = total.saturating_sub(widths[first_visible]);
+        if first_visible + 1 < chips.len() {
+            total = total.saturating_sub(sep_w);
+        }
+        first_visible += 1;
+    }
+    if first_visible >= chips.len() {
+        return;
+    }
+    let mut x = area.x + area.width.saturating_sub(total);
+    let y = area.y;
+    for (i, chip) in chips.iter().enumerate().skip(first_visible) {
+        let chip_w = widths[i];
+        let chip_rect = Rect {
+            x,
+            y,
+            width: chip_w,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(chip.render()), chip_rect);
+        if let Some(key) = chip.key {
+            app.hint_chip_rects.push((chip_rect, key));
+        }
+        x = x.saturating_add(chip_w);
+        if i + 1 < chips.len() {
+            let sep_rect = Rect {
+                x,
+                y,
+                width: sep_w,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    sep,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ))),
+                sep_rect,
+            );
+            x = x.saturating_add(sep_w);
+        }
+    }
+}
+
+/// One clickable footer chip. `key` is `None` for advisory chips
+/// (e.g. "1-9 tab" — a range, not a single key) so we still paint
+/// the label but skip click registration.
+struct FooterChip {
+    key_label: &'static str,
+    description: &'static str,
+    key: Option<crossterm::event::KeyEvent>,
+}
+
+impl FooterChip {
+    fn width(&self) -> u16 {
+        // " <key> <desc> " — key + space + desc, with a leading and
+        // trailing space so the pill has breathing room.
+        (self.key_label.chars().count() + self.description.chars().count() + 3) as u16
+    }
+    fn render(&self) -> Line<'static> {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                self.key_label.to_string(),
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                self.description.to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ),
+            Span::raw(" "),
+        ])
+    }
+}
+
+fn footer_chips() -> Vec<FooterChip> {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let ke = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    vec![
+        // Range-only chip — no single keystroke to synthesize.
+        FooterChip {
+            key_label: "1-9",
+            description: "tab",
+            key: None,
+        },
+        FooterChip {
+            key_label: "↑↓/jk",
+            description: "move",
+            key: Some(ke(KeyCode::Down)),
+        },
+        FooterChip {
+            key_label: "↵",
+            description: "expand",
+            key: Some(ke(KeyCode::Enter)),
+        },
+        FooterChip {
+            key_label: "o",
+            description: "open on web",
+            key: Some(ke(KeyCode::Char('o'))),
+        },
+        FooterChip {
+            key_label: "d",
+            description: "detail",
+            key: Some(ke(KeyCode::Char('d'))),
+        },
+        FooterChip {
+            key_label: "a",
+            description: "approve",
+            key: Some(ke(KeyCode::Char('a'))),
+        },
+        FooterChip {
+            key_label: "m",
+            description: "open↔merged",
+            key: Some(ke(KeyCode::Char('m'))),
+        },
+        FooterChip {
+            key_label: "r",
+            description: "refresh",
+            key: Some(ke(KeyCode::Char('r'))),
+        },
+        FooterChip {
+            key_label: "q",
+            description: "quit",
+            key: Some(ke(KeyCode::Char('q'))),
+        },
+    ]
 }
