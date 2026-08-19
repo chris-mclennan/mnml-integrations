@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
     };
     let (token, token_source) = auth::load_token().with_context(|| {
         format!(
-            "couldn't load app password (tried env BITBUCKET_APP_PASSWORD, BITBUCKET_PERSONAL_TOKEN, then {})",
+            "couldn't load Bitbucket token (tried env BITBUCKET_API_TOKEN, BITBUCKET_APP_PASSWORD, BITBUCKET_PERSONAL_TOKEN, then {})",
             auth::token_path().display()
         )
     })?;

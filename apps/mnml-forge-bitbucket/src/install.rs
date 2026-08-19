@@ -89,6 +89,28 @@ const RETIRED_IDS: &[&str] = &["bitbucket_branches"];
 /// (2026-08-11); requires `mnml-bridge = "0.7"`.
 fn auth_fields() -> Vec<AuthField> {
     vec![
+        // Preferred (2026-08+): Atlassian scoped api_token. Drawn
+        // from a separate rate-limit bucket than app passwords, and
+        // revocable per-integration without invalidating the rest of
+        // your automation. Not marked `required` so users on the
+        // legacy app_password path still validate — the loader takes
+        // whichever is set (api_token wins if both are).
+        AuthField {
+            key: "api_token".into(),
+            label: "Bitbucket API token (recommended)".into(),
+            kind: "secret".into(),
+            env_fallback: Some("BITBUCKET_API_TOKEN".into()),
+            help_url: Some(
+                "https://id.atlassian.com/manage-profile/security/api-tokens"
+                    .into(),
+            ),
+            help: Some(
+                "Preferred. Atlassian scoped API token — fresh rate-limit bucket, per-integration revoke. Either this OR an app password is required."
+                    .into(),
+            ),
+            required: false,
+            ..Default::default()
+        },
         AuthField {
             key: "app_password".into(),
             label: "Bitbucket app password".into(),
@@ -99,10 +121,11 @@ fn auth_fields() -> Vec<AuthField> {
                     .into(),
             ),
             help: Some(
-                "Create an app password with the Repositories:Read + Pull requests:Read + Pipelines:Read scopes."
+                "Legacy path. Set this OR an api_token above (api_token wins if both are set). Scopes: Repositories:Read + Pull requests:Read + Pipelines:Read."
                     .into(),
             ),
-            required: true,
+            required: false,
+            ..Default::default()
         },
         AuthField {
             key: "username".into(),
