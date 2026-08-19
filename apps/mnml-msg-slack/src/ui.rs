@@ -218,13 +218,74 @@ fn item_row(item: &Item) -> (String, String, Style) {
     match item {
         Item::Channel(c) => channel_row(c),
         Item::SearchHit(hit) => search_row(hit),
+        Item::Canvas(c) => canvas_row(c),
         Item::ThreadPlaceholder => (
-            "(v0.2)".to_string(),
+            "(coming soon)".to_string(),
             "needs scan across recent channels".to_string(),
             Style::default().fg(crate::theme::remap(Color::DarkGray)),
         ),
     }
 }
+
+/// #1005 (2026-08-19) — Canvas file row. Layout:
+///   `<title>` (primary, white)
+///   `<n>h ago  <permalink-suffix>` (secondary, dim)
+/// Timestamp uses the same relative-time formatter the messages
+/// use; permalink suffix is the trailing `/canvas/<id>` slug so
+/// the row hints at the URL Enter will open without eating the
+/// whole width.
+fn canvas_row(c: &crate::slack::Canvas) -> (String, String, Style) {
+    let name = c.display_title();
+    let ts = c.timestamp();
+    let ago = if ts == 0 {
+        "—".to_string()
+    } else {
+        relative_time_short(ts)
+    };
+    let slug = c
+        .permalink
+        .rsplit('/')
+        .next()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let secondary = if slug.is_empty() {
+        ago
+    } else {
+        format!("{ago}  /{slug}")
+    };
+    (
+        name,
+        secondary,
+        Style::default().fg(crate::theme::remap(Color::White)),
+    )
+}
+
+/// Very compact relative-time formatter. Buckets:
+///   <1m → "<1m"
+///   <60m → "<n>m"
+///   <24h → "<n>h"
+///   <30d → "<n>d"
+///   otherwise → absolute yyyy-mm-dd (via chrono, if present) or
+///   a raw epoch fallback.
+fn relative_time_short(ts_unix_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let delta = now.saturating_sub(ts_unix_secs);
+    if delta < 60 {
+        "<1m".into()
+    } else if delta < 3600 {
+        format!("{}m", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h", delta / 3600)
+    } else if delta < 30 * 86_400 {
+        format!("{}d", delta / 86_400)
+    } else {
+        format!("{}mo", delta / (30 * 86_400))
+    }
+}
+
 
 fn channel_row(c: &Channel) -> (String, String, Style) {
     let name = c.display_name();
@@ -318,9 +379,47 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                 Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
             f.render_widget(p, area);
         }
+        Some(Item::Canvas(c)) => {
+            // #1005 (2026-08-19). Canvas detail: title + updated /
+            // owner / permalink / a hint about `Enter → open in
+            // browser`. No block/body rendering — canvas block model
+            // is its own project.
+            let kv = |k: &str, v: String| -> Line<'static> {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {k:<14}"),
+                        Style::default().fg(crate::theme::remap(Color::DarkGray)),
+                    ),
+                    Span::styled(v, Style::default().fg(Color::White)),
+                ])
+            };
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(kv("Title", c.display_title()));
+            let ts = c.timestamp();
+            if ts > 0 {
+                lines.push(kv("Updated", relative_time_short(ts)));
+            }
+            if !c.user.is_empty() {
+                lines.push(kv("Owner", c.user.clone()));
+            }
+            if !c.channels.is_empty() {
+                lines.push(kv("Channels", c.channels.join(", ")));
+            }
+            if !c.permalink.is_empty() {
+                lines.push(kv("Permalink", c.permalink.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " Enter → open in browser",
+                Style::default().fg(crate::theme::remap(Color::DarkGray)),
+            )));
+            let p = Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(title));
+            f.render_widget(p, area);
+        }
         Some(Item::ThreadPlaceholder) | None => {
             let msg = match app.active().spec.kind.as_str() {
-                "threads" => "Thread aggregation across recent channels is v0.2.",
+                "threads" => "Threads aggregation across recent channels — coming soon.",
                 _ => "(no item selected)",
             };
             let p = Paragraph::new(msg)

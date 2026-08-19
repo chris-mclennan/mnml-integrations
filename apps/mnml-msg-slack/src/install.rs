@@ -147,7 +147,7 @@ pub fn install() -> Result<()> {
     let boards = IntegrationSpec {
         id: BOARDS_ID.into(),
         label: "Slack Boards".into(),
-        description: Some("Slack Boards (v0.1 stub — files.list?type=canvas)".into()),
+        description: Some("Slack Boards — canvases from files.list, open in browser".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
@@ -161,10 +161,10 @@ pub fn install() -> Result<()> {
             fallback: "SB".into(),
             color: "yellow".into(),
             // 2026-07-22 — enabled by default so users see BOTH
-            // chips after --install; the sibling's boards view is
-            // still a v0.1 stub but the chip visibility is the
-            // affordance we want ("hey, Boards exists — it's
-            // coming"). Users can right-click → Remove to hide.
+            // chips after --install. #1005 (2026-08-19): the Boards
+            // view now actually renders canvases (title / owner /
+            // Enter-to-open-in-browser); the "v0.1 stub" call-out
+            // was retired with the marketplace listing.
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(BOARDS_ID.into()),
