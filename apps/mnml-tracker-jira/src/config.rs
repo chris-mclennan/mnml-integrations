@@ -279,6 +279,16 @@ pub struct Tab {
     /// AND project=X`), the pre-2026-08-07 behavior.
     #[serde(default)]
     pub board_id: Option<u64>,
+    /// #1035 (2026-08-18) — Jira saved-filter id. Only meaningful
+    /// when `kind = "filter"`. Backs the tab with JQL
+    /// `filter = <id>`, whose contents Jira expands server-side to
+    /// the filter's saved JQL. Any user with view access to the
+    /// filter can point a tab at it; no need to duplicate the JQL.
+    ///
+    /// Find the id in the filter URL:
+    /// `https://<site>/issues/?filter=10718` → id = `10718`.
+    #[serde(default)]
+    pub filter_id: Option<u64>,
 }
 
 /// 2026-07-25 — new TabKind enum. Powers the split rail chips
@@ -309,6 +319,13 @@ pub enum TabKind {
     BoardActiveSprint,
     /// Jira Boards: backlog (tickets NOT in an active sprint).
     BoardBacklog,
+    /// #1035 (2026-08-18) — Jira saved filter. `filter_id` required.
+    /// Server-side expansion via JQL `filter = <id>`, so any saved
+    /// query the user can view (QA queue, roadmap board filter, a
+    /// personal search) becomes a tab. Belongs to the Work family
+    /// so it shares the Work pane's rendering. `--only work` picks
+    /// it up.
+    Filter,
 }
 
 impl TabKind {
@@ -317,7 +334,9 @@ impl TabKind {
     /// `--only <family>`.
     pub fn family(self) -> TabFamily {
         match self {
-            Self::WorkAssigned | Self::WorkRecentlyDone | Self::WorkRecent => TabFamily::Work,
+            Self::WorkAssigned | Self::WorkRecentlyDone | Self::WorkRecent | Self::Filter => {
+                TabFamily::Work
+            }
             Self::FixVersionTree => TabFamily::FixVersions,
             Self::BoardActiveSprint | Self::BoardBacklog => TabFamily::Boards,
         }
@@ -373,6 +392,11 @@ impl TabKind {
                  AND status != Done \
                  ORDER BY rank ASC",
             ),
+            // #1035 — Filter's JQL is built at query time in
+            // `resolve_tab_jql` from `tab.filter_id`, since it's
+            // instance-specific data. Returns None here so the
+            // static-JQL fast path doesn't apply.
+            Self::Filter => None,
         }
     }
 }
@@ -671,6 +695,13 @@ project = "TE"
                     TabKind::WorkAssigned
                     | TabKind::WorkRecentlyDone
                     | TabKind::WorkRecent => {}
+                    TabKind::Filter => {
+                        if t.filter_id.is_none() {
+                            return Err(anyhow!(
+                                "{label}: kind = 'filter' requires filter_id = <n>"
+                            ));
+                        }
+                    }
                 }
                 continue;
             }
