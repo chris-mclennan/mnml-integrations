@@ -2,7 +2,7 @@
 //! user-name cache, post / search / react input modes.
 
 use crate::config::{Config, Tab};
-use crate::slack::{self, Auth, Channel, Message, QUICK_REACTIONS, SearchMatch};
+use crate::slack::{self, Auth, Canvas, Channel, Message, QUICK_REACTIONS, SearchMatch};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -107,7 +107,15 @@ impl TabSpec {
 pub enum Item {
     Channel(Channel),
     SearchHit(SearchMatch),
-    /// `threads` tab is a stub in v0.1.
+    /// #1005 (2026-08-19) — Slack Canvas file surfaced by the
+    /// Canvases tab. Enter opens the canvas in the browser via its
+    /// permalink; there's no in-terminal renderer (canvas has its
+    /// own block model with rich text/embeds/actions — deferring
+    /// that to a real Slack-canvas viewer).
+    Canvas(Canvas),
+    /// Threads tab is still a stub — needs a multi-channel scan
+    /// across recent conversations. Placeholder row rendered from
+    /// ui.rs so the tab still opens rather than 404-ing.
     ThreadPlaceholder,
 }
 
@@ -428,18 +436,20 @@ impl App {
                 return;
             }
             "canvases" => {
-                // 2026-07-22 — v0.1 stub. Real work: `files.list?
-                // type=canvas` returns canvas file metadata; each
-                // canvas can then be pulled via `files.info` and
-                // its blocks rendered. Non-trivial (canvas has its
-                // own block model — rich text, embeds, actions).
-                self.tabs[idx].loading = false;
-                self.tabs[idx].items = vec![Item::ThreadPlaceholder];
-                self.tabs[idx].selected = 0;
-                self.tabs[idx].last_loaded = Some(Instant::now());
-                self.status =
-                    "canvases: (v0.2 — files.list?type=canvas + block renderer needed)".into();
-                return;
+                // #1005 (2026-08-19). Slack `files.list?types=canvases`
+                // returns metadata for every canvas the caller can
+                // see; we surface it as a flat list ordered
+                // newest-updated first. There's no in-terminal
+                // canvas RENDERER — the canvas block model (rich
+                // text / embeds / actions / free-form layout) is
+                // its own project. Enter on a row opens the canvas
+                // in the browser via the Slack-issued permalink.
+                slack::files_list_canvases(&self.auth).map(|canvases| {
+                    canvases
+                        .into_iter()
+                        .map(Item::Canvas)
+                        .collect::<Vec<_>>()
+                })
             }
             _ => unreachable!("validated in TabSpec::resolve"),
         };
@@ -481,16 +491,41 @@ impl App {
         t.items.get(t.selected)
     }
 
-    /// `Enter` — open a thread view. v0.1: bring the focused channel's
-    /// detail pane to front + flash a hint. Real threaded view is v0.2.
+    /// `Enter` — open a thread view (channel/DM) or open a canvas
+    /// permalink in the browser. Real threaded-view UX is still a
+    /// follow-up; the channel path currently just refreshes detail.
     pub fn open_thread(&mut self) {
         match self.focused_item() {
             Some(Item::Channel(_)) => {
                 self.maybe_load_detail();
-                self.status = "loaded history (thread-view v0.2)".into();
+                self.status = "loaded history".into();
             }
             Some(Item::SearchHit(hit)) => {
-                self.status = format!("search hit ts={} (thread-view v0.2)", hit.ts);
+                // #1005 — search hits carry a permalink; opening the
+                // browser is more useful than a status flash.
+                if let Some(url) = hit.permalink.clone().filter(|s| !s.is_empty()) {
+                    match open_url(&url) {
+                        Ok(()) => self.status = format!("opened {url}"),
+                        Err(e) => self.status = format!("open failed: {e}"),
+                    }
+                } else {
+                    self.status = format!("search hit ts={} (no permalink)", hit.ts);
+                }
+            }
+            Some(Item::Canvas(c)) => {
+                // #1005 — Enter on a canvas row opens its permalink.
+                // No in-terminal canvas renderer; users get what they
+                // came for (jumping to the doc) without waiting on
+                // the canvas block-model surface.
+                let url = c.permalink.clone();
+                if url.is_empty() {
+                    self.status = "no permalink on canvas".into();
+                    return;
+                }
+                match open_url(&url) {
+                    Ok(()) => self.status = format!("opened {url}"),
+                    Err(e) => self.status = format!("open failed: {e}"),
+                }
             }
             Some(Item::ThreadPlaceholder) | None => {
                 self.status = "nothing to open".into();
@@ -706,6 +741,19 @@ impl App {
                     Err(e) => self.status = format!("error: {e}"),
                 }
             }
+            Some(Item::Canvas(c)) => {
+                // #1005 — canvas permalink yank.
+                let url = c.permalink.clone();
+                if url.is_empty() {
+                    self.status = "no permalink on canvas".into();
+                    return;
+                }
+                let n = url.chars().count();
+                match crate::clipboard::copy(&url) {
+                    Ok(()) => self.status = format!("copied permalink ({n} chars)"),
+                    Err(e) => self.status = format!("copy failed: {e}"),
+                }
+            }
             Some(Item::ThreadPlaceholder) | None => {
                 self.status = "nothing to copy".into();
             }
@@ -889,6 +937,28 @@ fn sort_channels(mut chans: Vec<Channel>, filter: &crate::config::ChannelFilter)
     chans
 }
 
+/// #1005 (2026-08-19) — best-effort browser open. macOS `open`,
+/// Linux `xdg-open`, Windows `cmd /C start`. Detached; we don't
+/// wait for the launcher. Returns an error if the launcher binary
+/// is missing (headless container etc.) so callers can surface
+/// that via `self.status`.
+fn open_url(url: &str) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    let (bin, args): (&str, Vec<&str>) = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let (bin, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let (bin, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "start", "", url]);
+    std::process::Command::new(bin)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("spawn `{bin}` failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,7 +1059,8 @@ mod tests {
         assert_eq!(sorted[4].name, "bravo");
     }
 
-    fn mk_channel(name: &str, member: bool) -> Channel {
+    #[cfg(test)]
+fn mk_channel(name: &str, member: bool) -> Channel {
         Channel {
             id: name.to_uppercase(),
             name: name.to_string(),

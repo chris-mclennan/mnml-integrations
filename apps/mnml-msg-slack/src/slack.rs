@@ -490,6 +490,88 @@ pub fn reactions_add(auth: &Auth, channel: &str, message_ts: &str, name: &str) -
     Ok(())
 }
 
+// ── files.list (canvases) ────────────────────────────────────────
+
+/// #1005 (2026-08-19) — Slack Canvas file metadata. `filetype ==
+/// "canvas"` is what `files.list` returns for canvases (both
+/// standalone and channel-attached). Fields we surface in the
+/// Canvases tab; unused fields kept off the struct so serde skips
+/// them (Slack's `File` shape is huge).
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // kept-for-forward-compat fields (filetype, is_public — surface UX to follow)
+pub struct Canvas {
+    pub id: String,
+    /// Human title shown in the row. Slack sometimes returns an
+    /// empty string for freshly-created canvases; we fall back to
+    /// the id via `display_title()`.
+    #[serde(default)]
+    pub title: String,
+    /// Slack-issued deep link for `open in browser`. Present on all
+    /// visible canvases.
+    #[serde(default)]
+    pub permalink: String,
+    /// Owner user id. Rendered in the row when the users.info cache
+    /// resolves it; falls back to the raw id otherwise.
+    #[serde(default)]
+    pub user: String,
+    /// Unix seconds — creation / update time (Slack files carry
+    /// `created`, `updated` if edited; we prefer updated when
+    /// present).
+    #[serde(default)]
+    pub updated: Option<u64>,
+    #[serde(default)]
+    pub created: Option<u64>,
+    /// Channel this canvas is attached to (empty for standalone).
+    #[serde(default)]
+    pub channels: Vec<String>,
+    /// Whether the canvas has been shared/is visible.
+    #[serde(default)]
+    pub is_public: bool,
+    /// Editor context (some canvases are stand-alone, some are
+    /// channel-attached).
+    #[serde(default)]
+    pub filetype: String,
+}
+
+impl Canvas {
+    /// Best-effort human title. Falls back to id when Slack returns
+    /// an empty `title` (freshly created / imported).
+    pub fn display_title(&self) -> String {
+        if self.title.is_empty() {
+            self.id.clone()
+        } else {
+            self.title.clone()
+        }
+    }
+    /// Prefer `updated`; fall back to `created`. `0` when neither
+    /// is set (the row renderer treats 0 as "unknown").
+    pub fn timestamp(&self) -> u64 {
+        self.updated.or(self.created).unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FilesListResponse {
+    #[serde(default)]
+    files: Vec<Canvas>,
+}
+
+/// `GET /files.list?types=canvases&count=100`. Returns the caller's
+/// visible canvases sorted newest-updated first (Slack default).
+///
+/// Scope required: `files:read` (bot) OR `search:read` (user).
+/// A token without either returns `not_allowed_token_type` — the
+/// caller surfaces that as a config-hint toast rather than a
+/// scary red error, since it's a scope gap, not a bug.
+pub fn files_list_canvases(auth: &Auth) -> Result<Vec<Canvas>> {
+    let client = build_client()?;
+    let url = format!("{}/files.list?types=canvases&count=100", API_BASE);
+    let val = send_and_parse(auth_get(&client, auth, &url), "files.list")?;
+    let parsed: FilesListResponse =
+        serde_json::from_value(val).with_context(|| "shape files.list")?;
+    Ok(parsed.files)
+}
+
 // ── users.info ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
