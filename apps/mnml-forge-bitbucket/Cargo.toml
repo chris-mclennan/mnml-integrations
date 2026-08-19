@@ -1,6 +1,6 @@
 [package]
 name = "mnml-forge-bitbucket"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2024"
 license = "MIT"
 description = "Bitbucket Cloud viewer for mnml — pull requests + pipeline runs, workspace-scoped, with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
@@ -29,6 +29,11 @@ dirs = "5"
 url = "2"
 webbrowser = "1"
 base64 = "0.22"
+# #1040 (2026-08-18) — client-side regex-match for
+# `chip_excluded_branch_patterns`. Was server-side via BBQL but
+# Bitbucket rejects `source.branch.name ~ …` as a filter (verified
+# HTTP 400 body: "does not support filtering").
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

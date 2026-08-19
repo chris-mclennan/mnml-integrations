@@ -240,17 +240,13 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
         let cutoff = chrono::Utc::now() - chrono::Duration::days(cfg.chip_stale_after_days as i64);
         clauses.push(format!("updated_on >= {}", cutoff.format("%Y-%m-%d")));
     }
-    // NOT source.branch.name ~ "^release/" etc. BBQL's `~` is regex.
-    // Grouped inside parens so the NOT applies to the OR.
-    if !cfg.chip_excluded_branch_patterns.is_empty() {
-        let ors = cfg
-            .chip_excluded_branch_patterns
-            .iter()
-            .map(|p| format!("source.branch.name ~ \"{}\"", p.replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        clauses.push(format!("NOT ({ors})"));
-    }
+    // Branch-name exclusion moved to CLIENT-SIDE — 2026-08-18
+    // (#1040). Was `AND NOT source.branch.name ~ "^release/"` in
+    // BBQL but Bitbucket returned HTTP 400 for every repo:
+    //   "Field ".source.branch" does not support filtering"
+    // The exclusion now runs post-fetch inside
+    // `count_repo_prs_by_approval`. See that fn's comment for
+    // the ~30 bytes/PR added to the projection.
     let bbql = clauses.join(" AND ");
 
     // Fetch open + approved counts (approved = has ≥1 approval).
@@ -264,7 +260,14 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
         Some(cfg.repos.as_slice())
     };
     let (open_mine, approved_mine) = client
-        .count_workspace_prs_by_approval(&cfg.workspace, &bbql, Some("OPEN"), 50, explicit)
+        .count_workspace_prs_by_approval(
+            &cfg.workspace,
+            &bbql,
+            Some("OPEN"),
+            50,
+            explicit,
+            &cfg.chip_excluded_branch_patterns,
+        )
         .await
         .context("counting open PRs authored by you")?;
     let unapproved_mine = open_mine.saturating_sub(approved_mine);
