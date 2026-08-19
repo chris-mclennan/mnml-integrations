@@ -620,6 +620,46 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or(false);
         comp_hit || label_hit || custom_hit
     };
+    // #1004 (2026-08-18) — client-side Type + Label filters. Both
+    // are case-insensitive equal (not substring) because these
+    // fields carry discrete values (Story / Task / Bug; specific
+    // label strings) — substring would spuriously match "story"
+    // inside "backstory-note", etc.
+    let type_filter: Option<String> = app
+        .cfg
+        .tabs
+        .get(app.active_tab)
+        .and_then(|t| t.issue_type.clone())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let type_matches = |issue: &crate::jira::Issue| -> bool {
+        let Some(needle) = &type_filter else {
+            return true;
+        };
+        issue
+            .fields
+            .issuetype
+            .as_ref()
+            .map(|t| t.name.to_ascii_lowercase() == *needle)
+            .unwrap_or(false)
+    };
+    let label_filter: Option<String> = app
+        .cfg
+        .tabs
+        .get(app.active_tab)
+        .and_then(|t| t.label.clone())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let label_matches = |issue: &crate::jira::Issue| -> bool {
+        let Some(needle) = &label_filter else {
+            return true;
+        };
+        issue
+            .fields
+            .labels
+            .iter()
+            .any(|l| l.to_ascii_lowercase() == *needle)
+    };
     if tab.issues.is_empty() {
         let p = Paragraph::new("(no issues in this sprint)")
             .style(Style::default().fg(Color::DarkGray));
@@ -651,6 +691,13 @@ fn draw_kanban_board(f: &mut Frame, area: Rect, app: &mut App) {
     let mut done: Vec<usize> = Vec::new();
     for (i, issue) in tab.issues.iter().enumerate() {
         if !team_matches(issue) {
+            continue;
+        }
+        // #1004 (2026-08-18) — Type + Label AND on top of team.
+        if !type_matches(issue) {
+            continue;
+        }
+        if !label_matches(issue) {
             continue;
         }
         if !filter_visible.is_empty() && !filter_visible.contains(&i) {
@@ -2131,6 +2178,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
         crate::app::FieldKind::TicketAction => "action",
         crate::app::FieldKind::Sprint => "sprint",
         crate::app::FieldKind::QuickFilter => "quick filters",
+        crate::app::FieldKind::IssueType => "type",
+        crate::app::FieldKind::Label => "label",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -2394,20 +2443,14 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::Version => app.open_tab_fix_version_picker().await,
         ChipKind::QuickFilters => app.open_quickfilter_picker().await,
         ChipKind::BoardSettings => app.open_board_settings(),
-        ChipKind::Epic | ChipKind::Type | ChipKind::Label => {
-            // 2026-08-07 — design-critic r1 #3: was `{kind:?}` which
-            // leaked Debug-formatted PascalCase. Explicit copy per
-            // chip matches the chip label text exactly. Epic/Type/
-            // Label filters are still deferred — the JQL for these
-            // needs a picker of their own values (project-scoped),
-            // which is v2 groundwork.
-            let name = match kind {
-                ChipKind::Epic => "Epic",
-                ChipKind::Type => "Type",
-                ChipKind::Label => "Label",
-                _ => "?",
-            };
-            app.status = format!("{name} filter — coming soon");
+        // #1004 (2026-08-18) — Type + Label pickers wire up (client-
+        // side render filters). Epic still deferred pending epic-link
+        // custom-field handling (needs project-scoped field-id lookup
+        // which varies per Jira instance).
+        ChipKind::Type => app.open_issue_type_picker(),
+        ChipKind::Label => app.open_label_picker(),
+        ChipKind::Epic => {
+            app.status = "Epic filter — coming soon (needs project epic-link field)".to_string();
         }
     }
 }

@@ -215,6 +215,15 @@ pub enum FieldKind {
     /// closes + applies (writes `TabState.active_quick_filter_ids`
     /// and refetches).
     QuickFilter,
+    /// #1004 (2026-08-18) — Issue Type picker for board tabs. Items
+    /// are the union of issuetype.name across the tab's issues (no
+    /// Jira roundtrip). Commit writes `tab.issue_type` in-memory and
+    /// re-buckets on next paint.
+    IssueType,
+    /// #1004 (2026-08-18) — Label picker for board tabs. Items are
+    /// the union of labels across the tab's issues. Commit writes
+    /// `tab.label` in-memory.
+    Label,
 }
 
 impl FieldPicker {
@@ -1534,6 +1543,88 @@ impl App {
         });
     }
 
+    /// #1004 (2026-08-18) — Issue Type picker. Items = the union of
+    /// `issuetype.name` across the tab's issues. Prepended with a
+    /// "— Clear type —" row that commits `None`.
+    pub fn open_issue_type_picker(&mut self) {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for issue in &self.active().issues {
+            if let Some(t) = &issue.fields.issuetype
+                && !t.name.trim().is_empty()
+            {
+                seen.insert(t.name.clone());
+            }
+        }
+        let items: Vec<(String, String)> =
+            std::iter::once((String::new(), "— Clear type —".to_string()))
+                .chain(seen.into_iter().map(|s| (s.clone(), s)))
+                .collect();
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::IssueType,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: None,
+        });
+    }
+
+    /// #1004 (2026-08-18) — Commit for the Issue Type picker.
+    pub fn commit_issue_type_picker(&mut self, value: String) {
+        let idx = self.active_tab;
+        if let Some(tab) = self.cfg.tabs.get_mut(idx) {
+            tab.issue_type = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+        }
+        self.field_picker = None;
+    }
+
+    /// #1004 (2026-08-18) — Label picker. Items = the union of label
+    /// strings across the tab's issues, prepended with a "— Clear
+    /// label —" row.
+    pub fn open_label_picker(&mut self) {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for issue in &self.active().issues {
+            for l in &issue.fields.labels {
+                if !l.trim().is_empty() {
+                    seen.insert(l.clone());
+                }
+            }
+        }
+        let items: Vec<(String, String)> =
+            std::iter::once((String::new(), "— Clear label —".to_string()))
+                .chain(seen.into_iter().map(|s| (s.clone(), s)))
+                .collect();
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::Label,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: None,
+        });
+    }
+
+    /// #1004 (2026-08-18) — Commit for the Label picker.
+    pub fn commit_label_picker(&mut self, value: String) {
+        let idx = self.active_tab;
+        if let Some(tab) = self.cfg.tabs.get_mut(idx) {
+            tab.label = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+        }
+        self.field_picker = None;
+    }
+
     /// Commit handler for the Team picker. Writes the value onto the
     /// active tab config; the kanban render reads from there on next
     /// paint. `""` clears the filter.
@@ -1962,6 +2053,28 @@ impl App {
             self.refresh_active().await;
             return;
         }
+        // #1004 (2026-08-18) — Type + Label are client-side render
+        // filters. No refetch needed; just re-bucket on next paint.
+        if kind == FieldKind::IssueType {
+            self.commit_issue_type_picker(id.clone());
+            let display = if id.is_empty() {
+                "(cleared)".to_string()
+            } else {
+                label.clone()
+            };
+            self.status = format!("type filter: {display}");
+            return;
+        }
+        if kind == FieldKind::Label {
+            self.commit_label_picker(id.clone());
+            let display = if id.is_empty() {
+                "(cleared)".to_string()
+            } else {
+                label.clone()
+            };
+            self.status = format!("label filter: {display}");
+            return;
+        }
         // TabFixVersion picker rewrites the tab's JQL — not a per-
         // ticket assignment. Route before the bulk-write loop.
         if kind == FieldKind::TabFixVersion {
@@ -2021,7 +2134,9 @@ impl App {
                 | FieldKind::TabFixVersion
                 | FieldKind::TicketAction
                 | FieldKind::Sprint
-                | FieldKind::QuickFilter => {
+                | FieldKind::QuickFilter
+                | FieldKind::IssueType
+                | FieldKind::Label => {
                     unreachable!("routed above")
                 }
             };
@@ -2042,7 +2157,9 @@ impl App {
                 | FieldKind::TabFixVersion
                 | FieldKind::TicketAction
                 | FieldKind::Sprint
-                | FieldKind::QuickFilter => {
+                | FieldKind::QuickFilter
+                | FieldKind::IssueType
+                | FieldKind::Label => {
                     unreachable!("routed above")
                 }
             };
