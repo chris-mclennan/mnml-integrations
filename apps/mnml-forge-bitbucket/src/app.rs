@@ -713,13 +713,41 @@ impl App {
     /// cache key.
     pub fn focused_key(&self) -> Option<(String, String, i64)> {
         let tab = self.active();
-        let TabData::PullRequests(prs) = &tab.data else {
-            return None;
-        };
-        let pr = prs.get(tab.selected)?;
-        let full = pr.repo_short();
-        let (workspace, repo) = full.split_once('/').unwrap_or(("", full.as_str()));
-        Some((workspace.to_string(), repo.to_string(), pr.id))
+        // Flat PullRequests tab — direct lookup by cursor.
+        if let TabData::PullRequests(prs) = &tab.data {
+            let pr = prs.get(tab.selected)?;
+            let full = pr.repo_short();
+            let (workspace, repo) = full.split_once('/').unwrap_or(("", full.as_str()));
+            return Some((workspace.to_string(), repo.to_string(), pr.id));
+        }
+        // #1003 (2026-08-18) — RepoPrTree (workspace_open_prs +
+        // workspace_merged_prs) exposes PR rows too, just nested
+        // under repo headers. `focused_pr()` unwinds the tree cursor
+        // to a specific `(slug, PR)` when the row is a PR leaf
+        // (repo headers return None there). Reuse the tab's
+        // workspace as the ws component — RepoPrs rows carry only
+        // the short slug, and workspace tabs are single-workspace
+        // by construction.
+        if let Some((slug, pr)) = self.focused_pr() {
+            let full = pr.repo_short();
+            let (workspace, repo) = full.split_once('/').unwrap_or(("", full.as_str()));
+            // Prefer the full `owner/slug` split from the PR's own
+            // `repo_short()` (guarantees the workspace-scope tab
+            // shows the right owner). Fall back to `(cfg.workspace,
+            // slug)` when the split didn't produce a workspace half.
+            let workspace = if workspace.is_empty() {
+                self.cfg.workspace.as_str()
+            } else {
+                workspace
+            };
+            let repo = if repo.is_empty() {
+                slug.as_str()
+            } else {
+                repo
+            };
+            return Some((workspace.to_string(), repo.to_string(), pr.id));
+        }
+        None
     }
 
     /// Resolve the workspace-wide repo scope. Applies `Config::scope`
@@ -1769,13 +1797,17 @@ impl App {
         }
     }
 
-    /// Toggle the right-half detail panel. Opening lazily fetches the
-    /// detail; closing keeps the cache around. No-op on non-PR tabs.
+    /// Toggle the right-half detail panel. Opening lazily fetches
+    /// the detail; closing keeps the cache around. #1003
+    /// (2026-08-18) — was PR-only with a `"detail panel is PR-only
+    /// in v0.3"` stub toast; now supports RepoPrTree tabs too
+    /// (`workspace_open_prs` / `workspace_merged_prs`) via the
+    /// extended `focused_key()`. Silently no-ops on tabs with no
+    /// PR concept (Pipelines / Branches / RepoTree pipelines) —
+    /// `ensure_focused_detail` gates on `focused_key()` returning
+    /// Some, so a repo-header cursor or pipeline row just leaves
+    /// the panel empty instead of showing a misleading toast.
     pub async fn toggle_details(&mut self) {
-        if self.active().spec.kind != TabKind::PullRequests {
-            self.status = "detail panel is PR-only in v0.3".to_string();
-            return;
-        }
         self.details_visible = !self.details_visible;
         self.details_scroll = 0;
         if self.details_visible {
