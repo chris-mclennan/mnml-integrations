@@ -81,13 +81,16 @@ pub struct Config {
     #[serde(default = "default_chip_excluded_branch_patterns")]
     pub chip_excluded_branch_patterns: Vec<String>,
     /// #1028 (2026-08-18) — integration-level repo allowlist. When
-    /// non-empty, the chip poll (`--values`) queries ONLY these
-    /// repos instead of enumerating every workspace repo. Cuts
-    /// what was 120 API calls / 5 min to N. Prevents the 429
-    /// storm on large workspaces (tattledevs = 119 repos). Empty
-    /// (default) preserves backward-compat: enumerate all repos.
-    /// Same list is intended to be honored by the workspace pane
-    /// tabs too — filed as #1031.
+    /// non-empty, BOTH the chip poll (`--values`) AND the workspace
+    /// pane tabs (`workspace_open_prs`, `workspace_merged_prs`,
+    /// `workspace_pipelines`) query ONLY these repos instead of
+    /// enumerating every workspace repo. Cuts what was 120 API
+    /// calls / 5 min to N. Prevents the 429 storm on large
+    /// workspaces (tattledevs = 119 repos). Empty (default)
+    /// preserves backward-compat: fall back to `scope` /
+    /// `explicit_repos` for the tabs, enumerate all for the chip.
+    /// #1031 (2026-08-18) extended the honor list to the workspace
+    /// tabs.
     #[serde(default)]
     pub repos: Vec<String>,
 }

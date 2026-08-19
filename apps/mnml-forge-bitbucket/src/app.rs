@@ -733,7 +733,17 @@ impl App {
             return Ok(cached.clone());
         }
         let hidden: HashSet<String> = self.cfg.hidden_repos.iter().cloned().collect();
-        let raw: Vec<String> = match self.cfg.scope.as_str() {
+        // #1031 (2026-08-18) — the integration-level `repos` allowlist
+        // (originally scoped to `--values` in #1028) also drives the
+        // workspace tabs when set. Bypasses `scope`/`explicit_repos`
+        // entirely — if the user has expressed "these are the repos I
+        // care about" via `repos`, honor it everywhere and avoid the
+        // enumerate-then-filter round-trip. Hidden + repo_order still
+        // apply.
+        let raw: Vec<String> = if !self.cfg.repos.is_empty() {
+            self.cfg.repos.clone()
+        } else {
+            match self.cfg.scope.as_str() {
             "explicit" => self.cfg.explicit_repos.clone(),
             "recent" => {
                 let activity = self
@@ -760,15 +770,16 @@ impl App {
                     .map(|r| r.slug)
                     .collect()
             }
-            // Default / "all" — every repo, in Bitbucket's
-            // -updated_on order (activity DESC).
-            _ => self
-                .client
-                .list_workspace_repos_with_activity(workspace)
-                .await?
-                .into_iter()
-                .map(|r| r.slug)
-                .collect(),
+                // Default / "all" — every repo, in Bitbucket's
+                // -updated_on order (activity DESC).
+                _ => self
+                    .client
+                    .list_workspace_repos_with_activity(workspace)
+                    .await?
+                    .into_iter()
+                    .map(|r| r.slug)
+                    .collect(),
+            }
         };
         // Subtract hidden.
         let after_hide: Vec<String> = raw.into_iter().filter(|s| !hidden.contains(s)).collect();

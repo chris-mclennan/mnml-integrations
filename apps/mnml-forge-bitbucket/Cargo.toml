@@ -1,6 +1,6 @@
 [package]
 name = "mnml-forge-bitbucket"
-version = "0.3.11"
+version = "0.3.12"
 edition = "2024"
 license = "MIT"
 description = "Bitbucket Cloud viewer for mnml — pull requests + pipeline runs, workspace-scoped, with configurable tabs (per-repo, mine, reviewing). Runs standalone or as an mnml-hosted pane."
