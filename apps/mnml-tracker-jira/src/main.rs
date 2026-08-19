@@ -144,15 +144,52 @@ async fn main() -> Result<()> {
 /// Emit `{"assigned_open": N}` on stdout for the statusline chip.
 /// Uses the SAME JQL as `TabKind::WorkAssigned` so the chip count
 /// matches what the Jira Work Assigned tab displays. Task #1014.
+///
+/// #1029 (2026-08-18) — when `cfg.projects` is non-empty, scopes
+/// the JQL to those project keys. Mirrors the Bitbucket `repos`
+/// allowlist idea (#1028) for a Jira instance that spans many
+/// projects, most of which aren't yours. Empty preserves old
+/// behavior (count across every project the user can see).
 async fn list_values(cfg: &config::Config, client: &jira::Client) -> Result<()> {
-    let jql = config::TabKind::WorkAssigned
+    let base = config::TabKind::WorkAssigned
         .default_jql()
         .ok_or_else(|| anyhow::anyhow!("WorkAssigned kind has no default_jql"))?;
+    let jql: String = if cfg.projects.is_empty() {
+        base.to_string()
+    } else {
+        // Sanitize: JQL project keys are 2-10 uppercase ASCII
+        // chars. Anything else silently drops so a bad config
+        // can't inject arbitrary JQL. Empty result after filter
+        // → fall back to the unscoped query.
+        let safe: Vec<&String> = cfg
+            .projects
+            .iter()
+            .filter(|k| {
+                let s = k.as_str();
+                !s.is_empty()
+                    && s.len() <= 10
+                    && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            })
+            .collect();
+        if safe.is_empty() {
+            base.to_string()
+        } else {
+            // Prepend `project in (KEY1, KEY2) AND `. Base JQL
+            // already starts with `assignee = currentUser() AND …`,
+            // so simple prefix + `AND` is safe.
+            let list = safe
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("project in ({list}) AND {base}")
+        }
+    };
     // No extra fields needed — we only count. Cap at MAX_PAGINATION_ISSUES
     // (500) is fine; any user with >500 assigned open tickets has bigger
     // problems than a wrong chip.
     let issues = client
-        .search(jql, 100, &[])
+        .search(&jql, 100, &[])
         .await
         .map_err(|e| anyhow::anyhow!("chip fetch failed: {e}"))?;
     let out = serde_json::json!({ "assigned_open": issues.len() });

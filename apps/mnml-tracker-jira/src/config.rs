@@ -58,6 +58,21 @@ pub struct Config {
     /// ids. Unset ⇒ use the built-in default list.
     #[serde(default)]
     pub detail_modal: DetailModalConfig,
+    /// #1029 (2026-08-18) — integration-level project scope. When
+    /// non-empty, the statusline chip poll (`--values`) filters to
+    /// ONLY these project keys (e.g. `["TE", "OPS"]`). Mirrors the
+    /// Bitbucket #1028/#1031 `repos` allowlist idea for a Jira
+    /// instance that spans many projects most of which aren't
+    /// yours. Empty (default) preserves backward-compat.
+    ///
+    /// Applied as `AND project in (KEY1, KEY2, …)` appended to the
+    /// chip's base JQL. Uses Jira's project KEY (2-6 uppercase
+    /// chars, e.g. `TE`), NOT the numeric id.
+    ///
+    /// Only the chip poll honors this today; per-tab JQLs are still
+    /// user-controlled via `[[tabs]].jql` overrides.
+    #[serde(default)]
+    pub projects: Vec<String>,
 }
 
 /// 2026-08-07 — governs what appears in the large ticket-detail
