@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-tracker-jira"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "chrono",

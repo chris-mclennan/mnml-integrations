@@ -181,6 +181,16 @@ async fn event_loop(
                             app.open_tab_fix_version_picker().await;
                             continue;
                         }
+                        // 2026-08-19 (#1053) — refresh chip in the
+                        // tree-table title bar. Click fires
+                        // `refresh_active` (mirror of `r`).
+                        if let Some(r) = app.rects.refresh_chip
+                            && rect_hit(r, m.column, m.row)
+                        {
+                            app.refresh_active().await;
+                            last_refresh = Instant::now();
+                            continue;
+                        }
                         // Non-kanban tabs: original flat/tree row model.
                         let Some(row_idx) = table_row_at(m.row, app) else {
                             continue;
@@ -276,6 +286,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.rects.modal_close = None;
     app.rects.pr_show_more.clear();
     app.rects.version_chip = None;
+    app.rects.refresh_chip = None;
     let size = f.area();
     // 2026-07-25 — hide the tab strip entirely when the caller
     // passed `--only` OR there's only one tab (the strip becomes
@@ -1157,6 +1168,30 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         width: chip_w,
         height: 1,
     };
+    // 2026-08-19 (#1053) — right-aligned refresh chip. Renders as
+    // a second Paragraph on the same title row so mouse-only users
+    // can trigger `refresh_active` without the `r` keychord. Skips
+    // when the title area is too narrow to hold both chips comfortably.
+    let refresh_label = " ⟳ Refresh ";
+    let refresh_w = refresh_label.chars().count() as u16;
+    let refresh_rect: Option<Rect> = if title_area.width
+        > leading_w + chip_w + refresh_w + 2
+    {
+        let x = title_area.x + title_area.width - refresh_w;
+        let r = Rect {
+            x,
+            y: title_area.y,
+            width: refresh_w,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(refresh_label, chip_style))),
+            r,
+        );
+        Some(r)
+    } else {
+        None
+    };
 
     let table = Table::new(table_rows, widths)
         .header(header)
@@ -1173,6 +1208,8 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // Register the version-chip click rect now that table_rows is
     // consumed and the &app borrow has ended (#991).
     app.rects.version_chip = Some(chip_rect);
+    // 2026-08-19 (#1053) — register the refresh-chip click rect.
+    app.rects.refresh_chip = refresh_rect;
 
     // 2026-08-07 — register mouse rects for "show N more" rows.
     // Post-#1001 (2026-08-18): body starts at body_area.y + 1
