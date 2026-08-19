@@ -318,8 +318,19 @@ impl Client {
         bbql_predicate: &str,
         state: Option<&str>,
         per_page: u32,
+        explicit_repos: Option<&[String]>,
+        excluded_branch_patterns: &[String],
     ) -> Result<(usize, usize)> {
-        let repos = self.list_workspace_repos(workspace).await?;
+        // #1028 (2026-08-18) — when the integration manifest specifies
+        // `repos = [...]`, use exactly those instead of enumerating
+        // every repo in the workspace. Cuts the chip poll from N (all
+        // repos) to len(explicit) — for tattledevs that's 119 → ~13,
+        // an ~8× reduction that keeps the poll well under Bitbucket's
+        // rate ceiling even under contention.
+        let repos: Vec<String> = match explicit_repos {
+            Some(list) if !list.is_empty() => list.to_vec(),
+            _ => self.list_workspace_repos(workspace).await?,
+        };
         if repos.is_empty() {
             return Ok((0, 0));
         }
@@ -327,6 +338,9 @@ impl Client {
         let workspace = workspace.to_string();
         let predicate = bbql_predicate.to_string();
         let state = state.map(str::to_string);
+        // #1040 (2026-08-18) — clone the exclusion list into each
+        // per-repo future so client-side filtering can apply.
+        let excluded = excluded_branch_patterns.to_vec();
         // Concurrency 8 — matches `list_workspace_prs_filtered`
         // and keeps us well under Bitbucket's per-user rate
         // ceiling. Higher concurrency (16+) was tested in #967
@@ -347,9 +361,10 @@ impl Client {
             let q = predicate.clone();
             let st = state.clone();
             let client = self.clone();
+            let excl = excluded.clone();
             async move {
                 match client
-                    .count_repo_prs_by_approval(&ws, &slug, st.as_deref(), &q, per_page)
+                    .count_repo_prs_by_approval(&ws, &slug, st.as_deref(), &q, per_page, &excl)
                     .await
                 {
                     Ok(v) => Some(v),
@@ -395,6 +410,7 @@ impl Client {
         state: Option<&str>,
         bbql_predicate: &str,
         per_page: u32,
+        excluded_branch_patterns: &[String],
     ) -> std::result::Result<(usize, usize), FetchErr> {
         #[derive(Deserialize)]
         struct SlimPage {
@@ -405,6 +421,18 @@ impl Client {
         struct SlimRow {
             #[serde(default)]
             participants: Vec<SlimParticipant>,
+            #[serde(default)]
+            source: Option<SlimBranchWrap>,
+        }
+        #[derive(Deserialize)]
+        struct SlimBranchWrap {
+            #[serde(default)]
+            branch: Option<SlimBranch>,
+        }
+        #[derive(Deserialize)]
+        struct SlimBranch {
+            #[serde(default)]
+            name: Option<String>,
         }
         #[derive(Deserialize)]
         struct SlimParticipant {
@@ -420,7 +448,16 @@ impl Client {
             .header("Accept", "application/json")
             .query(&[("pagelen", per_page.to_string())])
             .query(&[("q", bbql_predicate)])
-            .query(&[("fields", "values.id,values.participants.approved,next,size")]);
+            // 2026-08-18 (#1040) — added values.source.branch.name to
+            // the projection so we can client-side exclude release/
+            // hotfix branches. Bitbucket's BBQL doesn't support
+            // filtering by source.branch.name (verified against
+            // /pullrequests: `does not support filtering`), so the
+            // exclusion HAS to move to the client. ~30 extra bytes/PR.
+            .query(&[(
+                "fields",
+                "values.id,values.participants.approved,values.source.branch.name,next,size",
+            )]);
         if let Some(s) = state {
             req = req.query(&[("state", s)]);
         }
@@ -447,9 +484,31 @@ impl Client {
             .json()
             .await
             .map_err(|e| FetchErr::network(format!("parse: {e}")))?;
-        let open = body.values.len();
-        let approved = body
-            .values
+        // 2026-08-18 (#1040) — client-side branch exclusion. Compile
+        // the patterns once (invalid regex silently skipped so a bad
+        // config doesn't take down the poll). Empty allowlist ⇒ no
+        // filter ⇒ include every row.
+        let patterns: Vec<regex::Regex> = excluded_branch_patterns
+            .iter()
+            .filter_map(|p| regex::Regex::new(p).ok())
+            .collect();
+        let is_excluded = |row: &SlimRow| -> bool {
+            if patterns.is_empty() {
+                return false;
+            }
+            let Some(name) = row
+                .source
+                .as_ref()
+                .and_then(|s| s.branch.as_ref())
+                .and_then(|b| b.name.as_deref())
+            else {
+                return false;
+            };
+            patterns.iter().any(|re| re.is_match(name))
+        };
+        let kept: Vec<&SlimRow> = body.values.iter().filter(|r| !is_excluded(r)).collect();
+        let open = kept.len();
+        let approved = kept
             .iter()
             .filter(|r| r.participants.iter().any(|p| p.approved.unwrap_or(false)))
             .count();
