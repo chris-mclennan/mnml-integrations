@@ -233,6 +233,19 @@ pub struct Channel {
     /// For mpims — display name baked into the channel by Slack.
     #[serde(default)]
     pub purpose: Option<ChannelText>,
+    /// #1044 (2026-08-19) — Slack-computed unread count for this
+    /// conversation. Present on `conversations.list` when the token
+    /// carries the `client` scope OR when the endpoint's per-channel
+    /// unread info is enabled server-side. `None` = "not reported"
+    /// (do not treat as zero when summing chip totals — degrade to
+    /// showing presence only, so a scope gap doesn't misreport an
+    /// active workspace as silent).
+    #[serde(default)]
+    pub unread_count_display: Option<u64>,
+    /// #1044 — Slack-computed @mention count for this conversation.
+    /// Same scope story as `unread_count_display`.
+    #[serde(default)]
+    pub mention_count_display: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -625,6 +638,107 @@ pub const QUICK_REACTIONS: &[&str] = &[
     "100",
     "rocket",
 ];
+
+// ── users.getPresence ────────────────────────────────────────────
+
+/// #1044 (2026-08-19). `GET /users.getPresence?user=<id>`. Returns
+/// `"active"` | `"away"` | `"dnd"` (Slack folds Do Not Disturb into
+/// `away` for non-self, but for the caller's own presence we also
+/// interpret DND-window info when available). Falls back to
+/// `"unknown"` on parse failure so the chip renders something
+/// instead of erroring out silently.
+pub fn get_presence(auth: &Auth, user_id: &str) -> Result<String> {
+    let client = build_client()?;
+    let url = format!(
+        "{}/users.getPresence?user={}",
+        API_BASE,
+        urlencode(user_id)
+    );
+    let val = send_and_parse(auth_get(&client, auth, &url), "users.getPresence")?;
+    let presence = val
+        .get("presence")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(presence)
+}
+
+// ── chip summary (statusline) ────────────────────────────────────
+
+/// #1044 (2026-08-19) — signals surfaced by the Slack statusline
+/// chip. Every field is a defensively-computed aggregate over the
+/// conversations the token can see. When Slack doesn't return the
+/// per-channel unread field (see `Channel::unread_count_display`),
+/// `has_unread_info` is false and consumers should hide the
+/// unread-derived fields rather than render zeros.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UnreadSummary {
+    /// Total @mentions across every conversation (channel + DM).
+    pub mentions: u64,
+    /// Unread messages across DMs (im) + group DMs (mpim). Whole-
+    /// message count, not "N DMs with unreads" — that's typically
+    /// the higher-signal number when the user is triaging.
+    pub dm_unread: u64,
+    /// Number of public/private channels that have any unread. Not
+    /// the total unread message count — a single busy channel
+    /// shouldn't drown out other signals in this scalar.
+    pub channel_unread_count: u64,
+    /// `"active"` | `"away"` | `"dnd"` | `"unknown"`.
+    pub presence: String,
+    /// True when at least one conversation reported the unread
+    /// fields; false = token/scope doesn't expose them, so the chip
+    /// should not render `0(0)` (misleading — it looks like "no
+    /// unreads" when it's really "no data").
+    pub has_unread_info: bool,
+    /// Total conversations scanned. Diagnostic only — mnml's
+    /// statusline segment doesn't render it, but it's cheap and
+    /// useful when someone runs `--values` at the shell to debug
+    /// scope issues.
+    pub scanned: u64,
+}
+
+/// #1044 (2026-08-19) — one-shot fetch used by `--values`. Runs
+/// `auth.test` → `conversations.list` (im,mpim,public_channel,
+/// private_channel) → `users.getPresence`. Total 3 API calls per
+/// poll; the caller (mnml's statusline segment worker) rate-limits
+/// invocations via `poll_interval_secs` in the manifest.
+pub fn fetch_unread_summary(auth: &Auth) -> Result<UnreadSummary> {
+    let test = auth_test(auth)?;
+    let chans = conversations_list(
+        auth,
+        "im,mpim,public_channel,private_channel",
+    )?;
+    let mut mentions = 0u64;
+    let mut dm_unread = 0u64;
+    let mut channel_unread_count = 0u64;
+    let mut has_unread_info = false;
+    for c in &chans {
+        if let Some(m) = c.mention_count_display {
+            has_unread_info = true;
+            mentions += m;
+        }
+        if let Some(u) = c.unread_count_display {
+            has_unread_info = true;
+            if c.is_im || c.is_mpim {
+                dm_unread += u;
+            } else if u > 0 {
+                channel_unread_count += 1;
+            }
+        }
+    }
+    // Presence lookup — best-effort; a scope gap here shouldn't
+    // fail the whole summary. `unknown` renders cleanly in the
+    // chip template.
+    let presence = get_presence(auth, &test.user_id).unwrap_or_else(|_| "unknown".to_string());
+    Ok(UnreadSummary {
+        mentions,
+        dm_unread,
+        channel_unread_count,
+        presence,
+        has_unread_info,
+        scanned: chans.len() as u64,
+    })
+}
 
 #[cfg(test)]
 mod tests {
