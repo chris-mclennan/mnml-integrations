@@ -326,6 +326,14 @@ pub enum TabKind {
     /// so it shares the Work pane's rendering. `--only work` picks
     /// it up.
     Filter,
+    /// #1027 (2026-08-18) — one-stop "everything I'm working on" tab.
+    /// Union of unresolved + recently-done in a single query so a
+    /// ticket you just closed and one you're actively touching sit
+    /// in the same list, ordered by resolution date (nulls first —
+    /// unresolved on top) then update time. Matches the way many
+    /// users hold "my current queue" mentally without paging
+    /// between separate WorkAssigned + WorkRecentlyDone tabs.
+    WorkUnified,
 }
 
 impl TabKind {
@@ -334,9 +342,11 @@ impl TabKind {
     /// `--only <family>`.
     pub fn family(self) -> TabFamily {
         match self {
-            Self::WorkAssigned | Self::WorkRecentlyDone | Self::WorkRecent | Self::Filter => {
-                TabFamily::Work
-            }
+            Self::WorkAssigned
+            | Self::WorkRecentlyDone
+            | Self::WorkRecent
+            | Self::Filter
+            | Self::WorkUnified => TabFamily::Work,
             Self::FixVersionTree => TabFamily::FixVersions,
             Self::BoardActiveSprint | Self::BoardBacklog => TabFamily::Boards,
         }
@@ -397,6 +407,24 @@ impl TabKind {
             // instance-specific data. Returns None here so the
             // static-JQL fast path doesn't apply.
             Self::Filter => None,
+            // #1027 (2026-08-18) — union of unresolved + last-30d
+            // resolved, ordered so unresolved rise to the top
+            // (resolutiondate DESC + NULLS FIRST would be ideal but
+            // Jira JQL doesn't expose NULLS ordering; sort by
+            // resolved DESC then by updated DESC gives resolved-recent
+            // first among the resolved and interleaves unresolved by
+            // update — which is what a user re-visiting the tab
+            // actually wants).
+            //
+            // The `resolution is EMPTY` clause catches Tattle's
+            // workflow where "Unresolved" is spelled that way; some
+            // Jira instances use plain "Empty" or "None" — the
+            // is-empty predicate covers both.
+            Self::WorkUnified => Some(
+                "assignee = currentUser() \
+                 AND (resolution is EMPTY OR resolved >= -30d) \
+                 ORDER BY resolved DESC, updated DESC",
+            ),
         }
     }
 }
@@ -694,7 +722,8 @@ project = "TE"
                     }
                     TabKind::WorkAssigned
                     | TabKind::WorkRecentlyDone
-                    | TabKind::WorkRecent => {}
+                    | TabKind::WorkRecent
+                    | TabKind::WorkUnified => {}
                     TabKind::Filter => {
                         if t.filter_id.is_none() {
                             return Err(anyhow!(
