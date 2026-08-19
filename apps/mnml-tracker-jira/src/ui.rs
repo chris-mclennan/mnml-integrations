@@ -1128,7 +1128,9 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // clickable chip with `▾` dropdown indicator. Click opens the
     // tab-view fix-version picker (same as pressing `f` on this
     // tab). Discoverability win over the hidden `f` keychord.
-    let bold = Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD);
+    let bold = Style::default()
+        .fg(Color::Gray)
+        .add_modifier(Modifier::BOLD);
     let leading = format!("{tab_name} · ");
     let leading_w = leading.chars().count() as u16;
     let chip_label = match &fixv {
@@ -1314,6 +1316,11 @@ fn tree_row_for<'a>(
             } else {
                 pr.destination.branch.clone()
             };
+            let src = if pr.source.branch.is_empty() {
+                "?".to_string()
+            } else {
+                pr.source.branch.clone()
+            };
             let approvals = pr.reviewers.iter().filter(|r| r.approved).count();
             let approval_hint = if approvals > 0 {
                 format!(" ({approvals}✓)")
@@ -1333,10 +1340,23 @@ fn tree_row_for<'a>(
             } else {
                 "  "
             };
+            // #1051 (2026-08-19). Expanded PR-row context: repo slug
+            // + source→destination branch + PR id, so users can see
+            // which repo they're merging into without clicking
+            // through. `repository_name` is populated by the
+            // dev-status endpoint when the issue touches Bitbucket;
+            // renders as "—" for entries that come back without it.
+            let repo_label = if pr.repository_name.is_empty() {
+                "—".to_string()
+            } else {
+                pr.repository_name.clone()
+            };
             let label = format!(
-                "        {chevron}{status:<7} {id}  {dest}{approval_hint}",
+                "        {chevron}{status:<7} {repo}  {id}  {src} → {dest}{approval_hint}",
                 status = pr.status,
+                repo = repo_label,
                 id = pr.id,
+                src = src,
                 dest = dest,
                 approval_hint = approval_hint,
             );
@@ -1346,25 +1366,47 @@ fn tree_row_for<'a>(
                 "DECLINED" | "SUPERSEDED" => Color::DarkGray,
                 _ => Color::Gray,
             };
-            // 2026-07-25 — [ Review ] button appears on OPEN /
-            // DRAFT PRs (the states where a review is actionable).
-            // 2026-07-26 — colored (cyan bold) so it reads as a
-            // clickable chip, matching the ticket-row action
-            // buttons above.
-            let title_cell = if pr.is_open() {
+            // #1051 (2026-08-19). Action chips on the title cell:
+            //   OPEN / DRAFT / IN_REVIEW  → [ Review ] [ Merge ] [ Open ]
+            //   MERGED / DECLINED / etc   → [ Open ]
+            // `[ Review ]` (existing, keyboard `V`) launches an AI
+            // reviewer for the PR. `[ Merge ]` + `[ Open ]` are
+            // VISUAL only for now — click routing follows in a
+            // later commit once the tree tab's mouse layer grows a
+            // rect registry (matches the kanban-toolbar chip pattern
+            // shipped 2026-08-07). Keyboard users can still hit `o`
+            // on the focused PR row to open in browser. Fine
+            // affordance signal in the meantime.
+            let title_cell = {
                 use ratatui::text::{Line, Span};
-                Cell::from(Line::from(vec![
-                    Span::styled(pr.name.clone(), Style::default().fg(Color::DarkGray)),
-                    Span::raw("   "),
-                    Span::styled(
+                let mut spans: Vec<Span> = vec![Span::styled(
+                    pr.name.clone(),
+                    Style::default().fg(Color::DarkGray),
+                )];
+                if pr.is_open() {
+                    spans.push(Span::raw("   "));
+                    spans.push(Span::styled(
                         "[ Review ]",
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
-                    ),
-                ]))
-            } else {
-                Cell::from(pr.name.clone()).style(Style::default().fg(Color::DarkGray))
+                    ));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        "[ Merge ]",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "[ Open ]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                Cell::from(Line::from(spans))
             };
             Row::new(vec![
                 Cell::from(label).style(Style::default().fg(status_color)),
@@ -1423,16 +1465,17 @@ fn tree_row_for<'a>(
             let issue = &tab.issues[*issue_idx];
             // Resolve the pipeline via (issue.key, pr.id) →
             // pipeline_cache. Defensive fallback = blank row.
-            let pipeline = tab.tree.as_ref().and_then(|t| {
+            let resolved = tab.tree.as_ref().and_then(|t| {
                 t.pr_cache.get(&issue.key).and_then(|prs| {
                     prs.get(*pr_idx).and_then(|pr| {
                         t.pipeline_cache
                             .get(&(issue.key.clone(), pr.id.clone()))
                             .and_then(|pipelines| pipelines.get(*pipeline_idx))
+                            .map(|pl| (pl, pr.repository_name.clone()))
                     })
                 })
             });
-            let Some(pipeline) = pipeline else {
+            let Some((pipeline, repo_name)) = resolved else {
                 return Row::new(vec![
                     Cell::from("            → (missing pipeline)")
                         .style(Style::default().fg(Color::DarkGray)),
@@ -1440,7 +1483,7 @@ fn tree_row_for<'a>(
             };
             let (glyph, color) = pipeline_glyph(pipeline.state_label());
             // Format the row Bitbucket-sibling-style — one span-heavy
-            // Line so glyph, state, build, branch, date, duration
+            // Line so glyph, state, repo, build, branch, date, duration
             // each get their own color / weight instead of one flat
             // string. Matches the visual language in
             // `render_pr_expand_title_cell` on the sibling.
@@ -1449,6 +1492,11 @@ fn tree_row_for<'a>(
             let branch = pipeline.branch_label().to_string();
             let when = pipeline.created_date();
             let dur = pipeline.duration_label();
+            let repo = if repo_name.is_empty() {
+                "—".to_string()
+            } else {
+                repo_name
+            };
             let line = Line::from(vec![
                 Span::raw("            "),
                 Span::styled(format!("{glyph} "), Style::default().fg(color)),
@@ -1456,6 +1504,8 @@ fn tree_row_for<'a>(
                     format!("{state:<11} "),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(repo, Style::default().fg(Color::Gray)),
+                Span::raw("  "),
                 Span::styled(format!("#{build}"), Style::default().fg(Color::Yellow)),
                 Span::raw("  "),
                 Span::styled(format!("on {branch}"), Style::default().fg(Color::Gray)),
@@ -1470,16 +1520,19 @@ fn tree_row_for<'a>(
         VisibleRow::PrShowMore { hidden, .. } => Row::new(vec![
             // 2026-08-18 (#994) — was "show N more" with a staircase
             // reveal (+3 per click). Now one click reveals everything.
-            // Label matches: "Show all N".
+            // 2026-08-19 (#1052) — dropped the leading `▸ ` chevron
+            // (looks like a tiny arrow before the link) and added
+            // UNDERLINED so the row reads as a hyperlink chip instead
+            // of another tree branch.
             Cell::from(format!(
-                "        ▸ Show all {} PR{}",
+                "        Show all {} PR{}",
                 hidden,
                 if *hidden == 1 { "" } else { "s" }
             ))
             .style(
                 Style::default()
                     .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             ),
         ]),
     }
