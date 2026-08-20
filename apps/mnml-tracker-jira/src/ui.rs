@@ -219,6 +219,18 @@ async fn event_loop(
                             last_refresh = Instant::now();
                             continue;
                         }
+                        // #1084 (2026-08-19) — Work-family scope
+                        // chip. Click cycles the active tab's
+                        // `work_scope_filter` (All → Unresolved →
+                        // Resolved). Purely client-side — no refetch.
+                        if let Some(r) = app.rects.work_scope_chip
+                            && rect_hit(r, m.column, m.row)
+                        {
+                            let idx = app.active_tab;
+                            let next = app.tabs[idx].work_scope_filter.cycle();
+                            app.tabs[idx].work_scope_filter = next;
+                            continue;
+                        }
                         // Non-kanban tabs: original flat/tree row model.
                         let Some(row_idx) = table_row_at(m.row, app) else {
                             continue;
@@ -315,6 +327,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.rects.pr_show_more.clear();
     app.rects.version_chip = None;
     app.rects.refresh_chip = None;
+    app.rects.work_scope_chip = None;
     let size = f.area();
     // 2026-07-25 — hide the tab strip entirely when the caller
     // passed `--only` OR there's only one tab (the strip becomes
@@ -1172,14 +1185,34 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // clickable chip with `▾` dropdown indicator. Click opens the
     // tab-view fix-version picker (same as pressing `f` on this
     // tab). Discoverability win over the hidden `f` keychord.
+    //
+    // #1084 (2026-08-19) — on Work-family tabs, the fixVersion chip
+    // is meaningless (Work JQLs don't scope by version), so swap it
+    // for a Resolved/Unresolved/All scope-filter chip instead. The
+    // filter is purely client-side (see `tree_rows` in tree.rs) —
+    // fits WorkUnified best (which fetches both), and on
+    // WorkAssigned the "Resolved" mode will just be empty since the
+    // JQL only returns unresolved. Users learn the constraint fast.
     let bold = Style::default()
         .fg(Color::Gray)
         .add_modifier(Modifier::BOLD);
     let leading = format!("{tab_name} · ");
     let leading_w = leading.chars().count() as u16;
-    let chip_label = match &fixv {
-        Some(v) => format!(" {v} ▾ "),
-        None => " Set fixVersion ▾ ".to_string(),
+    let is_work_family = matches!(
+        tab_cfg.kind,
+        Some(crate::config::TabKind::WorkAssigned)
+            | Some(crate::config::TabKind::WorkRecentlyDone)
+            | Some(crate::config::TabKind::WorkRecent)
+            | Some(crate::config::TabKind::WorkUnified)
+            | Some(crate::config::TabKind::Filter)
+    );
+    let chip_label = if is_work_family {
+        format!(" {} ▾ ", tab.work_scope_filter.label())
+    } else {
+        match &fixv {
+            Some(v) => format!(" {v} ▾ "),
+            None => " Set fixVersion ▾ ".to_string(),
+        }
     };
     let chip_w = chip_label.chars().count() as u16;
     let chip_style = Style::default()
@@ -1194,7 +1227,9 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     ];
     f.render_widget(Paragraph::new(Line::from(spans)), title_area);
     // Chip rect (computed here; assigned after render_stateful_widget
-    // consumes table_rows and drops the &app borrow).
+    // consumes table_rows and drops the &app borrow). Same rect
+    // whether the chip is the fixVersion picker or the Work scope
+    // cycler — mouse dispatch routes on `is_work_family`.
     let chip_rect = Rect {
         x: title_area.x + leading_w,
         y: title_area.y,
@@ -1236,9 +1271,15 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let mut state = TableState::default();
     state.select(Some(tab_selected.min(rows.len().saturating_sub(1))));
     f.render_stateful_widget(table, body_area, &mut state);
-    // Register the version-chip click rect now that table_rows is
-    // consumed and the &app borrow has ended (#991).
-    app.rects.version_chip = Some(chip_rect);
+    // Register the chip click rect now that table_rows is consumed
+    // and the &app borrow has ended (#991). Same rect slot on the
+    // title strip; the two rect fields tell the mouse dispatcher
+    // which action to take (#1084).
+    if is_work_family {
+        app.rects.work_scope_chip = Some(chip_rect);
+    } else {
+        app.rects.version_chip = Some(chip_rect);
+    }
     // 2026-08-19 (#1053) — register the refresh-chip click rect.
     app.rects.refresh_chip = refresh_rect;
 
