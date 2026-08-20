@@ -190,6 +190,15 @@ pub struct Tab {
     /// Ignored on non-`pull_requests` kinds.
     #[serde(default)]
     pub q: Option<String>,
+    /// #1099 f/u (2026-08-20) — post-fetch filter on
+    /// `workspace_open_prs` / `workspace_merged_prs` that keeps only
+    /// PRs authored by the auth user. Preserves the tree grouping
+    /// (by repo, expandable) instead of dropping to the flat
+    /// `pull_requests` mode=mine view. Not persisted from config
+    /// today — set at runtime by `--only prs-mine` when no
+    /// mine-mode tab exists in cfg. Ignored on non-workspace kinds.
+    #[serde(default)]
+    pub mine_only: bool,
 }
 
 fn default_state() -> String {

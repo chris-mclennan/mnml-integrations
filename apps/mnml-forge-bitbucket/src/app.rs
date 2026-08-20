@@ -501,6 +501,11 @@ pub struct TabSpec {
     /// alongside `scope` so users can layer custom BBQL on top
     /// of the auto mode (e.g. "mine, but only in a given repo").
     pub q: Option<String>,
+    /// #1099 f/u (2026-08-20) — post-fetch filter on `WorkspaceOpen`
+    /// / `WorkspaceMerged` PR fetches that drops PRs whose author is
+    /// not the auth user. Preserves tree grouping. Set at runtime
+    /// by `--only prs-mine` when no config tab has `mode = "mine"`.
+    pub mine_only: bool,
 }
 
 impl TabSpec {
@@ -558,6 +563,7 @@ impl TabSpec {
                     scope,
                     state: tab.state.clone(),
                     q,
+                    mine_only: tab.mine_only,
                 })
             }
             TabKind::Pipelines | TabKind::Branches => {
@@ -571,6 +577,7 @@ impl TabSpec {
                     scope: None,
                     state: String::new(),
                     q: None,
+                    mine_only: false,
                 })
             }
             // tree-redesign 2026-07-14 — workspace-wide kinds derive
@@ -586,6 +593,7 @@ impl TabSpec {
                 scope: None,
                 state: String::new(),
                 q: None,
+                mine_only: tab.mine_only,
             }),
         }
     }
@@ -621,6 +629,7 @@ impl App {
                         scope: None,
                         state: t.state.clone(),
                         q: None,
+                        mine_only: t.mine_only,
                     },
                     data: TabData::empty_for(parsed_kind),
                     selected: 0,
@@ -1448,10 +1457,25 @@ impl App {
                 // drill-down on Open+Draft too. Fetch by-repo so the
                 // tab renders as `TabData::RepoPrTree` (grouped) instead
                 // of a flat PR list.
-                let result = self
+                let mut result = self
                     .client
                     .list_workspace_open_prs_by_repo(&workspace, &repos, 25)
                     .await;
+                // #1099 f/u (2026-08-20) — post-fetch `mine_only`
+                // filter. Drop non-mine PRs per repo; drop the repo
+                // entirely if it has no mine PRs after filtering
+                // (keeps the tree tidy — no empty repo headers).
+                if spec.mine_only
+                    && let Some(me) = self.me_account_id.as_deref()
+                    && let Ok(ref mut repo_prs) = result
+                {
+                    for r in repo_prs.iter_mut() {
+                        r.prs.retain(|pr| {
+                            pr.author.as_ref().and_then(|a| a.account_id.as_deref()) == Some(me)
+                        });
+                    }
+                    repo_prs.retain(|r| !r.prs.is_empty());
+                }
                 self.commit_pr_tree_refresh(idx, name, result);
             }
             TabKind::WorkspaceMergedPRs => {

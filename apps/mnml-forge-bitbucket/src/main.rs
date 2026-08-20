@@ -98,6 +98,23 @@ async fn main() -> Result<()> {
         return install::uninstall();
     }
 
+    // #1099 f/u loader (2026-08-20) — Pty spawn + config load +
+    // whoami + repo enumeration + first PR fetch takes 1-3s on
+    // large workspaces. Emit a status line to stdout NOW so the
+    // Pty pane renders "loading…" instantly instead of appearing
+    // frozen. Guarded on interactive shape (skip in headless
+    // paths — --values / --list-prs / --find-pipeline-for-pr /
+    // --install / --uninstall — where the JSON contract matters).
+    if !cli.values
+        && !cli.list_prs
+        && !cli.find_pipeline_for_pr
+        && !cli.install
+        && !cli.uninstall
+        && !cli.check
+    {
+        eprintln!("Bitbucket · loading…");
+    }
+
     // Config first so first-run users get the scaffold-template
     // path before being asked for an app password.
     let mut cfg = config::load()?;
@@ -141,14 +158,21 @@ async fn main() -> Result<()> {
                 .cloned()
                 .collect();
             if mine_tabs.is_empty() {
+                // Use workspace_open_prs with mine_only=true so the
+                // pane renders as the tree-grouped RepoPrTree view
+                // (matching the user's Bitbucket PRs pane muscle
+                // memory) filtered to my authored PRs. Sorted by
+                // updated_on desc + state=OPEN are intrinsic to that
+                // kind — no extra config needed.
                 cfg.tabs = vec![config::Tab {
                     name: "Mine".into(),
-                    kind: "pull_requests".into(),
+                    kind: "workspace_open_prs".into(),
                     workspace: None, // inherits cfg.workspace
-                    repo: None,      // mode="mine" ignores repo
+                    repo: None,
                     state: "OPEN".into(),
-                    mode: Some("mine".into()),
+                    mode: None,
                     q: None,
+                    mine_only: true,
                 }];
             } else {
                 cfg.tabs = mine_tabs;
