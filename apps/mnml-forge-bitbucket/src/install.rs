@@ -170,13 +170,32 @@ pub fn install() -> Result<()> {
                 badge_key: Some(chip.id.into()),
                 ..Default::default()
             }),
-            commands: vec![CommandSpec {
-                id: chip.command_id.into(),
-                title: chip.command_title.into(),
-                group: Some("integrations".into()),
-                keys: vec![chip.leader_keys.into()],
-                run: format!(":term mnml-forge-bitbucket --only {}", chip.only_flag),
-            }],
+            commands: {
+                let mut cmds = vec![CommandSpec {
+                    id: chip.command_id.into(),
+                    title: chip.command_title.into(),
+                    group: Some("integrations".into()),
+                    keys: vec![chip.leader_keys.into()],
+                    run: format!(":term mnml-forge-bitbucket --only {}", chip.only_flag),
+                }];
+                // #1099 (2026-08-20) — the PRs chip's statusline
+                // segment counts "open PRs I authored", so a click
+                // should land on the mine-only view, not the full PR
+                // family. Register a second command that filters via
+                // `--only prs-mine`; the segment's `click_command`
+                // points here while the leader chord + palette entry
+                // keep the wider `--only prs` view.
+                if chip.id == "bitbucket_prs" {
+                    cmds.push(CommandSpec {
+                        id: "bitbucket_prs.open_mine".into(),
+                        title: "Bitbucket PRs: open (mine only)".into(),
+                        group: Some("integrations".into()),
+                        keys: vec![],
+                        run: ":term mnml-forge-bitbucket --only prs-mine".into(),
+                    });
+                }
+                cmds
+            },
             auth: auth_fields(),
             ..Default::default()
         };
@@ -245,8 +264,8 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         "glyph = \"\u{F062D}\"\n",
         "color = \"cyan\"\n",
         "format = \"{open_mine}({unapproved_mine})\"\n",
-        "tooltip = \"Open PRs you authored (last 30 days, non-release) — parens = still-needs-review count. Click to open the PRs pane.\"\n",
-        "click_command = \"bitbucket_prs.open\"\n",
+        "tooltip = \"Open PRs you authored (last 90 days, non-release) — parens = still-needs-review count. Click to open the mine-only PRs tab.\"\n",
+        "click_command = \"bitbucket_prs.open_mine\"\n",
     );
     // Ensure a trailing newline before we append so we never fuse
     // a section onto the last line of an existing block.

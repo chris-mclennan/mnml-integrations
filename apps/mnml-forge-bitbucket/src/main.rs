@@ -104,9 +104,16 @@ async fn main() -> Result<()> {
 
     // `--only <family>` — filter cfg.tabs down to a single family and
     // signal the TUI to skip its tab strip.
+    //
+    // #1099 (2026-08-20) — added `prs-mine` as a further-narrowed
+    // variant. `--only prs` matches any PR-family tab; `--only
+    // prs-mine` additionally restricts to `mode = "mine"` tabs so
+    // the statusline chip's click semantic ("open PRs I authored")
+    // lands directly on the matching tab instead of the whole PR
+    // family (which shows every PR in the workspace).
     let force_hide_strip = if let Some(kind_str) = cli.only.as_deref() {
         let allowed: &[&str] = match kind_str {
-            "prs" | "pull_requests" => &[
+            "prs" | "pull_requests" | "prs-mine" => &[
                 "workspace_open_prs",
                 "workspace_merged_prs",
                 "pull_requests",
@@ -114,11 +121,20 @@ async fn main() -> Result<()> {
             "pipelines" => &["workspace_pipelines", "pipelines"],
             "branches" => &["branches"],
             other => anyhow::bail!(
-                "--only {other:?} unrecognized (want `prs` | `pipelines` | `branches`)"
+                "--only {other:?} unrecognized (want `prs` | `prs-mine` | `pipelines` | `branches`)"
             ),
         };
         let before = cfg.tabs.len();
         cfg.tabs.retain(|t| allowed.contains(&t.kind.as_str()));
+        if kind_str == "prs-mine" {
+            cfg.tabs.retain(|t| t.mode.as_deref() == Some("mine"));
+            if cfg.tabs.is_empty() {
+                anyhow::bail!(
+                    "--only prs-mine: no PR tabs with `mode = \"mine\"` in {} (add one, or use `--only prs` for the full PR family)",
+                    config::config_path().display()
+                );
+            }
+        }
         if cfg.tabs.is_empty() {
             anyhow::bail!(
                 "--only {kind_str}: no tabs of that family in {} (had {before} tabs total; check the [[tabs]] entries and their `kind =` field)",
