@@ -72,6 +72,20 @@ impl FetchErr {
             },
             Some(401) | Some(403) => "auth failed".to_string(),
             Some(404) => "no such repo".to_string(),
+            // #1078 (2026-08-20) — 400 is almost always Bitbucket
+            // complaining about a specific BBQL field ("does not
+            // support filtering", "unknown field", quote mismatch).
+            // Bare "HTTP 400" hides that; surface the first ~80 chars
+            // of the body so `--values` stderr tells you WHAT was
+            // wrong, not just that something was.
+            Some(400) => {
+                let snippet: String = self.message.chars().take(80).collect();
+                if snippet.is_empty() {
+                    "HTTP 400".to_string()
+                } else {
+                    format!("HTTP 400 · {snippet}")
+                }
+            }
             Some(code) => format!("HTTP {code}"),
             None => "network error".to_string(),
         }

@@ -96,7 +96,15 @@ pub struct Config {
 }
 
 fn default_chip_stale_after_days() -> u32 {
-    30
+    // #1078 (2026-08-20) — bumped 30 → 90. 30 was too aggressive:
+    // Chris's most-recent authored OPEN PR on tattledevs is 86 days
+    // old (long-running feature branch), so the chip was showing
+    // `0(0)` despite there being 5+ real open PRs to surface. 90d
+    // catches "still an active review target" for slower cadences
+    // without regressing to the 160+ zombie count #996 originally
+    // fixed. Users on hyper-active workspaces can shrink via
+    // `chip_stale_after_days` in the sibling config.
+    90
 }
 
 fn default_chip_excluded_branch_patterns() -> Vec<String> {

@@ -171,7 +171,7 @@ pub async fn find_pipeline_for_pr(
 struct SegmentValues {
     /// Count of OPEN pull requests authored by the auth user
     /// across the configured workspace, scoped by
-    /// `chip_stale_after_days` (default 30 days) and
+    /// `chip_stale_after_days` (default 90 days, see #1078) and
     /// `chip_excluded_branch_patterns` (default excludes
     /// release/hotfix). "PRs I need to think about", not "every
     /// OPEN PR I've ever authored" (Bitbucket returns 100s for
