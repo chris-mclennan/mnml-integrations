@@ -127,12 +127,26 @@ async fn main() -> Result<()> {
         let before = cfg.tabs.len();
         cfg.tabs.retain(|t| allowed.contains(&t.kind.as_str()));
         if kind_str == "prs-mine" {
-            cfg.tabs.retain(|t| t.mode.as_deref() == Some("mine"));
-            if cfg.tabs.is_empty() {
-                anyhow::bail!(
-                    "--only prs-mine: no PR tabs with `mode = \"mine\"` in {} (add one, or use `--only prs` for the full PR family)",
+            // #1099 addendum (2026-08-20) — soft fallback. If the
+            // user's config has PR tabs but none with `mode = "mine"`,
+            // don't hard-fail (that's what the statusline chip click
+            // just hit). Fall back to the full PR family so the click
+            // at least surfaces PRs; note it on stderr so a curious
+            // user knows the finer-grained view is available if they
+            // add a mine tab.
+            let mine_tabs: Vec<_> = cfg
+                .tabs
+                .iter()
+                .filter(|t| t.mode.as_deref() == Some("mine"))
+                .cloned()
+                .collect();
+            if mine_tabs.is_empty() {
+                eprintln!(
+                    "note: --only prs-mine fell back to the full PR family — no tabs with `mode = \"mine\"` in {}. Add one to narrow this view.",
                     config::config_path().display()
                 );
+            } else {
+                cfg.tabs = mine_tabs;
             }
         }
         if cfg.tabs.is_empty() {
