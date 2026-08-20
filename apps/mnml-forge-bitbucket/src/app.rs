@@ -1951,7 +1951,7 @@ pub fn count_recent_prs(prs: &[PullRequest], show_all: bool) -> (usize, usize) {
     (vis, hid)
 }
 
-fn parse_iso_seconds(s: &str) -> Option<i64> {
+pub(crate) fn parse_iso_seconds(s: &str) -> Option<i64> {
     // Manual scan: split on `T`, then parse both halves with a fixed shape.
     let (date, rest) = s.split_once('T')?;
     let mut date_parts = date.splitn(3, '-');
