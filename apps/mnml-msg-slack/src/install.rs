@@ -7,7 +7,7 @@
 //! chips (mirroring the Bitbucket PRs / Pipelines split):
 //!
 //!   - `slack_channels`   — `mnml-msg-slack --only channels`
-//!   - `slack_boards`     — `mnml-msg-slack --only canvases`
+//!   - `slack_canvases`     — `mnml-msg-slack --only canvases`
 //!
 //! 2026-08-09 (0.1.2) — three fixes driven by mnml's sibling glyph
 //! stability audit (`scratchpad/sibling-audit-2026-08-09.md`) +
@@ -23,12 +23,19 @@
 //! F0001-F1AFF range) which is the codepoint mnml's own
 //! `src/icon_catalog.rs` uses for slack and which renders as the
 //! Slack logo on the Nerd Font builds the audit tested.
-//!   * Colors: channels → `white`, boards → `yellow`. Distinguishes
+//!   * Colors: channels → `white`, canvases → `yellow`. Distinguishes
 //!     the two chips when the glyph is identical.
 //!   * `slack_canvases` → `slack_boards` (id + label). Added to the
 //!     PREDECESSOR_IDS uninstall cleanup so existing users get the
-//!     old `slack_canvases.toml` manifest removed on next `--install`,
-//!     ending up with just the new `slack_boards.toml`.
+//!     old `slack_canvases.toml` manifest removed on next `--install`.
+//!
+//! 2026-08-19 (0.1.4, #1063) — REVERT: `slack_boards` → `slack_canvases`
+//! (id + label). The 0.1.3 comment claimed the rename matched "Slack's
+//! own product-marketing name" but Slack's actual product name for the
+//! feature is Canvas / Canvases, not Boards. The board label was
+//! confusing users during the mnml hero-demo QA. `slack_boards` is
+//! added to PREDECESSOR_IDS so the round-trip cleans up the interim
+//! manifest name.
 //!
 //! `PREDECESSOR_IDS` uninstalls run BEFORE the new manifest writes.
 
@@ -38,7 +45,7 @@ use mnml_bridge::{
 };
 
 const CHANNELS_ID: &str = "slack_channels";
-const BOARDS_ID: &str = "slack_boards";
+const CANVASES_ID: &str = "slack_canvases";
 
 /// Ids of PRIOR manifest names this sibling has written but no
 /// longer wants. Every entry is unconditionally uninstalled on each
@@ -46,11 +53,12 @@ const BOARDS_ID: &str = "slack_boards";
 ///
 /// - `slack` (pre-0.1) — the single-chip form before the
 ///   channels/canvases split (2026-07-22).
-/// - `slack_canvases` (pre-0.1.2) — renamed to `slack_boards` on
-///   2026-08-09 to match Slack's own product-marketing name.
-const PREDECESSOR_IDS: &[&str] = &["slack", "slack_canvases"];
+/// - `slack_boards` (0.1.2–0.1.3) — the misnamed interim id before
+///   `slack_canvases` was restored in 0.1.4 (#1063). No entry for
+///   `slack_canvases` itself because that IS the current id.
+const PREDECESSOR_IDS: &[&str] = &["slack", "slack_boards"];
 
-/// Shared auth-field schema for both `slack_channels` + `slack_boards`.
+/// Shared auth-field schema for both `slack_channels` + `slack_canvases`.
 /// Both chips run the same binary + hit the same Slack Web API, so
 /// they need the same token; using one shared `auth_fields()` helper
 /// makes that explicit + writes identical `[[auth]]` blocks to both
@@ -145,9 +153,9 @@ pub fn install() -> Result<()> {
     println!("wrote manifest: {}", path.display());
 
     let boards = IntegrationSpec {
-        id: BOARDS_ID.into(),
-        label: "Slack Boards".into(),
-        description: Some("Slack Boards — canvases from files.list, open in browser".into()),
+        id: CANVASES_ID.into(),
+        label: "Slack Canvases".into(),
+        description: Some("Slack Canvases — canvases from files.list, open in browser".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-msg-slack".into(),
         category: Some("msg".into()),
@@ -167,12 +175,12 @@ pub fn install() -> Result<()> {
             // was retired with the marketplace listing.
             enabled: true,
             in_palette_bar: false,
-            badge_key: Some(BOARDS_ID.into()),
+            badge_key: Some(CANVASES_ID.into()),
             ..Default::default()
         }),
         commands: vec![CommandSpec {
-            id: "slack.open_boards".into(),
-            title: "Slack: open boards".into(),
+            id: "slack.open_canvases".into(),
+            title: "Slack: open canvases".into(),
             group: Some("integrations".into()),
             keys: vec![],
             // Argument name stays `canvases` — that's the Slack
@@ -247,7 +255,7 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
 
 pub fn uninstall() -> Result<()> {
     let mut removed_any = false;
-    for id in PREDECESSOR_IDS.iter().chain([&CHANNELS_ID, &BOARDS_ID]) {
+    for id in PREDECESSOR_IDS.iter().chain([&CHANNELS_ID, &CANVASES_ID]) {
         if uninstall_integration(id)? {
             println!("removed manifest for {id}");
             removed_any = true;
