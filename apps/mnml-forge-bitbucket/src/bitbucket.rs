@@ -11,6 +11,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 
+use crate::app::parse_iso_seconds;
+
 const BASE: &str = "https://api.bitbucket.org/2.0";
 
 /// 2026-08-16 — reliability sweep (#948). Structured fetch error so the
@@ -786,9 +788,34 @@ impl Client {
     /// forever, but 500 repos is enough headroom for any realistic
     /// workspace; we cap at 5 pages × 100 to bound worst-case wall
     /// time.
+    ///
+    /// #1079 (2026-08-19) — `since_secs` early-exit. When set, stop
+    /// paginating as soon as we see a repo older than the cutoff
+    /// (results are sorted `-updated_on` so nothing after that
+    /// point can be newer). Cuts a large-workspace fetch from up to
+    /// 5 pages down to 1-2 for realistic sprint activity, which is
+    /// the difference between hitting Bitbucket's 429 wall vs. not.
+    /// `None` preserves the legacy "fetch up to 500" behavior for
+    /// `scope = "all"` / `scope = "explicit"` codepaths.
     pub async fn list_workspace_repos_with_activity(
         &self,
         workspace: &str,
+    ) -> Result<Vec<RepoActivity>> {
+        self.list_workspace_repos_with_activity_since(workspace, None)
+            .await
+    }
+
+    /// Cutoff-aware variant of [`Self::list_workspace_repos_with_activity`].
+    /// When `since_secs` is `Some`, stops paginating on the first
+    /// page whose *last* entry is older than the cutoff (Bitbucket
+    /// returns `-updated_on` DESC, so once we see an older repo, no
+    /// later page can be newer). Keeps the 5-page ceiling as a
+    /// hard safety cap when the cutoff is `None` OR too old to
+    /// early-exit against.
+    pub async fn list_workspace_repos_with_activity_since(
+        &self,
+        workspace: &str,
+        since_secs: Option<i64>,
     ) -> Result<Vec<RepoActivity>> {
         let mut out: Vec<RepoActivity> = Vec::new();
         let mut url =
@@ -810,11 +837,33 @@ impl Client {
             }
             let page: RepoActivityPage =
                 resp.json().await.context("parsing bitbucket repo page")?;
-            out.extend(page.values.into_iter().map(|r| RepoActivity {
-                slug: r.slug,
-                updated_on: r.updated_on,
-            }));
+            let entries: Vec<RepoActivity> = page
+                .values
+                .into_iter()
+                .map(|r| RepoActivity {
+                    slug: r.slug,
+                    updated_on: r.updated_on,
+                })
+                .collect();
+            // #1079 — detect end-of-window BEFORE extending so we
+            // stop pagination as soon as this page crosses the
+            // cutoff. Everything in `entries` still gets appended
+            // (client-side filter drops the older tail).
+            let should_stop_after_this_page = if let Some(cutoff) = since_secs {
+                entries.last().is_some_and(|last| {
+                    last.updated_on
+                        .as_deref()
+                        .and_then(parse_iso_seconds)
+                        .is_some_and(|ts| ts < cutoff)
+                })
+            } else {
+                false
+            };
+            out.extend(entries);
             pages += 1;
+            if should_stop_after_this_page {
+                break;
+            }
             match page.next {
                 Some(next) if !next.is_empty() && pages < 5 => url = next,
                 _ => break,
