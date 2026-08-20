@@ -121,6 +121,13 @@ pub struct Rects {
     /// bar (right-aligned). Click fires `refresh_active` so mouse-
     /// only users don't need the `r` keychord.
     pub refresh_chip: Option<Rect>,
+    /// #1084 (2026-08-19) — Work-family scope chip
+    /// (All / Unresolved / Resolved) on the tree-table title bar.
+    /// Same slot as `version_chip` — only one is rendered per tab
+    /// depending on `TabKind`. Registered separately so the mouse
+    /// dispatcher knows to cycle `TabState::work_scope_filter`
+    /// instead of opening the fixVersion picker.
+    pub work_scope_chip: Option<Rect>,
 }
 
 /// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
@@ -329,6 +336,51 @@ pub struct TabState {
     /// 2026-08-17 (task #893) — lazy-loaded quick-filter list for
     /// the tab's `board_id`. Same lifecycle as `sprints_cache`.
     pub quick_filters_cache: Option<Vec<QuickFilter>>,
+    /// #1084 (2026-08-19) — Resolved/Unresolved/All client-side
+    /// filter chip on Work-family tabs. Purely a visual filter over
+    /// whatever the tab's JQL returned — a WorkAssigned tab that
+    /// only fetches unresolved will render empty in `Resolved`
+    /// mode. `WorkUnified` (which fetches both) is where this chip
+    /// pulls its weight. In-memory only.
+    pub work_scope_filter: WorkScopeFilter,
+}
+
+/// #1084 (2026-08-19) — three-way client-side resolution filter for
+/// Work-family tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkScopeFilter {
+    /// Show every ticket the JQL returned. Default.
+    #[default]
+    All,
+    /// Only rows whose current status is not in Jira's terminal set
+    /// (`Done`, `Closed`, `Resolved`, `Released` — case-insensitive,
+    /// same list as `is_unresolved_issue`).
+    Unresolved,
+    /// Mirror image — only rows in the terminal set.
+    Resolved,
+}
+
+impl WorkScopeFilter {
+    /// Advance to the next mode in a cycle: All → Unresolved →
+    /// Resolved → All. Used by the chip's click handler.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::All => Self::Unresolved,
+            Self::Unresolved => Self::Resolved,
+            Self::Resolved => Self::All,
+        }
+    }
+
+    /// One-word label for the chip. Kept short — the chip has to
+    /// fit alongside the fixVersion / refresh chips on the tree-
+    /// table title strip.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Unresolved => "Unresolved",
+            Self::Resolved => "Resolved",
+        }
+    }
 }
 
 impl TabState {
@@ -344,8 +396,92 @@ impl TabState {
         let tree = self.tree.as_ref()?;
         let mut rows = crate::tree::compute_visible_rows(&self.issues, tree, tab_cfg, cfg);
         crate::tree::splice_ticket_sub_rows(&mut rows, &self.issues, tree);
+        // #1084 (2026-08-19) — apply the client-side scope filter
+        // AFTER PR sub-rows are spliced in so the child rows follow
+        // their parent ticket's visibility. GroupHeaders whose
+        // ticket group becomes empty after filtering are dropped
+        // too — otherwise "Done (0)" empty groups would clutter
+        // the view.
+        if self.work_scope_filter != WorkScopeFilter::All {
+            filter_rows_by_scope(&mut rows, &self.issues, self.work_scope_filter);
+        }
         Some(rows)
     }
+}
+
+/// #1084 (2026-08-19) — apply the Work-family scope filter
+/// (Unresolved / Resolved) to a `tree_rows` output in place. Walks
+/// the row list, drops every non-matching Ticket + its trailing
+/// LinkedPr / PrPipeline / show-more children, then removes any
+/// GroupHeader left with a `count = 0`.
+fn filter_rows_by_scope(
+    rows: &mut Vec<crate::tree::VisibleRow>,
+    issues: &[crate::jira::Issue],
+    scope: WorkScopeFilter,
+) {
+    use crate::tree::VisibleRow;
+    let want_unresolved = matches!(scope, WorkScopeFilter::Unresolved);
+    let mut group_survivors: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut i = 0;
+    while i < rows.len() {
+        if let VisibleRow::Ticket {
+            issue_idx,
+            effective_status,
+            ..
+        } = &rows[i]
+        {
+            let ok = issues
+                .get(*issue_idx)
+                .map(is_unresolved_issue)
+                .map(|u| u == want_unresolved)
+                .unwrap_or(false);
+            if ok {
+                *group_survivors
+                    .entry(effective_status.clone())
+                    .or_insert(0) += 1;
+                i += 1;
+                continue;
+            }
+            // Drop the ticket + its contiguous LinkedPr /
+            // PrPipeline* / PrShowMore descendants.
+            let start = i;
+            i += 1;
+            while i < rows.len()
+                && matches!(
+                    rows[i],
+                    VisibleRow::LinkedPr { .. }
+                        | VisibleRow::PrLoading { .. }
+                        | VisibleRow::PrEmpty { .. }
+                        | VisibleRow::PrPipelineLoading { .. }
+                        | VisibleRow::PrPipelineEmpty { .. }
+                        | VisibleRow::PrPipelineError { .. }
+                        | VisibleRow::PrPipeline { .. }
+                        | VisibleRow::PrShowMore { .. }
+                )
+            {
+                i += 1;
+            }
+            rows.drain(start..i);
+            i = start;
+        } else {
+            i += 1;
+        }
+    }
+    // Second pass: drop headers whose group is now empty. Look at
+    // each GroupHeader; keep only if group_survivors[status] > 0.
+    // Rewrite the count to reflect the surviving tickets so
+    // "Testing (4)" doesn't lie post-filter.
+    rows.retain_mut(|r| {
+        if let VisibleRow::GroupHeader { status, count, .. } = r {
+            let n = group_survivors.get(status).copied().unwrap_or(0);
+            if n == 0 {
+                return false;
+            }
+            *count = n;
+        }
+        true
+    });
 }
 
 impl App {
@@ -390,6 +526,7 @@ impl App {
                 selected_sprint_id: None,
                 sprints_cache: None,
                 active_quick_filter_ids: BTreeSet::new(),
+                work_scope_filter: crate::app::WorkScopeFilter::default(),
                 quick_filters_cache: None,
             });
         }
@@ -2747,6 +2884,7 @@ impl App {
                 tree: None,
                 selected_sprint_id: None,
                 sprints_cache: None,
+                work_scope_filter: crate::app::WorkScopeFilter::default(),
                 active_quick_filter_ids: BTreeSet::new(),
                 quick_filters_cache: None,
             }],
@@ -2882,6 +3020,7 @@ mod tests {
             last_error: None,
             tree: None,
             selected_sprint_id: None,
+                work_scope_filter: crate::app::WorkScopeFilter::default(),
             sprints_cache: None,
             active_quick_filter_ids: BTreeSet::new(),
             quick_filters_cache: None,
