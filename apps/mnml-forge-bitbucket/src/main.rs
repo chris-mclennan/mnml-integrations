@@ -127,13 +127,13 @@ async fn main() -> Result<()> {
         let before = cfg.tabs.len();
         cfg.tabs.retain(|t| allowed.contains(&t.kind.as_str()));
         if kind_str == "prs-mine" {
-            // #1099 addendum (2026-08-20) — soft fallback. If the
-            // user's config has PR tabs but none with `mode = "mine"`,
-            // don't hard-fail (that's what the statusline chip click
-            // just hit). Fall back to the full PR family so the click
-            // at least surfaces PRs; note it on stderr so a curious
-            // user knows the finer-grained view is available if they
-            // add a mine tab.
+            // #1099 addendum 2 (2026-08-20) — if the user's config
+            // has PR tabs but none with `mode = "mine"`, don't
+            // hard-fail AND don't silently expand to the full PR
+            // family (prior fallback broke the chip's semantic
+            // promise — "click me to see MY PRs" landed on 56 PRs
+            // across every author). Instead, synthesize a mine tab
+            // in-memory so the chip click always lands on mine-only.
             let mine_tabs: Vec<_> = cfg
                 .tabs
                 .iter()
@@ -141,10 +141,15 @@ async fn main() -> Result<()> {
                 .cloned()
                 .collect();
             if mine_tabs.is_empty() {
-                eprintln!(
-                    "note: --only prs-mine fell back to the full PR family — no tabs with `mode = \"mine\"` in {}. Add one to narrow this view.",
-                    config::config_path().display()
-                );
+                cfg.tabs = vec![config::Tab {
+                    name: "Mine".into(),
+                    kind: "pull_requests".into(),
+                    workspace: None, // inherits cfg.workspace
+                    repo: None,      // mode="mine" ignores repo
+                    state: "OPEN".into(),
+                    mode: Some("mine".into()),
+                    q: None,
+                }];
             } else {
                 cfg.tabs = mine_tabs;
             }
