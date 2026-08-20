@@ -2,11 +2,11 @@ mod app;
 mod auth;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod teams;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -58,7 +58,6 @@ fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     if let Some(Cmd::Auth { logout }) = cli.cmd {
         return if logout { cmd_logout() } else { cmd_login() };

@@ -260,11 +260,7 @@ fn draw_pipelines_table(f: &mut Frame, area: Rect, tab: &TabState) {
                 _ => Style::default().fg(Color::Gray),
             };
             let r = p.r#ref.clone().unwrap_or_else(|| "—".into());
-            let sha = p
-                .sha
-                .chars()
-                .take(8)
-                .collect::<String>();
+            let sha = p.sha.chars().take(8).collect::<String>();
             let source = p.source.clone().unwrap_or_default();
             let updated = p
                 .updated_at

@@ -1,7 +1,7 @@
 mod app;
+mod install;
 mod keys;
 mod theme;
-mod install;
 #[allow(dead_code)]
 mod trace;
 #[allow(dead_code)]

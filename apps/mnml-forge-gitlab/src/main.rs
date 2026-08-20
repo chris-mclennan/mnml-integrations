@@ -4,10 +4,10 @@ mod clipboard;
 mod config;
 mod gitlab;
 mod headless;
+mod install;
 mod keys;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -58,7 +58,6 @@ async fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     let token = auth::load_token()
         .with_context(|| format!("couldn't load token from {}", auth::token_path().display()))?;

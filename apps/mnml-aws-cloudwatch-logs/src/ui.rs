@@ -107,9 +107,7 @@ fn draw_logs(f: &mut Frame, area: Rect, tab: &TabState) {
         // doesn't exist yet (branch that never built, resource that
         // never emitted logs). AWS' raw message is unhelpful — swap
         // it for something that names the group and hints at why.
-        let text = if err.contains("ResourceNotFoundException")
-            || err.contains("does not exist")
-        {
+        let text = if err.contains("ResourceNotFoundException") || err.contains("does not exist") {
             format!(
                 "log group `{}` not found in region {}\n\nlikely causes:\n  • no logs written yet (resource hasn't run / built)\n  • different region — pass --region\n  • retention policy expired the group\n\npress q to quit and try again once logs exist",
                 tab.spec.log_group,

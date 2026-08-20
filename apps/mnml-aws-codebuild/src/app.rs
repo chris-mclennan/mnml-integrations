@@ -183,7 +183,9 @@ impl App {
                     self.projects = if filter.is_empty() {
                         list
                     } else {
-                        list.into_iter().filter(|n| filter.iter().any(|f| f == n)).collect()
+                        list.into_iter()
+                            .filter(|n| filter.iter().any(|f| f == n))
+                            .collect()
                     };
                     self.selected = self.selected.min(self.projects.len().saturating_sub(1));
                     self.status = format!("{} projects", self.projects.len());
@@ -315,5 +317,4 @@ impl App {
         }
         any
     }
-
 }

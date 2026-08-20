@@ -731,11 +731,7 @@ pub const QUICK_REACTIONS: &[&str] = &[
 /// instead of erroring out silently.
 pub fn get_presence(auth: &Auth, user_id: &str) -> Result<String> {
     let client = build_client()?;
-    let url = format!(
-        "{}/users.getPresence?user={}",
-        API_BASE,
-        urlencode(user_id)
-    );
+    let url = format!("{}/users.getPresence?user={}", API_BASE, urlencode(user_id));
     let val = send_and_parse(auth_get(&client, auth, &url), "users.getPresence")?;
     let presence = val
         .get("presence")
@@ -786,10 +782,7 @@ pub struct UnreadSummary {
 /// invocations via `poll_interval_secs` in the manifest.
 pub fn fetch_unread_summary(auth: &Auth) -> Result<UnreadSummary> {
     let test = auth_test(auth)?;
-    let chans = conversations_list(
-        auth,
-        "im,mpim,public_channel,private_channel",
-    )?;
+    let chans = conversations_list(auth, "im,mpim,public_channel,private_channel")?;
     let mut mentions = 0u64;
     let mut dm_unread = 0u64;
     let mut channel_unread_count = 0u64;

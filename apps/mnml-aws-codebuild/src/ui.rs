@@ -200,10 +200,7 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
                 (Some(d), builds_opt) => {
                     let ind = "      ";
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "    Source  ",
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled("    Source  ", Style::default().fg(Color::DarkGray)),
                         Span::styled(
                             d.source_type.clone().unwrap_or_default(),
                             Style::default().fg(Color::Yellow),
@@ -217,10 +214,7 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
                     cursor_row += 1;
                     if let Some(bs) = &d.buildspec {
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                "    Buildspec  ",
-                                Style::default().fg(Color::DarkGray),
-                            ),
+                            Span::styled("    Buildspec  ", Style::default().fg(Color::DarkGray)),
                             Span::styled(bs.clone(), Style::default().fg(Color::White)),
                         ]));
                         cursor_row += 1;
@@ -228,10 +222,7 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
                     if let Some(img) = &d.environment_image {
                         let ct = d.compute_type.clone().unwrap_or_default();
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                "    Environment  ",
-                                Style::default().fg(Color::DarkGray),
-                            ),
+                            Span::styled("    Environment  ", Style::default().fg(Color::DarkGray)),
                             Span::styled(img.clone(), Style::default().fg(Color::White)),
                             Span::raw("  "),
                             Span::styled(ct, Style::default().fg(Color::DarkGray)),
@@ -240,10 +231,7 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
                     }
                     if let Some(lg) = &d.log_group {
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                "    Log group  ",
-                                Style::default().fg(Color::DarkGray),
-                            ),
+                            Span::styled("    Log group  ", Style::default().fg(Color::DarkGray)),
                             Span::styled(lg.clone(), Style::default().fg(Color::White)),
                         ]));
                         cursor_row += 1;

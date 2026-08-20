@@ -146,9 +146,7 @@ fn parse_project(v: &Value) -> Option<ProjectDetail> {
         .and_then(|s| s.as_str())
         .map(str::to_string)
         .or_else(|| Some(format!("/aws/codebuild/{name}")));
-    let timeout_minutes = v
-        .get("timeoutInMinutes")
-        .and_then(|s| s.as_u64());
+    let timeout_minutes = v.get("timeoutInMinutes").and_then(|s| s.as_u64());
     Some(ProjectDetail {
         name,
         arn,
@@ -170,7 +168,15 @@ pub fn recent_builds(
     limit: usize,
     region: Option<&str>,
 ) -> Result<Vec<CodeBuildRecord>, String> {
-    fetch_recent_builds(project, if limit == 0 { DEFAULT_RECENT_LIMIT } else { limit }, region)
+    fetch_recent_builds(
+        project,
+        if limit == 0 {
+            DEFAULT_RECENT_LIMIT
+        } else {
+            limit
+        },
+        region,
+    )
 }
 
 /// `aws codebuild start-build --project-name <p>`. Returns the

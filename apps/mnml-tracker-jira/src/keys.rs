@@ -296,12 +296,8 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         // per-ticket assign is `F` (uppercase-F, same tab type). Non-
         // tree tabs keep `f` = per-ticket (their historical behavior).
         KeyCode::Char('a') => Some(Action::OpenAssigneePicker),
-        KeyCode::Char('f') if is_fix_version_tree_tab(app) => {
-            Some(Action::OpenTabFixVersionPicker)
-        }
-        KeyCode::Char('F') if is_fix_version_tree_tab(app) => {
-            Some(Action::OpenFixVersionPicker)
-        }
+        KeyCode::Char('f') if is_fix_version_tree_tab(app) => Some(Action::OpenTabFixVersionPicker),
+        KeyCode::Char('F') if is_fix_version_tree_tab(app) => Some(Action::OpenFixVersionPicker),
         KeyCode::Char('f') => Some(Action::OpenFixVersionPicker),
         KeyCode::Char('T') => Some(Action::OpenTeamPicker),
         KeyCode::Char('V') => Some(Action::OpenTabFixVersionPicker),

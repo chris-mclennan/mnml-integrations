@@ -129,8 +129,7 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("GitLab pipelines list failed: {status}: {text}"));
         }
-        let pipelines: Vec<Pipeline> =
-            resp.json().await.context("parsing pipelines response")?;
+        let pipelines: Vec<Pipeline> = resp.json().await.context("parsing pipelines response")?;
         Ok(pipelines)
     }
 

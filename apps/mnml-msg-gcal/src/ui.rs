@@ -162,7 +162,9 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(format!("  {line}")));
         }
     }
-    let para = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 }
 

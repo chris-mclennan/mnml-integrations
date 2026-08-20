@@ -260,12 +260,7 @@ impl App {
         }
     }
 
-    fn commit_pipeline_refresh(
-        &mut self,
-        idx: usize,
-        name: String,
-        result: Result<Vec<Pipeline>>,
-    ) {
+    fn commit_pipeline_refresh(&mut self, idx: usize, name: String, result: Result<Vec<Pipeline>>) {
         match result {
             Ok(ps) => {
                 let n = ps.len();

@@ -98,7 +98,11 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     let tabs = Tabs::new(labels)
-        .block(Block::default().borders(Borders::ALL).title(" azure devops "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" azure devops "),
+        )
         .select(app.active_tab)
         .highlight_style(
             Style::default()
@@ -167,12 +171,12 @@ fn draw_prs_table(f: &mut Frame, area: Rect, tab: &TabState) {
                 "abandoned" => Style::default().fg(Color::DarkGray),
                 _ => Style::default().fg(Color::Gray),
             };
-            let repo = p.repository.as_ref().map(|r| r.name.clone()).unwrap_or_default();
-            let branches = format!(
-                "{} → {}",
-                p.source_branch_short(),
-                p.target_branch_short()
-            );
+            let repo = p
+                .repository
+                .as_ref()
+                .map(|r| r.name.clone())
+                .unwrap_or_default();
+            let branches = format!("{} → {}", p.source_branch_short(), p.target_branch_short());
             let author = p
                 .created_by
                 .as_ref()

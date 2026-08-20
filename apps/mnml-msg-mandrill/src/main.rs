@@ -1,11 +1,11 @@
 mod app;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod mandrill;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;
@@ -41,7 +41,6 @@ fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     if cli.check {
         let cfg = config::load();

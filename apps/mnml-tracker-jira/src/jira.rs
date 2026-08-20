@@ -458,10 +458,7 @@ impl Client {
             // returns `total` reliably; new /search/jql doesn't, so
             // check `is_last` too).
             let done_by_size = got < page_size;
-            let done_by_total = sr
-                .total
-                .map(|t| (start_at + got) >= t)
-                .unwrap_or(false);
+            let done_by_total = sr.total.map(|t| (start_at + got) >= t).unwrap_or(false);
             let done_by_flag = sr.is_last.unwrap_or(false);
             if done_by_size || done_by_total || done_by_flag {
                 break;

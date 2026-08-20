@@ -81,22 +81,28 @@ fn humanize_cron(inner: &str, tz: &str) -> String {
 
     // Every N minutes / hours.
     if let Some(n) = every_interval(min)
-        && hr == "*" && (dom == "*" || dom == "?") && (dow == "*" || dow == "?") {
-            return if n == 1 {
-                "Every minute".to_string()
-            } else {
-                format!("Every {n} minutes")
-            };
-        }
+        && hr == "*"
+        && (dom == "*" || dom == "?")
+        && (dow == "*" || dow == "?")
+    {
+        return if n == 1 {
+            "Every minute".to_string()
+        } else {
+            format!("Every {n} minutes")
+        };
+    }
     if let Some(n) = every_interval(hr)
         && let Some(m) = single_value(min)
-            && (dom == "*" || dom == "?") && (dow == "*" || dow == "?") && mon == "*" {
-                return if n == 1 {
-                    format!("Every hour at :{m:02}")
-                } else {
-                    format!("Every {n} hours at :{m:02}")
-                };
-            }
+        && (dom == "*" || dom == "?")
+        && (dow == "*" || dow == "?")
+        && mon == "*"
+    {
+        return if n == 1 {
+            format!("Every hour at :{m:02}")
+        } else {
+            format!("Every {n} hours at :{m:02}")
+        };
+    }
 
     let Some(h) = single_value(hr) else {
         return format!("cron({inner})");
@@ -113,24 +119,30 @@ fn humanize_cron(inner: &str, tz: &str) -> String {
     }
 
     // Weekly on named day(s).
-    if (dom == "*" || dom == "?") && mon == "*"
-        && let Some(days) = named_days(dow) {
-            return format!("Every {days} at {time}{zone_suffix}");
-        }
+    if (dom == "*" || dom == "?")
+        && mon == "*"
+        && let Some(days) = named_days(dow)
+    {
+        return format!("Every {days} at {time}{zone_suffix}");
+    }
 
     // Monthly on day N.
-    if (dow == "*" || dow == "?") && mon == "*"
-        && let Some(day) = single_value(dom) {
-            let suffix = ordinal_suffix(day);
-            return format!("On the {day}{suffix} of every month at {time}{zone_suffix}");
-        }
+    if (dow == "*" || dow == "?")
+        && mon == "*"
+        && let Some(day) = single_value(dom)
+    {
+        let suffix = ordinal_suffix(day);
+        return format!("On the {day}{suffix} of every month at {time}{zone_suffix}");
+    }
 
     format!("cron({inner})")
 }
 
 /// Match `0/N` or `*/N` — "every N units". Returns N.
 fn every_interval(field: &str) -> Option<u32> {
-    let rest = field.strip_prefix("0/").or_else(|| field.strip_prefix("*/"))?;
+    let rest = field
+        .strip_prefix("0/")
+        .or_else(|| field.strip_prefix("*/"))?;
     rest.parse().ok()
 }
 
@@ -213,10 +225,7 @@ mod tests {
             humanize("cron(00 19 * * ? *)", "America/New_York"),
             "Every day at 7:00 PM America/New_York"
         );
-        assert_eq!(
-            humanize("cron(30 6 * * ? *)", ""),
-            "Every day at 6:30 AM"
-        );
+        assert_eq!(humanize("cron(30 6 * * ? *)", ""), "Every day at 6:30 AM");
     }
 
     #[test]
@@ -264,6 +273,9 @@ mod tests {
 
     #[test]
     fn unknown_falls_back() {
-        assert_eq!(humanize("cron(0 12 15 6 ? 2027)", ""), "cron(0 12 15 6 ? 2027)");
+        assert_eq!(
+            humanize("cron(0 12 15 6 ? 2027)", ""),
+            "cron(0 12 15 6 ? 2027)"
+        );
     }
 }

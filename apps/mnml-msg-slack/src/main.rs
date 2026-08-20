@@ -1,11 +1,11 @@
 mod app;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod slack;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;
@@ -69,8 +69,11 @@ fn main() -> Result<()> {
             println!("{mark} #{name}  ({id})", name = c.name, id = c.id);
         }
         println!();
-        println!("{} channels ({}* = member)", chans.len(),
-            chans.iter().filter(|c| c.is_member).count());
+        println!(
+            "{} channels ({}* = member)",
+            chans.len(),
+            chans.iter().filter(|c| c.is_member).count()
+        );
         return Ok(());
     }
 
@@ -162,7 +165,8 @@ fn main() -> Result<()> {
     if let Some(only) = cli.only.as_deref() {
         match only {
             "channels" => {
-                cfg.tabs.retain(|t| t.kind == "channels" || t.kind == "search");
+                cfg.tabs
+                    .retain(|t| t.kind == "channels" || t.kind == "search");
                 if cfg.tabs.is_empty() {
                     cfg.tabs.push(config::Tab {
                         name: "channels".into(),
@@ -179,9 +183,7 @@ fn main() -> Result<()> {
                 }];
             }
             other => {
-                eprintln!(
-                    "error: --only expects `channels` or `canvases`, got `{other}`"
-                );
+                eprintln!("error: --only expects `channels` or `canvases`, got `{other}`");
                 std::process::exit(2);
             }
         }

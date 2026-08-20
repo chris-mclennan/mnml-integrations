@@ -2,10 +2,10 @@ mod app;
 mod clipboard;
 mod config;
 mod docker;
+mod install;
 mod keys;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;

@@ -2,8 +2,8 @@ mod app;
 mod bridge_client;
 mod clipboard;
 mod config;
-mod keys;
 mod install;
+mod keys;
 mod s3;
 mod theme;
 mod ui;
@@ -64,7 +64,6 @@ async fn main() -> Result<()> {
         return install::uninstall();
     }
 
-
     // `--bucket` bypasses the user's config — synthesize a single-
     // tab config from the CLI args. Mirrors mnml-aws-cloudwatch-logs's
     // `--log-group` cross-sibling-handoff shape.
@@ -113,9 +112,7 @@ async fn main() -> Result<()> {
     let mut app = app::App::new(cfg)?;
 
     if bridge_client::is_hosted() {
-        bridge_client::toast(&format!(
-            "mnml-fs-s3 connected · {bucket_count} bucket(s)"
-        ));
+        bridge_client::toast(&format!("mnml-fs-s3 connected · {bucket_count} bucket(s)"));
     }
 
     ui::run(&mut app).await

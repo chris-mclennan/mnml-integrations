@@ -158,8 +158,10 @@ kind = "builds"
             }
             match t.kind.as_str() {
                 "pull_requests" => {
-                    let valid_state =
-                        matches!(t.state.as_str(), "active" | "completed" | "abandoned" | "all");
+                    let valid_state = matches!(
+                        t.state.as_str(),
+                        "active" | "completed" | "abandoned" | "all"
+                    );
                     if !valid_state {
                         return Err(anyhow!(
                             "tab #{i} ({}): state must be active / completed / abandoned / all, got `{}`",

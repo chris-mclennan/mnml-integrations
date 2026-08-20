@@ -119,17 +119,17 @@ fn pr_to_json(org: &str, project: &str, pr: &PullRequest) -> PrJson {
             .as_ref()
             .map(|i| i.display_name.clone())
             .unwrap_or_default(),
-        source_branch: if source.is_empty() { None } else { Some(source) },
+        source_branch: if source.is_empty() {
+            None
+        } else {
+            Some(source)
+        },
         dest_branch: if dest.is_empty() { None } else { Some(dest) },
         state: pr.status.clone(),
         updated_at: pr.creation_date.clone().unwrap_or_default(),
-        remote_url_https: format!(
-            "https://dev.azure.com/{org}/{project}/_git/{repo_name}"
-        ),
+        remote_url_https: format!("https://dev.azure.com/{org}/{project}/_git/{repo_name}"),
         // Azure DevOps SSH form for the visualstudio.com SSH hostname.
-        remote_url_ssh: format!(
-            "git@ssh.dev.azure.com:v3/{org}/{project}/{repo_name}"
-        ),
+        remote_url_ssh: format!("git@ssh.dev.azure.com:v3/{org}/{project}/{repo_name}"),
     }
 }
 

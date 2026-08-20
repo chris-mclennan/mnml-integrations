@@ -182,7 +182,11 @@ fn draw_list(f: &mut Frame, area: Rect, tab: &TabState, app: &App) {
             // ordering doesn't look mysterious. Filter comes from
             // `app.cfg.channels`; only the channels tab uses it.
             let pin_prefix = match item {
-                Item::Channel(c) if tab.spec.kind == "channels" && app.cfg.channels.is_pinned(&c.name) => "\u{f04a6} ",
+                Item::Channel(c)
+                    if tab.spec.kind == "channels" && app.cfg.channels.is_pinned(&c.name) =>
+                {
+                    "\u{f04a6} "
+                }
                 _ => "",
             };
             let primary_field = format!("{pin_prefix}{primary}");
@@ -285,7 +289,6 @@ fn relative_time_short(ts_unix_secs: u64) -> String {
         format!("{}mo", delta / (30 * 86_400))
     }
 }
-
 
 fn channel_row(c: &Channel) -> (String, String, Style) {
     let name = c.display_name();
@@ -413,8 +416,8 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                 " Enter → open in browser",
                 Style::default().fg(crate::theme::remap(Color::DarkGray)),
             )));
-            let p = Paragraph::new(lines)
-                .block(Block::default().borders(Borders::ALL).title(title));
+            let p =
+                Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
             f.render_widget(p, area);
         }
         Some(Item::ThreadPlaceholder) | None => {

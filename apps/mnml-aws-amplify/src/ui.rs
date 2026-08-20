@@ -147,10 +147,7 @@ fn handle_mouse(m: crossterm::event::MouseEvent, app: &mut App) {
     // Find the visible-row whose line-span contains this line.
     let mut idx: Option<usize> = None;
     for (i, start) in row_line_starts.iter().enumerate() {
-        let end = row_line_starts
-            .get(i + 1)
-            .copied()
-            .unwrap_or(usize::MAX);
+        let end = row_line_starts.get(i + 1).copied().unwrap_or(usize::MAX);
         if clicked_line >= *start && clicked_line < end {
             idx = Some(i);
             break;
@@ -670,14 +667,10 @@ fn draw_unified_view(f: &mut Frame, area: Rect, app: &App) {
                         "err (see expand)".to_string(),
                         Style::default().fg(Color::Red),
                     ),
-                    None if in_flight => (
-                        "fetching…".to_string(),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    None => (
-                        "queued".to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    None if in_flight => {
+                        ("fetching…".to_string(), Style::default().fg(Color::Cyan))
+                    }
+                    None => ("queued".to_string(), Style::default().fg(Color::DarkGray)),
                     Some(js) if js.is_empty() => (
                         "(no deploys)".to_string(),
                         Style::default().fg(Color::DarkGray),
@@ -759,10 +752,7 @@ fn draw_unified_view(f: &mut Frame, area: Rect, app: &App) {
                 // the highlight AND the plain bg.
                 lines.push(Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(
-                        format!("{chev} "),
-                        Style::default().fg(Color::Gray),
-                    ),
+                    Span::styled(format!("{chev} "), Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("{branch_trunc:<25}"),
                         Style::default().add_modifier(Modifier::BOLD),

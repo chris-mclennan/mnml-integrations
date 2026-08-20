@@ -168,7 +168,8 @@ async fn list_values(cfg: &config::Config, client: &jira::Client) -> Result<()> 
                 let s = k.as_str();
                 !s.is_empty()
                     && s.len() <= 10
-                    && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                    && s.chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             })
             .collect();
         if safe.is_empty() {

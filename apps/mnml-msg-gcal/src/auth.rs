@@ -65,8 +65,7 @@ impl Token {
 
 pub fn load_client_config() -> Result<ClientConfig> {
     let p = client_config_path();
-    let text =
-        std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
+    let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
     let cfg: ClientConfig =
         toml::from_str(&text).with_context(|| format!("parse {}", p.display()))?;
     if cfg.client_id.is_empty() || cfg.client_secret.is_empty() {
@@ -109,12 +108,9 @@ pub fn interactive_login() -> Result<Token> {
     let client = load_client_config()?;
 
     // 1. Bind a loopback listener; OS picks the port.
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .context("bind loopback listener for OAuth redirect")?;
-    let port = listener
-        .local_addr()
-        .context("read loopback port")?
-        .port();
+    let listener =
+        TcpListener::bind("127.0.0.1:0").context("bind loopback listener for OAuth redirect")?;
+    let port = listener.local_addr().context("read loopback port")?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
     // 2. Build the auth URL.
@@ -208,7 +204,9 @@ pub fn refresh_token(cur: &Token) -> Result<Token> {
         access_token: body.access_token,
         // Google doesn't rotate refresh_tokens on every refresh —
         // keep the existing one if a new one wasn't returned.
-        refresh_token: body.refresh_token.unwrap_or_else(|| cur.refresh_token.clone()),
+        refresh_token: body
+            .refresh_token
+            .unwrap_or_else(|| cur.refresh_token.clone()),
         token_type: body.token_type,
         expires_at: now + body.expires_in as i64,
     };
@@ -340,10 +338,7 @@ mod tests {
 
     #[test]
     fn parse_code_returns_none_on_error() {
-        assert_eq!(
-            parse_code_from_target("/?error=access_denied"),
-            None
-        );
+        assert_eq!(parse_code_from_target("/?error=access_denied"), None);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 mod app;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod sqs;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;

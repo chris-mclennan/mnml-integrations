@@ -87,7 +87,8 @@ impl App {
             Some(t) if !t.is_expired() => t,
             Some(t) => auth::refresh_token(&t)
                 .context("refresh expired token — try `mnml-msg-gcal auth` again")?,
-            None => auth::interactive_login().context("no cached token — running interactive login failed")?,
+            None => auth::interactive_login()
+                .context("no cached token — running interactive login failed")?,
         };
         self.token = Some(tok.clone());
         Ok(tok)
@@ -98,10 +99,7 @@ impl App {
         match self.view {
             View::Today => (start_of_day(now), start_of_day(now) + Duration::days(1)),
             View::Week => (start_of_day(now), start_of_day(now) + Duration::days(7)),
-            View::Upcoming => (
-                now,
-                now + Duration::days(self.cfg.upcoming_days as i64),
-            ),
+            View::Upcoming => (now, now + Duration::days(self.cfg.upcoming_days as i64)),
         }
     }
 
@@ -185,10 +183,7 @@ pub fn run() -> Result<()> {
     result
 }
 
-fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> Result<()> {
+fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     let tick = StdDuration::from_millis(200);
     loop {
         terminal.draw(|f| crate::ui::draw(f, app))?;

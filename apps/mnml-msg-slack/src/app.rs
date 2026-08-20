@@ -444,12 +444,8 @@ impl App {
                 // text / embeds / actions / free-form layout) is
                 // its own project. Enter on a row opens the canvas
                 // in the browser via the Slack-issued permalink.
-                slack::files_list_canvases(&self.auth).map(|canvases| {
-                    canvases
-                        .into_iter()
-                        .map(Item::Canvas)
-                        .collect::<Vec<_>>()
-                })
+                slack::files_list_canvases(&self.auth)
+                    .map(|canvases| canvases.into_iter().map(Item::Canvas).collect::<Vec<_>>())
             }
             _ => unreachable!("validated in TabSpec::resolve"),
         };
@@ -1060,7 +1056,7 @@ mod tests {
     }
 
     #[cfg(test)]
-fn mk_channel(name: &str, member: bool) -> Channel {
+    fn mk_channel(name: &str, member: bool) -> Channel {
         Channel {
             id: name.to_uppercase(),
             name: name.to_string(),

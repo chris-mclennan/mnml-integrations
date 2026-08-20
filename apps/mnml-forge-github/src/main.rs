@@ -5,10 +5,10 @@ mod clipboard;
 mod config;
 mod github;
 mod headless;
+mod install;
 mod keys;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -70,7 +70,6 @@ async fn main() -> Result<()> {
         return install::uninstall();
     }
 
-
     let token = auth::load_token().context("couldn't load GitHub token")?;
     let cfg = config::load()?;
     let client = github::Client::new(&token)?;
@@ -128,9 +127,7 @@ async fn main() -> Result<()> {
     let mut app = app::App::new(cfg, client).await?;
 
     if bridge_client::is_hosted() {
-        bridge_client::toast(&format!(
-            "mnml-forge-github connected · {tab_count} tab(s)"
-        ));
+        bridge_client::toast(&format!("mnml-forge-github connected · {tab_count} tab(s)"));
     }
 
     ui::run(&mut app).await

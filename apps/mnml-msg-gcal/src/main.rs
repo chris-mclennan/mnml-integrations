@@ -73,7 +73,10 @@ fn check() -> Result<()> {
     println!("  refresh_secs: {}", cfg.refresh_secs);
     println!();
     match auth::load_token() {
-        Ok(_) => println!("oauth: OK — token cached at {}", auth::token_path().display()),
+        Ok(_) => println!(
+            "oauth: OK — token cached at {}",
+            auth::token_path().display()
+        ),
         Err(e) => {
             println!("oauth: NOT SET — {}", e);
             println!();

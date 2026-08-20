@@ -51,10 +51,7 @@ impl Client {
             "https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
         );
         let top_s = top.to_string();
-        let mut q: Vec<(&str, &str)> = vec![
-            ("api-version", API_VERSION),
-            ("$top", top_s.as_str()),
-        ];
+        let mut q: Vec<(&str, &str)> = vec![("api-version", API_VERSION), ("$top", top_s.as_str())];
         if status != "all" {
             q.push(("searchCriteria.status", status));
         }
@@ -102,8 +99,7 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("Azure DevOps PR list failed: {status}: {text}"));
         }
-        let pr: PullRequestResponse =
-            resp.json().await.context("parsing PR response")?;
+        let pr: PullRequestResponse = resp.json().await.context("parsing PR response")?;
         Ok(pr.value)
     }
 
@@ -141,8 +137,7 @@ impl Client {
         if let Some(d) = definition_id {
             q.push(("definitions".into(), d.to_string()));
         }
-        let q_str: Vec<(&str, &str)> =
-            q.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
+        let q_str: Vec<(&str, &str)> = q.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
         let resp = self
             .http
             .get(&url)
@@ -157,8 +152,7 @@ impl Client {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("Azure DevOps build list failed: {status}: {text}"));
         }
-        let br: BuildResponse =
-            resp.json().await.context("parsing build response")?;
+        let br: BuildResponse = resp.json().await.context("parsing build response")?;
         Ok(br.value)
     }
 
@@ -216,8 +210,15 @@ pub struct PullRequest {
 
 impl PullRequest {
     pub fn web_url(&self, org: &str, project: &str) -> String {
-        let repo = self.repository.as_ref().map(|r| r.name.as_str()).unwrap_or("repo");
-        format!("https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{}", self.id)
+        let repo = self
+            .repository
+            .as_ref()
+            .map(|r| r.name.as_str())
+            .unwrap_or("repo");
+        format!(
+            "https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{}",
+            self.id
+        )
     }
     pub fn source_branch_short(&self) -> String {
         short_ref(self.source_ref.as_deref().unwrap_or(""))

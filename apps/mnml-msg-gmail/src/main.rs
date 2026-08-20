@@ -3,10 +3,10 @@ mod auth;
 mod clipboard;
 mod config;
 mod gmail;
+mod install;
 mod keys;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -55,7 +55,6 @@ fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     if cli.check {
         return run_check();

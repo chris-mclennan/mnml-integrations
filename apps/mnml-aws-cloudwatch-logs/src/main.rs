@@ -1,11 +1,11 @@
 mod app;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod log_tail;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;
@@ -63,7 +63,6 @@ async fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     // `--log-group` bypasses the user's config entirely — it's the
     // cross-sibling handoff path. A one-off tab is synthesized from

@@ -201,11 +201,8 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
         // Uncached rows show "…" (matches the SCHEDULE column's
         // loading state); rows where the path misses show "-".
         // Config keys unset = every row shows "-" in that column.
-        let (env_text, branch_text) = extract_env_branch(
-            cached,
-            &app.cfg.env_path,
-            &app.cfg.branch_path,
-        );
+        let (env_text, branch_text) =
+            extract_env_branch(cached, &app.cfg.env_path, &app.cfg.branch_path);
         let row_y_start = cursor_row;
         lines.push(Line::from(vec![
             Span::styled(
@@ -334,10 +331,8 @@ fn extract_env_branch(
     let Some(input) = d.target.input.as_deref() else {
         return ("-".into(), "-".into());
     };
-    let env = crate::config::extract_json_path(input, env_path)
-        .unwrap_or_else(|| "-".into());
-    let branch = crate::config::extract_json_path(input, branch_path)
-        .unwrap_or_else(|| "-".into());
+    let env = crate::config::extract_json_path(input, env_path).unwrap_or_else(|| "-".into());
+    let branch = crate::config::extract_json_path(input, branch_path).unwrap_or_else(|| "-".into());
     (truncate(&env, 8), truncate(&branch, 20))
 }
 

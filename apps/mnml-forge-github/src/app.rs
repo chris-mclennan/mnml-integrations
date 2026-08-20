@@ -29,8 +29,13 @@ pub struct TabState {
 
 #[derive(Debug, Clone)]
 pub enum TabKind {
-    Issues { query: String },
-    Actions { repo: String, branch: Option<String> },
+    Issues {
+        query: String,
+    },
+    Actions {
+        repo: String,
+        branch: Option<String>,
+    },
 }
 
 /// Per-tab loaded data. Variant is whatever the kind produced; UI
@@ -105,10 +110,7 @@ impl App {
                     self.tabs[idx].rows = TabRows::Issues(items);
                     self.tabs[idx].last_fetched = Some(std::time::Instant::now());
                     self.tabs[idx].last_error = None;
-                    self.tabs[idx].selected = self
-                        .tabs[idx]
-                        .selected
-                        .min(n.saturating_sub(1));
+                    self.tabs[idx].selected = self.tabs[idx].selected.min(n.saturating_sub(1));
                     self.status = format!("{} · {} items", tab_name, n);
                     crate::bridge_client::toast(&format!("{tab_name} · {n} item(s)"));
                 }
@@ -137,10 +139,7 @@ impl App {
                         self.tabs[idx].rows = TabRows::Actions(runs);
                         self.tabs[idx].last_fetched = Some(std::time::Instant::now());
                         self.tabs[idx].last_error = None;
-                        self.tabs[idx].selected = self
-                            .tabs[idx]
-                            .selected
-                            .min(n.saturating_sub(1));
+                        self.tabs[idx].selected = self.tabs[idx].selected.min(n.saturating_sub(1));
                         self.status = format!("{} · {} runs", self.tabs[idx].name, n);
                     }
                     Err(e) => {

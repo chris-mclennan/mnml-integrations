@@ -17,7 +17,11 @@ use serde::Deserialize;
 mod install;
 
 #[derive(Parser, Debug)]
-#[command(name = "mnml-meta-stats", version, about = "Download stats for the mnml crate family")]
+#[command(
+    name = "mnml-meta-stats",
+    version,
+    about = "Download stats for the mnml crate family"
+)]
 struct Cli {
     /// Register with mnml (writes an integration manifest so a rail
     /// chip + palette command show up on next mnml start).
@@ -97,7 +101,11 @@ struct ReleaseAsset {
 
 // ── Fetch ───────────────────────────────────────────────────────────
 
-const USER_AGENT: &str = concat!("mnml-meta-stats/", env!("CARGO_PKG_VERSION"), " (chris-mclennan/mnml)");
+const USER_AGENT: &str = concat!(
+    "mnml-meta-stats/",
+    env!("CARGO_PKG_VERSION"),
+    " (chris-mclennan/mnml)"
+);
 
 fn client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
@@ -109,7 +117,11 @@ fn client() -> Result<reqwest::blocking::Client> {
 fn fetch_report(keywords_csv: &str, gh_repo: &str) -> Result<Report> {
     let c = client()?;
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for kw in keywords_csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+    for kw in keywords_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         match fetch_crate_names(&c, kw) {
             Ok(ns) => names.extend(ns),
             Err(e) => eprintln!("keyword {kw:?} search failed: {e:#}"),
@@ -136,7 +148,11 @@ fn fetch_report(keywords_csv: &str, gh_repo: &str) -> Result<Report> {
         release_asset_count: releases.len(),
         release_asset_downloads: releases.iter().map(|r| r.downloads).sum(),
     };
-    Ok(Report { crates, releases, totals })
+    Ok(Report {
+        crates,
+        releases,
+        totals,
+    })
 }
 
 #[derive(Deserialize)]
@@ -155,9 +171,8 @@ struct CratesSearchEntry {
 
 fn fetch_crate_names(c: &reqwest::blocking::Client, keyword: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    let mut url = format!(
-        "https://crates.io/api/v1/crates?keyword={keyword}&per_page=100&sort=alpha"
-    );
+    let mut url =
+        format!("https://crates.io/api/v1/crates?keyword={keyword}&per_page=100&sort=alpha");
     loop {
         let resp: CratesSearchResp = c.get(&url).send()?.error_for_status()?.json()?;
         for entry in resp.crates {
@@ -210,7 +225,10 @@ fn fetch_crate_stat(c: &reqwest::blocking::Client, name: &str) -> Result<CrateSt
         name: name.to_string(),
         total_downloads: detail.krate.downloads,
         recent_downloads: detail.krate.recent_downloads.unwrap_or(0),
-        latest_version: detail.krate.max_stable_version.unwrap_or(detail.krate.max_version),
+        latest_version: detail
+            .krate
+            .max_stable_version
+            .unwrap_or(detail.krate.max_version),
         daily_last_30,
     })
 }
@@ -254,7 +272,10 @@ fn fetch_release_assets(c: &reqwest::blocking::Client, repo: &str) -> Result<Vec
             // Skip checksum + manifest sidecars — they're always
             // downloaded 1:1 with the real artifact and just double
             // the row count.
-            if a.name.ends_with(".sha256") || a.name.ends_with(".sum") || a.name == "dist-manifest.json" {
+            if a.name.ends_with(".sha256")
+                || a.name.ends_with(".sum")
+                || a.name == "dist-manifest.json"
+            {
                 continue;
             }
             out.push(ReleaseAsset {
@@ -284,7 +305,8 @@ fn sparkline(values: &[u64]) -> String {
             if *v == 0 {
                 ' '
             } else {
-                let idx = ((*v as f64 / max as f64) * (SPARK_BARS.len() - 1) as f64).round() as usize;
+                let idx =
+                    ((*v as f64 / max as f64) * (SPARK_BARS.len() - 1) as f64).round() as usize;
                 SPARK_BARS[idx.min(SPARK_BARS.len() - 1)]
             }
         })

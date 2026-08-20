@@ -748,11 +748,7 @@ impl App {
             } else {
                 workspace
             };
-            let repo = if repo.is_empty() {
-                slug.as_str()
-            } else {
-                repo
-            };
+            let repo = if repo.is_empty() { slug.as_str() } else { repo };
             return Some((workspace.to_string(), repo.to_string(), pr.id));
         }
         None
@@ -780,32 +776,32 @@ impl App {
             self.cfg.repos.clone()
         } else {
             match self.cfg.scope.as_str() {
-            "explicit" => self.cfg.explicit_repos.clone(),
-            "recent" => {
-                let activity = self
-                    .client
-                    .list_workspace_repos_with_activity(workspace)
-                    .await?;
-                let cutoff = std::time::SystemTime::now()
-                    .checked_sub(std::time::Duration::from_secs(
-                        self.cfg.recent_window_days as u64 * 86_400,
-                    ))
-                    .unwrap_or(std::time::UNIX_EPOCH);
-                let cutoff_secs = cutoff
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                activity
-                    .into_iter()
-                    .filter(|r| {
-                        r.updated_on
-                            .as_deref()
-                            .and_then(parse_iso_seconds)
-                            .is_some_and(|ts| ts >= cutoff_secs)
-                    })
-                    .map(|r| r.slug)
-                    .collect()
-            }
+                "explicit" => self.cfg.explicit_repos.clone(),
+                "recent" => {
+                    let activity = self
+                        .client
+                        .list_workspace_repos_with_activity(workspace)
+                        .await?;
+                    let cutoff = std::time::SystemTime::now()
+                        .checked_sub(std::time::Duration::from_secs(
+                            self.cfg.recent_window_days as u64 * 86_400,
+                        ))
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    let cutoff_secs = cutoff
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    activity
+                        .into_iter()
+                        .filter(|r| {
+                            r.updated_on
+                                .as_deref()
+                                .and_then(parse_iso_seconds)
+                                .is_some_and(|ts| ts >= cutoff_secs)
+                        })
+                        .map(|r| r.slug)
+                        .collect()
+                }
                 // Default / "all" — every repo, in Bitbucket's
                 // -updated_on order (activity DESC).
                 _ => self

@@ -390,9 +390,18 @@ mod tests {
         // First append — adds #random.
         append_hide_channel_at("random", &path).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("# Header comment we care about"), "header comment survives:\n{after}");
-        assert!(after.contains("# noisy channels go here"), "section comment survives:\n{after}");
-        assert!(after.contains("#politics"), "existing hide entry preserved:\n{after}");
+        assert!(
+            after.contains("# Header comment we care about"),
+            "header comment survives:\n{after}"
+        );
+        assert!(
+            after.contains("# noisy channels go here"),
+            "section comment survives:\n{after}"
+        );
+        assert!(
+            after.contains("#politics"),
+            "existing hide entry preserved:\n{after}"
+        );
         assert!(after.contains("#random"), "new hide appended:\n{after}");
 
         // Second append with the same name — must be idempotent.

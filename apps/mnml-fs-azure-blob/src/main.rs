@@ -2,10 +2,10 @@ mod app;
 mod azure_blob;
 mod clipboard;
 mod config;
+mod install;
 mod keys;
 mod theme;
 mod ui;
-mod install;
 
 use anyhow::Result;
 use clap::Parser;
@@ -42,7 +42,6 @@ async fn main() -> Result<()> {
     if cli.uninstall {
         return install::uninstall();
     }
-
 
     let cfg = config::load()?;
 

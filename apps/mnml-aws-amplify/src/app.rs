@@ -683,9 +683,7 @@ impl App {
                     let in_flight: std::collections::HashSet<(String, String)> = a
                         .pending_jobs
                         .iter()
-                        .map(|(app_id, branch_name, _)| {
-                            (app_id.clone(), branch_name.clone())
-                        })
+                        .map(|(app_id, branch_name, _)| (app_id.clone(), branch_name.clone()))
                         .collect();
                     let known: Vec<(String, String)> = a
                         .branches_by_app
@@ -860,8 +858,7 @@ impl App {
             // cache entry. First-time empty replies still populate
             // (so "genuinely no deploys" rows correctly show empty).
             let key = (app_id, branch_name);
-            let existing_has_data =
-                a.jobs_by_key.get(&key).is_some_and(|v| !v.is_empty());
+            let existing_has_data = a.jobs_by_key.get(&key).is_some_and(|v| !v.is_empty());
             if !jobs.is_empty() || !existing_has_data {
                 a.jobs_by_key.insert(key.clone(), jobs);
             }
@@ -884,11 +881,7 @@ impl App {
         }
         // 4. Fan out list-jobs for the branches that just landed.
         for (app_id, branch_name) in new_branch_fanout {
-            let rx = amplify::spawn_list_jobs(
-                app_id.clone(),
-                branch_name.clone(),
-                region.clone(),
-            );
+            let rx = amplify::spawn_list_jobs(app_id.clone(), branch_name.clone(), region.clone());
             a.pending_jobs.push((app_id, branch_name, rx));
         }
         // 5. Deployment-history overlay drain.
@@ -1199,21 +1192,14 @@ impl App {
             // clean slate.
             let region = self.tabs[self.active_tab].spec.region.clone();
             if let TabData::Apps(a) = &mut self.tabs[self.active_tab].data {
-                let has_data = a
-                    .jobs_by_key
-                    .get(&key)
-                    .is_some_and(|v| !v.is_empty());
+                let has_data = a.jobs_by_key.get(&key).is_some_and(|v| !v.is_empty());
                 let in_flight = a
                     .pending_jobs
                     .iter()
                     .any(|(a_id, b_name, _)| a_id == &key.0 && b_name == &key.1);
                 if !has_data && !in_flight {
                     a.jobs_error_by_key.remove(&key);
-                    let rx = amplify::spawn_list_jobs(
-                        key.0.clone(),
-                        key.1.clone(),
-                        region.clone(),
-                    );
+                    let rx = amplify::spawn_list_jobs(key.0.clone(), key.1.clone(), region.clone());
                     a.pending_jobs.push((key.0, key.1, rx));
                 }
             }
@@ -1547,12 +1533,7 @@ impl App {
     /// the #JOB cell in a branch's expanded detail block. Same as
     /// `open_logs_for_branch` but for an arbitrary job_id, not just
     /// the latest.
-    pub fn open_logs_for_job(
-        &mut self,
-        app_id: &str,
-        branch_name: &str,
-        job_id: &str,
-    ) {
+    pub fn open_logs_for_job(&mut self, app_id: &str, branch_name: &str, job_id: &str) {
         let region = self.active().spec.region.clone();
         let commit_msg = {
             let TabData::Apps(a) = &self.active().data else {

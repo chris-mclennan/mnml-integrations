@@ -91,7 +91,11 @@ pub fn list_schedules(region: Option<&str>) -> Result<Vec<ScheduleSummary>> {
     let mut items: Vec<ScheduleSummary> = Vec::new();
     let mut next_token: Option<String> = None;
     loop {
-        let mut args: Vec<String> = vec!["list-schedules".into(), "--max-results".into(), "100".into()];
+        let mut args: Vec<String> = vec![
+            "list-schedules".into(),
+            "--max-results".into(),
+            "100".into(),
+        ];
         if let Some(tok) = &next_token {
             args.push("--next-token".into());
             args.push(tok.clone());

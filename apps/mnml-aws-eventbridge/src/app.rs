@@ -365,7 +365,10 @@ impl App {
             return;
         };
         // Cache hit — populate detail immediately, skip the fetch.
-        if let Some(cached) = self.detail_cache.get(&(sum.name.clone(), sum.group_name.clone())) {
+        if let Some(cached) = self
+            .detail_cache
+            .get(&(sum.name.clone(), sum.group_name.clone()))
+        {
             self.detail = Some(cached.clone());
             self.detail_loading = false;
             return;
@@ -439,8 +442,8 @@ impl App {
         let region = self.cfg.region.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let r = crate::eventbridge::toggle_state(&d, region.as_deref())
-                .map_err(|e| e.to_string());
+            let r =
+                crate::eventbridge::toggle_state(&d, region.as_deref()).map_err(|e| e.to_string());
             let _ = tx.send(r.map(|_| ()));
         });
         self.pending_save = Some(rx);
