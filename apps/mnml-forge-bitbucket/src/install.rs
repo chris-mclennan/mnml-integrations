@@ -245,9 +245,9 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
     // Raw TOML append. Bridge 0.7 doesn't know about these
     // sections; bridge 0.8+ will serialize them from typed structs,
     // and this whole helper can be deleted then. Glyph is
-    // nf-md-source-pull (U+F062D) — matches the "pull request"
-    // visual metaphor without colliding with the chip's Bitbucket
-    // logo (U+F00A8).
+    // nf-dev-bitbucket (U+F00A8) — matches the parent chip so the
+    // family reads consistently in the statusline. Was U+F062D
+    // (source-pull) but user asked to unify on the Bitbucket logo.
     let block = concat!(
         "\n",
         "# mnml 0.2.11+ statusline segment — appended by\n",
@@ -261,7 +261,7 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         "[[statusline_segments]]\n",
         "id = \"bitbucket_prs_mine\"\n",
         "source = \"bitbucket_values\"\n",
-        "glyph = \"\u{F062D}\"\n",
+        "glyph = \"\u{F00A8}\"\n",
         "color = \"cyan\"\n",
         "format = \"{open_mine}({unapproved_mine})\"\n",
         "tooltip = \"Open PRs you authored (last 90 days, non-release) — parens = still-needs-review count. Click to open the mine-only PRs tab.\"\n",
