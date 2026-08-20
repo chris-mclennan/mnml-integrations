@@ -115,6 +115,34 @@ async fn event_loop(
                 }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // #1094 (2026-08-20) — field-picker overlay
+                        // wins over everything (except the ticket
+                        // detail modal which handles its own dismiss).
+                        // Row hit → set selection + commit via the
+                        // same path Enter uses. Click-outside → cancel
+                        // (matches Esc). Without this the click fell
+                        // through to the table-row model beneath.
+                        if app.field_picker.is_some() {
+                            if let Some(idx) = app
+                                .rects
+                                .picker_rows
+                                .iter()
+                                .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                                .map(|(_, i)| *i)
+                            {
+                                if let Some(picker) = app.field_picker.as_mut() {
+                                    picker.selected = idx;
+                                }
+                                app.commit_field_picker().await;
+                            } else if let Some(body) = app.rects.picker_body {
+                                if !rect_hit(body, m.column, m.row) {
+                                    app.field_picker = None;
+                                    app.rects.picker_rows.clear();
+                                    app.rects.picker_body = None;
+                                }
+                            }
+                            continue;
+                        }
                         // 2026-08-07 — modal + kanban rects take
                         // priority over the flat-table row model.
                         // Modal wins over everything.
@@ -333,6 +361,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.field_picker.is_some() {
         draw_field_picker(f, size, app);
+    } else {
+        // #1094 — no picker open ⇒ purge stale click rects so a
+        // lingering hit doesn't misroute the next left-click.
+        app.rects.picker_body = None;
+        app.rects.picker_rows.clear();
     }
     // 2026-08-07 — ticket-detail modal (the big one). Sits on top of
     // the picker modals so a click on the modal's close button never
@@ -1174,9 +1207,7 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // when the title area is too narrow to hold both chips comfortably.
     let refresh_label = " ⟳ Refresh ";
     let refresh_w = refresh_label.chars().count() as u16;
-    let refresh_rect: Option<Rect> = if title_area.width
-        > leading_w + chip_w + refresh_w + 2
-    {
+    let refresh_rect: Option<Rect> = if title_area.width > leading_w + chip_w + refresh_w + 2 {
         let x = title_area.x + title_area.width - refresh_w;
         let r = Rect {
             x,
@@ -2250,7 +2281,12 @@ fn draw_transition_picker(f: &mut Frame, screen: Rect, app: &App) {
 /// Modal overlay listing assignable users (`a`) or fixVersions (`f`).
 /// Type-to-filter editor at the top, filtered list below, hint row at
 /// the bottom. Centered on the screen, opaque.
-fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
+fn draw_field_picker(f: &mut Frame, screen: Rect, app: &mut App) {
+    // #1094 (2026-08-20) — reset per-draw click rects so a shrunk
+    // visible window doesn't leave phantom hit-targets from the
+    // prior frame.
+    app.rects.picker_body = None;
+    app.rects.picker_rows.clear();
     let Some(picker) = app.field_picker.as_ref() else {
         return;
     };
@@ -2304,6 +2340,7 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
     };
 
     let mut body: Vec<Line> = Vec::new();
+    let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     // Filter line — `/<buffer>│`.
     let chars: Vec<char> = picker.filter.chars().collect();
     let cursor = picker.cursor.min(chars.len());
@@ -2342,6 +2379,26 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
                 .unwrap_or(0);
             let start = sel_pos.saturating_sub(row_cap / 2);
             let end = (start + row_cap).min(visible.len());
+            // #1094 — capture terminal-space Rect per visible item so
+            // the mouse handler can commit on click. Body layout inside
+            // the bordered area: row 0 = filter, row 1 = blank, row
+            // 2..2+N = items. Content-inner starts at (area.x+1,
+            // area.y+1) with width area.width-2.
+            row_rects = visible[start..end]
+                .iter()
+                .enumerate()
+                .map(|(k, &idx)| {
+                    (
+                        Rect {
+                            x: area.x + 1,
+                            y: area.y + 1 + 2 + k as u16,
+                            width: area.width.saturating_sub(2),
+                            height: 1,
+                        },
+                        idx,
+                    )
+                })
+                .collect();
             for &idx in &visible[start..end] {
                 let (id, label) = &picker.items[idx];
                 let style = if idx == picker.selected {
@@ -2407,6 +2464,10 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &App) {
             .title(title),
     );
     f.render_widget(p, area);
+    // #1094 — publish rects for the mouse handler AFTER render, so any
+    // early-return above (e.g. `!picker.loaded`) leaves them empty.
+    app.rects.picker_body = Some(area);
+    app.rects.picker_rows = row_rects;
 }
 
 fn meta_line(label: &str, value: &str) -> Line<'static> {

@@ -121,6 +121,12 @@ pub struct Rects {
     /// bar (right-aligned). Click fires `refresh_active` so mouse-
     /// only users don't need the `r` keychord.
     pub refresh_chip: Option<Rect>,
+    /// #1094 (2026-08-20) — field-picker overlay: outer rect for
+    /// click-away dismiss, and per-visible-row rects → index into
+    /// `field_picker.items` for click-to-commit. Rebuilt every
+    /// draw pass so pagination/scrolling stay in sync.
+    pub picker_body: Option<Rect>,
+    pub picker_rows: Vec<(Rect, usize)>,
 }
 
 /// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
