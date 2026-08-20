@@ -71,7 +71,18 @@ async fn main() -> Result<()> {
     }
 
     let token = auth::load_token().context("couldn't load GitHub token")?;
-    let cfg = config::load()?;
+    // #1091 (2026-08-20) — first-run template scaffold is a normal
+    // success outcome, not an error. Match the LoadOutcome variants
+    // and exit(0) with a friendly note when the config file just
+    // got seeded — no more `Error: wrote config template to …`.
+    let cfg = match config::load()? {
+        config::LoadOutcome::Loaded(c) => c,
+        config::LoadOutcome::TemplateScaffolded(path) => {
+            println!("→ wrote config template to {}", path.display());
+            println!("  Edit it (set the required fields), then re-run `mnml-forge-github`.");
+            return Ok(());
+        }
+    };
     let client = github::Client::new(&token)?;
 
     if cli.list_prs {

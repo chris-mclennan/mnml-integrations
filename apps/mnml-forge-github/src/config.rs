@@ -155,22 +155,30 @@ pub fn config_path() -> PathBuf {
         .join("mnml-forge-github.toml")
 }
 
-pub fn load() -> Result<Config> {
+/// #1091 (2026-08-20) — distinguish "config missing → template
+/// scaffolded, please edit" from a real load error. Prior version
+/// returned `Err(anyhow!("wrote config template …"))` which surfaced
+/// via `main`'s `?` as `Error: wrote config template …`, making a
+/// clean first-run look like a hard failure. Now `main` matches on
+/// this outcome and prints a friendly info line + exit(0).
+pub enum LoadOutcome {
+    Loaded(Config),
+    TemplateScaffolded(PathBuf),
+}
+
+pub fn load() -> Result<LoadOutcome> {
     let path = config_path();
     if !path.exists() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, Config::EXAMPLE)?;
-        return Err(anyhow!(
-            "wrote config template to {} — edit it then re-run",
-            path.display()
-        ));
+        return Ok(LoadOutcome::TemplateScaffolded(path));
     }
     let text = std::fs::read_to_string(&path)?;
     let cfg: Config = toml::from_str(&text)?;
     cfg.validate()?;
-    Ok(cfg)
+    Ok(LoadOutcome::Loaded(cfg))
 }
 
 #[cfg(test)]
