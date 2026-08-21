@@ -37,6 +37,12 @@ pub struct App {
     ///   `Some(s)` + `editing == false` → filter committed; selection
     ///     navigates within the filtered subset; `n`/`N` jump matches.
     pub filter: Option<FilterState>,
+    /// #1115 (2026-08-21) — JQL text editor prompt state. `Some` while
+    /// the pencil overlay is open; commit rewrites the active tab's
+    /// `jql` and triggers `refresh_active`. Same FilterState shape as
+    /// `filter` so we can share text-input keys later; today the
+    /// keyboard path is TODO — mouse-driven only for the first slice.
+    pub jql_editor: Option<FilterState>,
     /// Status-transition overlay for the focused ticket. Opened by
     /// `t`. `Some` ⇒ greedy modal — keys go to the picker (digits to
     /// pick, ↑↓/jk to move, Enter / Esc to commit / cancel) instead
@@ -105,6 +111,12 @@ pub struct Rects {
     /// Kanban toolbar chip rects → chip kind. Clicking dispatches
     /// to the matching picker / cycles a filter.
     pub kanban_chips: Vec<(Rect, ChipKind)>,
+    /// #1110 (2026-08-20) — per-avatar chip rects in the toolbar's
+    /// assignee cluster. Clicking one toggles that account_id in
+    /// `TabState::active_assignee_ids`. Distinct from
+    /// `kanban_chips` because the payload is a string, not a
+    /// ChipKind enum. Cleared + repopulated every frame.
+    pub kanban_avatar_chips: Vec<(Rect, String)>,
     /// Kanban column body rects (whole column including header).
     /// Used by wheel-scroll on hover to know which column to scroll.
     pub kanban_cols: [Option<Rect>; 4],
@@ -134,6 +146,44 @@ pub struct Rects {
     /// dispatcher knows to cycle `TabState::work_scope_filter`
     /// instead of opening the fixVersion picker.
     pub work_scope_chip: Option<Rect>,
+    /// #1103 (2026-08-20) — Work/FixVersions filter toolbar chip
+    /// rects. Populated by `draw_work_filter_toolbar`; consumed by
+    /// the mouse handler. Each entry is `(rect, WorkFilterChip)`.
+    pub work_filter_chips: Vec<(Rect, WorkFilterChip)>,
+    /// #1115 f/u2 (2026-08-21) — inner-text rect of the JQL editor
+    /// overlay (the wrapped text region, not the border). Populated
+    /// by `draw_jql_editor_overlay`; the mouse handler uses it to
+    /// place the cursor on click.
+    ///
+    /// `inner_width` is the wrap width used by the renderer, so the
+    /// click handler can convert (col, row) → char index the same way
+    /// the paint did.
+    pub jql_editor_inner: Option<(Rect, u16)>,
+}
+
+/// #1103 (2026-08-20) — Jira Work / Fix Versions filter toolbar
+/// chip identity. Mirrors Jira Cloud's Basic-mode filter bar (Search
+/// / Space / Assignee / Type / Status / More filters / Save filter)
+/// with a Basic/JQL mode toggle on the left. FixVersion (only
+/// present on Fix Versions tabs) surfaces as a removable pill in
+/// front of the More filters chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkFilterChip {
+    ModeBasic,
+    ModeJql,
+    Search,
+    Space,
+    Assignee,
+    Type,
+    Status,
+    MoreFilters,
+    SaveFilter,
+    /// FixVersions pill's `ⓧ` remove hit. Only registered when the
+    /// active tab has a `fixVersion = ...` filter in its JQL.
+    FixVersionRemove,
+    /// FixVersions pill's `▾` label opens the picker to swap the
+    /// current version for another. Only registered when set.
+    FixVersionPicker,
 }
 
 /// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
@@ -147,6 +197,11 @@ pub enum ChipKind {
     Sprint,
     Search,
     Team,
+    /// #1103 f/u8 (2026-08-20) — Assignee chip. Placeholder for the
+    /// avatar-cluster multi-select filter Jira Cloud shows between
+    /// Search and Version. Click opens (TODO) an assignee picker;
+    /// visual for now.
+    Assignee,
     Version,
     Epic,
     Type,
@@ -155,6 +210,16 @@ pub enum ChipKind {
     /// 2026-08-17 (task #893) — opens the board's settings URL in the
     /// system browser. The Jira Cloud "Configure board" page.
     BoardSettings,
+    /// #1110 f/u (2026-08-20) — inline `[?]` quick-toggle for the
+    /// "Unassigned" filter. Click toggles `UNASSIGNED_SENTINEL` in
+    /// `TabState.active_assignee_ids`. Distinct chip from the per-
+    /// person avatars so users don't have to fish through the
+    /// picker for the common "nobody's on this yet" case.
+    Unassigned,
+    /// #1110 f/u (2026-08-20) — inline `+N` overflow chip rendered
+    /// when `assignee_cache.len() > 5`. Click opens the full
+    /// avatar-cluster picker (multi-select, includes Unassigned).
+    AssigneeOverflow,
 }
 
 /// 2026-08-07 — card detail modal state. Loaded lazily — `data`
@@ -241,6 +306,32 @@ pub enum FieldKind {
     /// the union of labels across the tab's issues. Commit writes
     /// `tab.label` in-memory.
     Label,
+    /// #1110 f/u (2026-08-20) — Avatar cluster overflow picker.
+    /// Rendered when `assignee_cache.len() > 5` — the toolbar shows
+    /// the first 5 avatars inline; the `+N` chip opens this picker
+    /// as the full multi-select over all cached assignees plus an
+    /// explicit "Unassigned" row (uses the sentinel account_id
+    /// `UNASSIGNED_SENTINEL` internally). Commit writes back to
+    /// `TabState.active_assignee_ids` — the exact same field the
+    /// inline avatar toggles already drive, so both surfaces stay
+    /// in sync.
+    AvatarCluster,
+}
+
+/// #1110 f/u (2026-08-20) — sentinel account_id used inside
+/// `TabState.active_assignee_ids` to represent "match tickets with
+/// no assignee". Chosen with double-underscore + control-word so
+/// it can never collide with a real Atlassian accountId (those are
+/// UUID-shaped hex strings). Recognised by `visible_indices`'s
+/// `assignee_pass` and by the picker commit path.
+pub const UNASSIGNED_SENTINEL: &str = "__unassigned__";
+
+/// #1115 f/u2 — word-char classification for word-wise cursor / delete
+/// operations in the JQL editor. Same intuition every modern text
+/// field uses: alphanumeric + underscore is "word", everything else is
+/// punctuation you want to skip past atomically.
+pub fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 impl FieldPicker {
@@ -349,6 +440,44 @@ pub struct TabState {
     /// mode. `WorkUnified` (which fetches both) is where this chip
     /// pulls its weight. In-memory only.
     pub work_scope_filter: WorkScopeFilter,
+    /// #1110 (2026-08-20) — assignee-cluster cache. Populated after
+    /// refresh_active by aggregating assignees from the fetched
+    /// issues (frequency-desc), so the toolbar can render up to N
+    /// avatar chips without a separate API round-trip. `None` =
+    /// not yet computed for this tab.
+    pub assignee_cache: Option<Vec<AssigneeSummary>>,
+    /// #1110 (2026-08-20) — active assignee-filter selection. When
+    /// non-empty, `visible_indices` keeps only issues whose
+    /// assignee account_id is in the set (or, for the special empty
+    /// string, unassigned issues). Empty set = no filter.
+    pub active_assignee_ids: std::collections::HashSet<String>,
+    /// #1115 (2026-08-21) — Basic ↔ JQL mode toggle. When true the
+    /// toolbar renders a second row showing the current `jql` text
+    /// (with a pencil to edit + refresh). When false only the friendly
+    /// filter chips are visible. Per-tab so different tabs remember
+    /// their preferred mode.
+    pub show_jql: bool,
+    /// #1110 f/u (2026-08-21) — one-shot flag: has this tab attempted
+    /// to seed `active_assignee_ids` with the current user yet? Prevents
+    /// the "default to me" convenience from clobbering a user's explicit
+    /// clear (open picker → uncheck Me → close). Set true on the first
+    /// refresh where `my_account_id` resolves, regardless of whether we
+    /// actually inserted (failed lookups shouldn't fire the seed on
+    /// every subsequent refresh either).
+    pub assignee_default_seeded: bool,
+}
+
+/// #1110 (2026-08-20) — one assignee's aggregate presence on the
+/// current tab. Used by the Jira-Boards toolbar to render the
+/// avatar cluster (up to N chips + a `+M` overflow). Frequency
+/// counts drive the visible-first ordering — highest-signal
+/// assignees appear as the front avatars, rare ones spill into the
+/// overflow picker.
+#[derive(Debug, Clone)]
+pub struct AssigneeSummary {
+    pub account_id: String,
+    pub display_name: String,
+    pub count: usize,
 }
 
 /// #1084 (2026-08-19) — three-way client-side resolution filter for
@@ -531,6 +660,10 @@ impl App {
                 sprints_cache: None,
                 active_quick_filter_ids: BTreeSet::new(),
                 work_scope_filter: crate::app::WorkScopeFilter::default(),
+                assignee_cache: None,
+                active_assignee_ids: std::collections::HashSet::new(),
+                show_jql: false,
+                assignee_default_seeded: false,
                 quick_filters_cache: None,
             });
         }
@@ -545,6 +678,7 @@ impl App {
             detail_cache: HashMap::new(),
             detail_in_flight: None,
             filter: None,
+            jql_editor: None,
             transition_picker: None,
             my_account_id: None,
             comment_editor: None,
@@ -567,8 +701,68 @@ impl App {
         // per-tab search errors (401 does propagate through
         // /search/jql on a fully-revoked token — the empty-
         // results quirk is only for scoped-but-wrong-context).
-        app.refresh_active().await;
+        //
+        // #1117 (2026-08-21) — prefetch hydration. If mnml's
+        // background worker has produced a fresh cache and stamped
+        // its path via `MNML_PREFETCH_CACHE_FILE`, hydrate the
+        // tabs' issue lists from it instead of doing a cold Jira
+        // fetch. `last_fetched` is set so the pane's own tick
+        // scheduler treats it as recently refreshed (~60s until
+        // next tick) — user sees populated pane on frame one.
+        // Cache misses / stale files / parse errors fall through
+        // to the normal cold-fetch path silently.
+        let hydrated = app.hydrate_from_prefetch_cache();
+        if !hydrated {
+            app.refresh_active().await;
+        }
         Ok(app)
+    }
+
+    /// #1117 (2026-08-21) — try to seed `tabs[i].issues` from the
+    /// prefetch cache mnml core stamped via `MNML_PREFETCH_CACHE_FILE`.
+    /// Returns `true` iff at least one tab was populated (in which case
+    /// caller skips the cold `refresh_active` fetch).
+    ///
+    /// Silent fall-through on any issue (env unset, file missing, bad
+    /// JSON, schema drift, no tab-name match). Losing hydration is
+    /// never worse than cold-fetch behavior.
+    fn hydrate_from_prefetch_cache(&mut self) -> bool {
+        #[derive(serde::Deserialize)]
+        struct PrefetchCache {
+            #[serde(default)]
+            #[allow(dead_code)]
+            generated_at: u64,
+            tabs: Vec<PrefetchTab>,
+        }
+        #[derive(serde::Deserialize)]
+        struct PrefetchTab {
+            name: String,
+            #[serde(default)]
+            #[allow(dead_code)]
+            jql: String,
+            issues: Vec<crate::jira::Issue>,
+        }
+        let Ok(path) = std::env::var("MNML_PREFETCH_CACHE_FILE") else {
+            return false;
+        };
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(cache) = serde_json::from_str::<PrefetchCache>(&body) else {
+            return false;
+        };
+        let mut any = false;
+        for pt in cache.tabs {
+            if let Some(tab) = self.tabs.iter_mut().find(|t| t.name == pt.name) {
+                tab.issues = pt.issues;
+                tab.last_fetched = Some(std::time::Instant::now());
+                any = true;
+            }
+        }
+        if any {
+            self.status = format!("hydrated from prefetch cache · {}", path);
+        }
+        any
     }
 
     pub fn active(&self) -> &TabState {
@@ -626,7 +820,33 @@ impl App {
     /// Re-fetch the active tab's issues. Updates `last_fetched` and
     /// `last_error` on the tab.
     pub async fn refresh_active(&mut self) {
+        // #1110 f/u2 (2026-08-20) — resolve `my_account_id` opportunistically
+        // on the first refresh so the avatar cluster's self-exclusion has
+        // an id to compare against. Was: only set lazily inside
+        // `ensure_my_account_id` (unwatch flow), which fired well after
+        // the first paint. On endpoint failure we cache the Err so we
+        // don't hammer /myself every refresh.
+        if self.my_account_id.is_none() {
+            match self.client.myself().await {
+                Ok(id) => self.my_account_id = Some(Ok(id)),
+                Err(e) => self.my_account_id = Some(Err(e.to_string())),
+            }
+        }
         let idx = self.active_tab;
+        // #1110 f/u (2026-08-21) — user reported: "the assignee on
+        // Jira Work is empty when I first open it but it should default
+        // to current user (me)." Seed the client-side assignee filter
+        // with my_account_id the first time we know it. One-shot per
+        // tab (flag prevents re-seeding after the user actively clears
+        // the filter through the picker).
+        if !self.tabs[idx].assignee_default_seeded && self.my_account_id.is_some() {
+            if let Some(Ok(id)) = self.my_account_id.as_ref() {
+                if self.tabs[idx].active_assignee_ids.is_empty() {
+                    self.tabs[idx].active_assignee_ids.insert(id.clone());
+                }
+            }
+            self.tabs[idx].assignee_default_seeded = true;
+        }
         let base_jql = self.tabs[idx].jql.clone();
         // 2026-08-07 — push the team filter into JQL server-side. Was:
         // fetched up to 100 tickets, then filtered client-side by
@@ -786,8 +1006,8 @@ impl App {
                     .selected
                     .min(self.tabs[idx].issues.len().saturating_sub(1));
                 if let Some(tree) = self.tabs[idx].tree.as_mut() {
-                    for key in unresolved_keys {
-                        tree.expanded_tickets.insert(key);
+                    for key in &unresolved_keys {
+                        tree.expanded_tickets.insert(key.clone());
                     }
                 }
                 self.status = format!(
@@ -795,6 +1015,81 @@ impl App {
                     self.tabs[idx].name,
                     self.tabs[idx].issues.len()
                 );
+                // #1103 f/u5 (2026-08-20) — auto-expand marked the
+                // unresolved tickets expanded but never fired the
+                // linked-PR fetch, so every ticket rendered
+                // "→ fetching linked PRs…" indefinitely. Kick off
+                // the fetch here for each key the auto-expand
+                // touched. Serial-await is fine — 4-10 keys per
+                // refresh, each a single dev-status API call, and
+                // the user's already blocking on the refresh RTT.
+                for key in unresolved_keys {
+                    self.ensure_ticket_prs(&key).await;
+                }
+                // #1103 f/u8 (2026-08-20) — pre-fetch sprints for
+                // board tabs so the Sprint chip shows the active
+                // sprint name immediately on first paint. Was:
+                // cache stayed None until user clicked, so the chip
+                // read as bare "Sprint ▾" with no value — user had
+                // to click blind to discover it. Skipped when the
+                // cache already exists (idempotent) and on tabs
+                // without a board_id (Work / FixVersions / raw JQL).
+                if self.tabs[idx].sprints_cache.is_none()
+                    && let Some(board_id) =
+                        self.cfg.tabs.get(idx).and_then(|t| t.board_id)
+                    && let Ok(list) = self.client.fetch_sprints_for_board(board_id).await
+                {
+                    self.tabs[idx].sprints_cache = Some(list);
+                }
+                // #1110 (2026-08-20) — aggregate assignees from the
+                // fetched issues, sorted by ticket count desc. Feeds
+                // the toolbar avatar cluster without a separate API
+                // round-trip. Rebuilt every refresh because who's
+                // assigned changes as work moves.
+                //
+                // #1110 f/u2 (2026-08-20) — exclude the current user
+                // from the cluster. Every board with "your work" will
+                // otherwise put YOU at the top with the highest count,
+                // which is redundant with mnml's own me/mine filters
+                // and takes an avatar slot from teammates the user
+                // actually needs to see. If `my_account_id` isn't
+                // resolved yet (auth degraded / not called yet), we
+                // still show everyone — better to include the user
+                // than blank the cluster entirely.
+                let self_id = self
+                    .my_account_id
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .cloned();
+                {
+                    use std::collections::HashMap;
+                    let mut counts: HashMap<String, (String, usize)> = HashMap::new();
+                    for issue in &self.tabs[idx].issues {
+                        if let Some(a) = &issue.fields.assignee {
+                            if self_id.as_deref() == Some(a.account_id.as_str()) {
+                                continue;
+                            }
+                            let entry = counts
+                                .entry(a.account_id.clone())
+                                .or_insert_with(|| (a.display_name.clone(), 0));
+                            entry.1 += 1;
+                        }
+                    }
+                    let mut summaries: Vec<crate::app::AssigneeSummary> = counts
+                        .into_iter()
+                        .map(|(id, (name, count))| crate::app::AssigneeSummary {
+                            account_id: id,
+                            display_name: name,
+                            count,
+                        })
+                        .collect();
+                    summaries.sort_by(|a, b| {
+                        b.count
+                            .cmp(&a.count)
+                            .then_with(|| a.display_name.cmp(&b.display_name))
+                    });
+                    self.tabs[idx].assignee_cache = Some(summaries);
+                }
             }
             Err(e) => {
                 self.tabs[idx].last_error = Some(e.to_string());
@@ -1284,6 +1579,212 @@ impl App {
         }
     }
 
+    /// #1115 (2026-08-21) — open the JQL editor prompt, seeded with
+    /// the active tab's current `jql`. Cursor at end.
+    ///
+    /// The editor is a lightweight text-prompt overlay reusing the
+    /// same `FilterState` shape as `open_filter`. On commit
+    /// (`close_jql_editor(Commit)`) the buffer replaces `tab.jql` and
+    /// `refresh_active` fires; on cancel the prior JQL is untouched.
+    pub fn open_jql_editor(&mut self) {
+        let initial = self.tabs[self.active_tab].jql.clone();
+        let cursor = initial.chars().count();
+        self.jql_editor = Some(FilterState {
+            buffer: initial,
+            cursor,
+            editing: true,
+        });
+    }
+
+    /// #1115 (2026-08-21) — commit or cancel the JQL editor. On
+    /// Commit: write the buffer back to `tab.jql`, drop the overlay,
+    /// clear `last_fetched` so the next tick re-fetches with the new
+    /// query. On Cancel: just drop the overlay.
+    pub async fn close_jql_editor(&mut self, mode: FilterClose) {
+        let Some(state) = self.jql_editor.take() else {
+            return;
+        };
+        if matches!(mode, FilterClose::Commit) {
+            let idx = self.active_tab;
+            self.tabs[idx].jql = state.buffer.trim().to_string();
+            self.tabs[idx].last_fetched = None;
+            self.refresh_active().await;
+        }
+    }
+
+    /// #1115 — insert a char into the JQL editor buffer at the cursor.
+    pub fn jql_editor_insert(&mut self, c: char) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            let byte = j
+                .buffer
+                .char_indices()
+                .nth(j.cursor)
+                .map(|(b, _)| b)
+                .unwrap_or_else(|| j.buffer.len());
+            j.buffer.insert(byte, c);
+            j.cursor += 1;
+        }
+    }
+
+    /// #1115 — Backspace in the JQL editor.
+    pub fn jql_editor_backspace(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut()
+            && j.cursor > 0
+        {
+            let start = j
+                .buffer
+                .char_indices()
+                .nth(j.cursor - 1)
+                .map(|(b, _)| b)
+                .unwrap_or(0);
+            let end = j
+                .buffer
+                .char_indices()
+                .nth(j.cursor)
+                .map(|(b, _)| b)
+                .unwrap_or_else(|| j.buffer.len());
+            j.buffer.replace_range(start..end, "");
+            j.cursor -= 1;
+        }
+    }
+
+    /// #1115 f/u2 (2026-08-21) — modern text-editing affordances for
+    /// the JQL editor prompt. Keeps `FilterState` shape (buffer +
+    /// cursor as CHAR indices) so we can port these to the `/`
+    /// filter editor later without a shape change.
+    pub fn jql_editor_cursor_left(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            j.cursor = j.cursor.saturating_sub(1);
+        }
+    }
+    pub fn jql_editor_cursor_right(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            let len = j.buffer.chars().count();
+            if j.cursor < len {
+                j.cursor += 1;
+            }
+        }
+    }
+    pub fn jql_editor_cursor_home(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            j.cursor = 0;
+        }
+    }
+    pub fn jql_editor_cursor_end(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            j.cursor = j.buffer.chars().count();
+        }
+    }
+    /// Forward delete (Delete key). Removes the char AT the cursor.
+    pub fn jql_editor_delete_forward(&mut self) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            let chars_len = j.buffer.chars().count();
+            if j.cursor >= chars_len {
+                return;
+            }
+            let start = j
+                .buffer
+                .char_indices()
+                .nth(j.cursor)
+                .map(|(b, _)| b)
+                .unwrap_or(0);
+            let end = j
+                .buffer
+                .char_indices()
+                .nth(j.cursor + 1)
+                .map(|(b, _)| b)
+                .unwrap_or_else(|| j.buffer.len());
+            j.buffer.replace_range(start..end, "");
+        }
+    }
+    /// Word-left: jump the cursor to the start of the current or
+    /// previous word. Words are runs of alphanumeric/underscore chars;
+    /// everything else is punctuation. Same intuition as Ctrl+Left in
+    /// most editors.
+    pub fn jql_editor_word_left(&mut self) {
+        let Some(j) = self.jql_editor.as_mut() else {
+            return;
+        };
+        let chars: Vec<char> = j.buffer.chars().collect();
+        if j.cursor == 0 {
+            return;
+        }
+        let mut i = j.cursor;
+        while i > 0 && !is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+        j.cursor = i;
+    }
+    pub fn jql_editor_word_right(&mut self) {
+        let Some(j) = self.jql_editor.as_mut() else {
+            return;
+        };
+        let chars: Vec<char> = j.buffer.chars().collect();
+        let len = chars.len();
+        if j.cursor >= len {
+            return;
+        }
+        let mut i = j.cursor;
+        while i < len && is_word_char(chars[i]) {
+            i += 1;
+        }
+        while i < len && !is_word_char(chars[i]) {
+            i += 1;
+        }
+        j.cursor = i;
+    }
+    /// Delete the word before the cursor (Ctrl+Backspace / Alt+Bksp).
+    pub fn jql_editor_delete_word_back(&mut self) {
+        let start = self
+            .jql_editor
+            .as_ref()
+            .map(|j| j.cursor)
+            .unwrap_or(0);
+        self.jql_editor_word_left();
+        let end = self
+            .jql_editor
+            .as_ref()
+            .map(|j| j.cursor)
+            .unwrap_or(0);
+        if end == start {
+            return;
+        }
+        let Some(j) = self.jql_editor.as_mut() else {
+            return;
+        };
+        let start_byte = j
+            .buffer
+            .char_indices()
+            .nth(end)
+            .map(|(b, _)| b)
+            .unwrap_or(0);
+        let end_byte = j
+            .buffer
+            .char_indices()
+            .nth(start)
+            .map(|(b, _)| b)
+            .unwrap_or_else(|| j.buffer.len());
+        j.buffer.replace_range(start_byte..end_byte, "");
+        j.cursor = end;
+    }
+    /// Bulk-insert a string at the cursor (paste path).
+    pub fn jql_editor_insert_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.jql_editor_insert(c);
+        }
+    }
+    /// Place the cursor at a specific char position (mouse click).
+    /// Clamps to \[0, buffer_char_count\].
+    pub fn jql_editor_cursor_set(&mut self, char_pos: usize) {
+        if let Some(j) = self.jql_editor.as_mut() {
+            let len = j.buffer.chars().count();
+            j.cursor = char_pos.min(len);
+        }
+    }
+
     /// Open the `/` filter editor. Pre-loads with whatever's already
     /// committed (so re-pressing `/` lets you refine an existing
     /// filter without retyping). Cursor at end.
@@ -1370,17 +1871,50 @@ impl App {
     /// selection navigation into raw `issues[]` indices).
     pub fn visible_indices(&self) -> Vec<usize> {
         let tab = self.active();
+        // #1110 (2026-08-20) — assignee-cluster filter. When non-empty,
+        // keep only issues whose assignee.account_id is in the set.
+        // Applied BEFORE the text filter so the two compose (search
+        // narrows within the selected assignees, not across all).
+        //
+        // #1110 f/u (2026-08-20): the sentinel `UNASSIGNED_SENTINEL`
+        // is a valid entry in the set representing "match tickets
+        // with no assignee" — so a user who wants "everything
+        // assigned to Chris OR Liaan OR nobody" toggles all three
+        // and the OR falls out. When the set contains ONLY the
+        // sentinel, we're strictly filtering to unassigned tickets.
+        let assignee_pass = |issue: &crate::jira::Issue| -> bool {
+            if tab.active_assignee_ids.is_empty() {
+                return true;
+            }
+            match &issue.fields.assignee {
+                Some(a) => tab.active_assignee_ids.contains(&a.account_id),
+                None => tab.active_assignee_ids.contains(UNASSIGNED_SENTINEL),
+            }
+        };
         let Some(filter) = self.filter.as_ref() else {
-            return (0..tab.issues.len()).collect();
+            return tab
+                .issues
+                .iter()
+                .enumerate()
+                .filter_map(|(i, issue)| assignee_pass(issue).then_some(i))
+                .collect();
         };
         let needle = filter.buffer.to_ascii_lowercase();
         if needle.is_empty() {
-            return (0..tab.issues.len()).collect();
+            return tab
+                .issues
+                .iter()
+                .enumerate()
+                .filter_map(|(i, issue)| assignee_pass(issue).then_some(i))
+                .collect();
         }
         tab.issues
             .iter()
             .enumerate()
             .filter_map(|(i, issue)| {
+                if !assignee_pass(issue) {
+                    return None;
+                }
                 let key_match = issue.key.to_ascii_lowercase().contains(&needle);
                 let summary_match = issue.fields.summary.to_ascii_lowercase().contains(&needle);
                 (key_match || summary_match).then_some(i)
@@ -1392,6 +1926,13 @@ impl App {
     /// filtered set. If the previously-selected row is filtered out,
     /// jumps to the first visible row.
     fn clamp_selection_to_filter(&mut self) {
+        self.clamp_selection_to_filter_public();
+    }
+
+    /// #1110 (2026-08-20) — pub form so ui.rs can re-clamp after
+    /// mutating `active_assignee_ids` (which shifts what
+    /// `visible_indices` returns).
+    pub fn clamp_selection_to_filter_public(&mut self) {
         let visible = self.visible_indices();
         if visible.is_empty() {
             return;
@@ -2011,6 +2552,88 @@ impl App {
         }
     }
 
+    /// #1110 f/u (2026-08-20) — Avatar cluster overflow picker.
+    /// Opens the multi-select picker over the full `assignee_cache`
+    /// plus a synthetic "Unassigned" row at the top. Seeded from
+    /// the tab's current `active_assignee_ids` so re-open shows
+    /// the current state, not a blank slate.
+    ///
+    /// The user reaches this three ways:
+    ///  - clicking the `+N` overflow chip when there are more than
+    ///    5 assignees (the top-5 stay inline as their own toggleable
+    ///    avatars),
+    ///  - clicking the `[?]` unassigned quick-toggle chip (same
+    ///    picker, but seeded to hint the "Unassigned" row is what
+    ///    they wanted),
+    ///  - keyboard shortcut in a future pass.
+    pub fn open_avatar_cluster_picker(&mut self) {
+        let idx = self.active_tab;
+        let cache = self
+            .tabs[idx]
+            .assignee_cache
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        // Seed multi-select from the tab's current filter set so the
+        // picker faithfully reflects "what's currently active" —
+        // toggling from there does NOT reset the state, only edits it.
+        let mut multi: BTreeSet<String> = BTreeSet::new();
+        for id in &self.tabs[idx].active_assignee_ids {
+            multi.insert(id.clone());
+        }
+        // Items: `Me` (if known), then `Unassigned`, then cached
+        // assignees in count-desc order (already the cache's natural
+        // sort). `assignee_cache` excludes the current user by design
+        // (self doesn't take an avatar slot in the inline cluster) —
+        // but the FILTER picker still needs a Me row so the user can
+        // uncheck the seeded-on-first-load default.
+        let mut items: Vec<(String, String)> = Vec::new();
+        if let Some(Ok(id)) = self.my_account_id.as_ref() {
+            items.push((id.clone(), "— Me (Current User) —".to_string()));
+        }
+        items.push((UNASSIGNED_SENTINEL.to_string(), "— Unassigned —".to_string()));
+        for a in &cache {
+            items.push((
+                a.account_id.clone(),
+                format!("{}  ({})", a.display_name, a.count),
+            ));
+        }
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::AvatarCluster,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: Some(multi),
+        });
+    }
+
+    /// #1110 f/u (2026-08-20) — commit for the avatar-cluster picker.
+    /// Writes `multi_selected` back into `TabState.active_assignee_ids`
+    /// and re-clamps the selection so a filtered-out row doesn't leave
+    /// the cursor pointing at nothing. Purely client-side — no refetch
+    /// (assignee data is aggregated from already-fetched issues).
+    pub fn commit_avatar_cluster_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(p) = self.field_picker.as_ref() else {
+            return;
+        };
+        let Some(multi) = p.multi_selected.as_ref() else {
+            return;
+        };
+        self.tabs[idx].active_assignee_ids = multi.iter().cloned().collect();
+        self.clamp_selection_to_filter_public();
+        self.field_picker = None;
+        let n = self.tabs[idx].active_assignee_ids.len();
+        self.status = if n == 0 {
+            "assignees: all".to_string()
+        } else {
+            format!("assignees: {n} active")
+        };
+    }
+
     /// 2026-08-17 (task #893) — Space in the quick-filter picker:
     /// toggle the row under the cursor in `multi_selected`. No-op
     /// for pickers without multi-select on.
@@ -2296,6 +2919,13 @@ impl App {
             self.commit_quickfilter_picker().await;
             return;
         }
+        // #1110 f/u (2026-08-20) — avatar cluster overflow picker.
+        // Client-side filter, so no refetch — same shape as Team /
+        // IssueType / Label routing above.
+        if kind == FieldKind::AvatarCluster {
+            self.commit_avatar_cluster_picker();
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -2330,7 +2960,8 @@ impl App {
                 | FieldKind::Sprint
                 | FieldKind::QuickFilter
                 | FieldKind::IssueType
-                | FieldKind::Label => {
+                | FieldKind::Label
+                | FieldKind::AvatarCluster => {
                     unreachable!("routed above")
                 }
             };
@@ -2353,7 +2984,8 @@ impl App {
                 | FieldKind::Sprint
                 | FieldKind::QuickFilter
                 | FieldKind::IssueType
-                | FieldKind::Label => {
+                | FieldKind::Label
+                | FieldKind::AvatarCluster => {
                     unreachable!("routed above")
                 }
             };
@@ -2890,6 +3522,10 @@ impl App {
                 sprints_cache: None,
                 work_scope_filter: crate::app::WorkScopeFilter::default(),
                 active_quick_filter_ids: BTreeSet::new(),
+                assignee_cache: None,
+                active_assignee_ids: std::collections::HashSet::new(),
+                show_jql: false,
+                assignee_default_seeded: false,
                 quick_filters_cache: None,
             }],
             active_tab: 0,
@@ -2899,6 +3535,7 @@ impl App {
             detail_cache: HashMap::new(),
             detail_in_flight: None,
             filter: None,
+            jql_editor: None,
             transition_picker: None,
             my_account_id: None,
             comment_editor: None,
@@ -3027,6 +3664,10 @@ mod tests {
             work_scope_filter: crate::app::WorkScopeFilter::default(),
             sprints_cache: None,
             active_quick_filter_ids: BTreeSet::new(),
+            assignee_cache: None,
+            active_assignee_ids: std::collections::HashSet::new(),
+            show_jql: false,
+            assignee_default_seeded: false,
             quick_filters_cache: None,
         };
         App {
@@ -3050,6 +3691,7 @@ mod tests {
             detail_cache: HashMap::new(),
             detail_in_flight: None,
             filter: None,
+            jql_editor: None,
             transition_picker: None,
             my_account_id: None,
             comment_editor: None,

@@ -241,7 +241,12 @@ pub fn expand_ticket_sub_rows(
     }
     match tree.pr_cache.get(&issue.key) {
         None => vec![VisibleRow::PrLoading { issue_idx }],
-        Some(prs) if prs.is_empty() => vec![VisibleRow::PrEmpty { issue_idx }],
+        // #1110 f/u3 (2026-08-21) — user: "if nothing to expand, don't
+        // show the → no linked PRs row (also clips into the KEY column
+        // which is too narrow)." Suppress the sub-row entirely; the
+        // renderer also hides the ticket's expand chevron when the
+        // cache is known-empty, so users never see "expand to nothing."
+        Some(prs) if prs.is_empty() => Vec::new(),
         Some(prs) => {
             // 2026-08-07 — cap at pr_show_counts[key] (default 3). PRs
             // arrive from Jira's dev-status API in whatever order the

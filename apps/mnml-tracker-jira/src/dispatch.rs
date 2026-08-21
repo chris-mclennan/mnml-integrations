@@ -101,6 +101,7 @@ impl Dispatch {
                 Some(url) => format!("/agents:reviewer {url}"),
                 None => format!("/agents:reviewer {}", self.issue_key),
             },
+            "test" => format!("/agents:tester {} mode=ticket", self.issue_key),
             other => format!("/agents:{other} {}", self.issue_key),
         };
         format!(
@@ -251,9 +252,10 @@ pub fn workspace_dispatch_paths(root: Option<&Path>) -> (Option<PathBuf>, Option
 /// Rules:
 ///   - Story / Task in To Do / In Progress ⇒ [ Implement ]
 ///   - Bug in To Do / In Progress ⇒ [ Fix ] [ Triage ]
-///   - Bug in Testing / Reopened / In PR Review ⇒ [ Triage ]
-///   - Anything else ⇒ empty (Review buttons are per-PR row, not
-///     per-ticket, so those live on the LinkedPr row instead).
+///   - Any type in Testing ⇒ [ Test ]     (2026-08-21 user ask)
+///   - Any type in In PR Review ⇒ [ Review ]  (2026-08-21 user ask)
+///   - Bug Reopened ⇒ [ Triage ]
+///   - Anything else ⇒ empty
 pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
     let ttype = issue
         .fields
@@ -269,17 +271,25 @@ pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
         .unwrap_or_default();
     let is_todo_or_in_progress = matches!(
         status.as_str(),
-        "to do" | "open" | "in progress" | "reopened"
+        "to do" | "open" | "in progress"
     );
     let is_pr_review = matches!(
         status.as_str(),
         "in pr review" | "in code review" | "code review" | "pr review" | "in review"
     );
     let is_testing = status == "testing";
+    if is_testing {
+        return vec![TicketButton::Test];
+    }
+    if is_pr_review {
+        return vec![TicketButton::Review];
+    }
     match ttype.as_str() {
-        "story" | "task" if is_todo_or_in_progress => vec![TicketButton::Implement],
+        "story" | "task" if is_todo_or_in_progress => {
+            vec![TicketButton::Implement, TicketButton::Triage]
+        }
         "bug" if is_todo_or_in_progress => vec![TicketButton::Fix, TicketButton::Triage],
-        "bug" if is_testing || is_pr_review || status == "reopened" => vec![TicketButton::Triage],
+        "bug" if status == "reopened" => vec![TicketButton::Triage],
         _ => Vec::new(),
     }
 }
@@ -291,6 +301,15 @@ pub enum TicketButton {
     Implement,
     Fix,
     Triage,
+    /// #1110 f/u2 (2026-08-21) — surfaces on tickets whose status is
+    /// `Testing`. Dispatch kind = `test` → falls through to the
+    /// `/agents:tester` slash command via the catch-all in
+    /// `Dispatch::prompt`.
+    Test,
+    /// #1110 f/u2 (2026-08-21) — surfaces on tickets whose status is
+    /// `In PR Review`. Dispatch kind = `review` → same slash target
+    /// as the per-PR-row Review button, but without a `pr_url`.
+    Review,
 }
 
 impl TicketButton {
@@ -300,6 +319,8 @@ impl TicketButton {
             Self::Implement => "[ Implement ]",
             Self::Fix => "[ Fix ]",
             Self::Triage => "[ Triage ]",
+            Self::Test => "[ Test ]",
+            Self::Review => "[ Review ]",
         }
     }
 
@@ -310,6 +331,8 @@ impl TicketButton {
             Self::Implement => "implement",
             Self::Fix => "fix",
             Self::Triage => "triage",
+            Self::Test => "test",
+            Self::Review => "review",
         }
     }
 
@@ -319,11 +342,15 @@ impl TicketButton {
     ///   Implement → green  (positive, "make it happen")
     ///   Fix       → red    (bug work, matches destructive tone)
     ///   Triage    → yellow (investigate, caution / TBD)
+    ///   Test      → cyan   (validation / QA lane)
+    ///   Review    → magenta (code review lane)
     pub fn color_slot(self) -> &'static str {
         match self {
             Self::Implement => "green",
             Self::Fix => "red",
             Self::Triage => "yellow",
+            Self::Test => "cyan",
+            Self::Review => "magenta",
         }
     }
 }

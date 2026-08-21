@@ -262,7 +262,10 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         "id = \"bitbucket_prs_mine\"\n",
         "source = \"bitbucket_values\"\n",
         "glyph = \"\u{F00A8}\"\n",
-        "color = \"cyan\"\n",
+        // 2026-08-20 — Bitbucket-brand green (#8BBF4E) for the
+        // chip bg. mnml accepts `#RRGGBB` in a statusline segment
+        // `color` alongside the theme keys.
+        "color = \"#8BBF4E\"\n",
         "format = \"{open_mine}({unapproved_mine})\"\n",
         "tooltip = \"Open PRs you authored (last 90 days, non-release) — parens = still-needs-review count. Click to open the mine-only PRs tab.\"\n",
         "click_command = \"bitbucket_prs.open_mine\"\n",

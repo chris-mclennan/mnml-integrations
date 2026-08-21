@@ -95,6 +95,21 @@ fn handle_mouse(m: crossterm::event::MouseEvent, app: &mut App) {
         }
         return;
     }
+    // #988 (2026-08-20) — the deployment-history drill-in pane owns
+    // the mouse the same way logs_view does. Without this guard,
+    // a click while it's open falls through to the unified-view row-
+    // hit logic below and silently toggles expand on the (hidden)
+    // Apps view. Scroll-only for now; row-select in the history
+    // pane stays keyboard-driven until the sub-view grows its own
+    // row-hit math.
+    if app.deployment_history.is_some() {
+        match m.kind {
+            MouseEventKind::ScrollUp => app.deployment_history_move(-3),
+            MouseEventKind::ScrollDown => app.deployment_history_move(3),
+            _ => {}
+        }
+        return;
+    }
     // Recompute the layout chunks the same way `draw()` does so
     // we can translate the mouse row to a visible-row index.
     // Terminal size isn't cached on App; use crossterm's size().

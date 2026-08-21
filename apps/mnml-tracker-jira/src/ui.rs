@@ -1,7 +1,7 @@
 //! ratatui rendering + the main event loop. Run from `main.rs` with
 //! a fully-initialized `App`.
 
-use crate::app::App;
+use crate::app::{App, FilterClose};
 use crate::keys;
 use anyhow::Result;
 use crossterm::{
@@ -41,6 +41,74 @@ pub async fn run(app: &mut App) -> Result<()> {
     terminal.show_cursor()?;
 
     res
+}
+
+/// #1103 (2026-08-20) — strip the `fixVersion = "…"` clause from a
+/// JQL, cleaning up the surrounding `AND` / `OR` connectors so the
+/// remaining query stays well-formed. Used when the toolbar's
+/// FixVersion `ⓧ` remove chip is clicked.
+fn strip_fix_version(jql: &str) -> String {
+    let lower = jql.to_ascii_lowercase();
+    let Some(start_lc) = lower.find("fixversion") else {
+        return jql.to_string();
+    };
+    let after = &jql[start_lc + "fixversion".len()..];
+    let Some(eq) = after.find('=') else {
+        return jql.to_string();
+    };
+    let after_eq = &after[eq + 1..];
+    let Some(first_quote) = after_eq.find('"') else {
+        return jql.to_string();
+    };
+    let rest = &after_eq[first_quote + 1..];
+    let Some(end_quote) = rest.find('"') else {
+        return jql.to_string();
+    };
+    let clause_end = start_lc
+        + "fixversion".len()
+        + eq
+        + 1
+        + first_quote
+        + 1
+        + end_quote
+        + 1; // include closing quote
+    // Cut back before the clause: if the char just before it is `A`
+    // (start of "AND") swallow the leading connector; same for `OR`.
+    let mut before_end = start_lc;
+    let before = jql[..before_end].trim_end();
+    let stripped_before = if let Some(base) = before
+        .strip_suffix(" AND")
+        .or_else(|| before.strip_suffix(" and"))
+        .or_else(|| before.strip_suffix(" OR"))
+        .or_else(|| before.strip_suffix(" or"))
+    {
+        before_end = base.len();
+        &jql[..before_end]
+    } else {
+        before
+    };
+    // If nothing sat before it, also swallow a trailing connector
+    // after the clause so the JQL doesn't start with `AND ...`.
+    let mut after_start = clause_end;
+    let after_tail = jql[after_start..].trim_start();
+    let skipped_tail = if stripped_before.trim().is_empty() {
+        if let Some(rest) = after_tail
+            .strip_prefix("AND ")
+            .or_else(|| after_tail.strip_prefix("and "))
+            .or_else(|| after_tail.strip_prefix("OR "))
+            .or_else(|| after_tail.strip_prefix("or "))
+        {
+            after_start = jql.len() - rest.len();
+            rest
+        } else {
+            after_tail
+        }
+    } else {
+        after_tail
+    };
+    let joined = format!("{stripped_before} {skipped_tail}").trim().to_string();
+    let _ = after_start;
+    joined
 }
 
 /// 2026-07-26 — pull the fixVersion literal out of a resolved JQL
@@ -115,6 +183,47 @@ async fn event_loop(
                 }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // #1115 f/u2 (2026-08-21) — JQL editor
+                        // overlay wins first: click inside the text
+                        // area places the cursor; click outside
+                        // dismisses (cancel).
+                        if app.jql_editor.is_some() {
+                            if let Some((inner, wrap_w)) = app.rects.jql_editor_inner
+                                && rect_hit(inner, m.column, m.row)
+                            {
+                                let col = m.column.saturating_sub(inner.x) as usize;
+                                let row_from_top = m.row.saturating_sub(inner.y) as usize;
+                                let inner_w = wrap_w as usize;
+                                let inner_h = inner.height as usize;
+                                let chars_len = app
+                                    .jql_editor
+                                    .as_ref()
+                                    .map(|j| j.buffer.chars().count())
+                                    .unwrap_or(0);
+                                // Recreate the scroll offset the same
+                                // way the renderer computed it (from
+                                // cursor row, keep cursor visible).
+                                let cursor = app
+                                    .jql_editor
+                                    .as_ref()
+                                    .map(|j| j.cursor)
+                                    .unwrap_or(0);
+                                let cursor_row = cursor / inner_w;
+                                let total_rows = (chars_len + 1).div_ceil(inner_w);
+                                let scroll_row = cursor_row.saturating_sub(
+                                    inner_h.saturating_sub(1),
+                                );
+                                let first_row = scroll_row.min(total_rows.saturating_sub(1));
+                                let target_row = first_row + row_from_top;
+                                let target_col = col.min(inner_w);
+                                let target_char = target_row * inner_w + target_col;
+                                app.jql_editor_cursor_set(target_char.min(chars_len));
+                                continue;
+                            }
+                            // Click outside overlay → cancel.
+                            app.close_jql_editor(FilterClose::Cancel).await;
+                            continue;
+                        }
                         // #1094 (2026-08-20) — field-picker overlay
                         // wins over everything (except the ticket
                         // detail modal which handles its own dismiss).
@@ -174,6 +283,28 @@ async fn event_loop(
                                 app.toggle_kanban_expanded(&key);
                                 continue;
                             }
+                            // #1110 (2026-08-20) — avatar chips
+                            // route by account_id, not ChipKind.
+                            // Check first so an assignee chip
+                            // whose rect overlaps a generic slot
+                            // wins.
+                            if let Some(account_id) = app
+                                .rects
+                                .kanban_avatar_chips
+                                .iter()
+                                .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                                .map(|(_, id)| id.clone())
+                            {
+                                let tab_idx = app.active_tab;
+                                let tab = &mut app.tabs[tab_idx];
+                                if tab.active_assignee_ids.contains(&account_id) {
+                                    tab.active_assignee_ids.remove(&account_id);
+                                } else {
+                                    tab.active_assignee_ids.insert(account_id);
+                                }
+                                app.clamp_selection_to_filter_public();
+                                continue;
+                            }
                             // Toolbar chips.
                             if let Some(kind) = app
                                 .rects
@@ -199,16 +330,6 @@ async fn event_loop(
                             }
                             continue;
                         }
-                        // 2026-08-18 (#991) — version chip in the
-                        // tree-table title bar. Click opens the tab-
-                        // view fix-version picker (same as `f` on
-                        // fix_version_tree tabs).
-                        if let Some(r) = app.rects.version_chip
-                            && rect_hit(r, m.column, m.row)
-                        {
-                            app.open_tab_fix_version_picker().await;
-                            continue;
-                        }
                         // 2026-08-19 (#1053) — refresh chip in the
                         // tree-table title bar. Click fires
                         // `refresh_active` (mirror of `r`).
@@ -219,16 +340,82 @@ async fn event_loop(
                             last_refresh = Instant::now();
                             continue;
                         }
-                        // #1084 (2026-08-19) — Work-family scope
-                        // chip. Click cycles the active tab's
-                        // `work_scope_filter` (All → Unresolved →
-                        // Resolved). Purely client-side — no refetch.
-                        if let Some(r) = app.rects.work_scope_chip
-                            && rect_hit(r, m.column, m.row)
+                        // #1103 (2026-08-20) — filter toolbar chip
+                        // routing. Precedes the table-row hit test
+                        // so a click on the toolbar row doesn't
+                        // fall through to row-selection logic.
+                        if let Some(kind) = app
+                            .rects
+                            .work_filter_chips
+                            .iter()
+                            .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                            .map(|(_, k)| *k)
                         {
-                            let idx = app.active_tab;
-                            let next = app.tabs[idx].work_scope_filter.cycle();
-                            app.tabs[idx].work_scope_filter = next;
+                            use crate::app::WorkFilterChip;
+                            match kind {
+                                WorkFilterChip::Status => {
+                                    // Wired: cycle work_scope_filter
+                                    // (All → Unresolved → Resolved).
+                                    let idx = app.active_tab;
+                                    let next = app.tabs[idx].work_scope_filter.cycle();
+                                    app.tabs[idx].work_scope_filter = next;
+                                }
+                                WorkFilterChip::FixVersionPicker => {
+                                    // Wired: same as pressing `f` —
+                                    // open the fix-version picker.
+                                    app.open_tab_fix_version_picker().await;
+                                }
+                                WorkFilterChip::FixVersionRemove => {
+                                    // Wired: strip the fixVersion
+                                    // clause from the tab's JQL and
+                                    // refresh. Kept in this file so
+                                    // the toolbar owns its own state
+                                    // transitions.
+                                    let idx = app.active_tab;
+                                    let new_jql =
+                                        strip_fix_version(&app.tabs[idx].jql);
+                                    app.tabs[idx].jql = new_jql;
+                                    app.tabs[idx].last_fetched = None;
+                                    app.refresh_active().await;
+                                    last_refresh = Instant::now();
+                                }
+                                WorkFilterChip::Assignee => {
+                                    // #1110 f/u (2026-08-21) — wire
+                                    // the toolbar Assignee chip to the
+                                    // same avatar-cluster picker the
+                                    // kanban `+N` overflow uses.
+                                    app.open_avatar_cluster_picker();
+                                }
+                                WorkFilterChip::ModeBasic => {
+                                    // #1115 (2026-08-21) — flip the
+                                    // per-tab JQL-mode toggle off.
+                                    // Second-row JQL editor collapses.
+                                    app.tabs[app.active_tab].show_jql = false;
+                                }
+                                WorkFilterChip::ModeJql => {
+                                    // #1115 (2026-08-21) — flip on
+                                    // + open the editor prompt right
+                                    // away. Clicking JQL a second
+                                    // time (while already in JQL mode)
+                                    // just re-opens the editor.
+                                    app.tabs[app.active_tab].show_jql = true;
+                                    app.open_jql_editor();
+                                }
+                                _ => {
+                                    // Placeholder chips (Basic /
+                                    // JQL / Space / Type / MoreFilters
+                                    // / SaveFilter). Search is
+                                    // partially wired — clicking the
+                                    // chip opens the `/` prompt.
+                                    if matches!(kind, WorkFilterChip::Search) {
+                                        app.open_filter();
+                                    } else {
+                                        app.status =
+                                            "filter not wired yet (round-1 visual)"
+                                                .into();
+                                    }
+                                }
+                            }
                             continue;
                         }
                         // Non-kanban tabs: original flat/tree row model.
@@ -322,12 +509,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.rects.kanban_cards.clear();
     app.rects.kanban_chevrons.clear();
     app.rects.kanban_chips.clear();
+    app.rects.kanban_avatar_chips.clear();
     app.rects.kanban_cols = [None; 4];
     app.rects.modal_close = None;
     app.rects.pr_show_more.clear();
     app.rects.version_chip = None;
     app.rects.refresh_chip = None;
     app.rects.work_scope_chip = None;
+    app.rects.work_filter_chips.clear();
     let size = f.area();
     // 2026-07-25 — hide the tab strip entirely when the caller
     // passed `--only` OR there's only one tab (the strip becomes
@@ -386,6 +575,126 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.detail_modal.is_some() {
         draw_detail_modal(f, size, app);
     }
+    // #1115 (2026-08-21) — JQL editor overlay. Rendered LAST so it
+    // paints over everything else. Compact single-row prompt centered
+    // near the bottom (like the git-commit prompt in mnml itself).
+    if app.jql_editor.is_some() {
+        draw_jql_editor_overlay(f, size, app);
+    } else {
+        app.rects.jql_editor_inner = None;
+    }
+}
+
+/// #1115 (2026-08-21) — floating prompt for editing the active tab's
+/// JQL. Wide enough to show most queries in one line; wraps hard-line
+/// at inner width and grows the box vertically (capped) so the user
+/// always sees the whole query with the cursor in place. Title
+/// advertises editability ("type to edit").
+fn draw_jql_editor_overlay(f: &mut Frame, screen: Rect, app: &mut App) {
+    let Some(state) = app.jql_editor.as_ref() else {
+        return;
+    };
+    // Take most of the pane width — leave a 4-cell gutter on each
+    // side. Small terminals get a smaller box; too narrow → skip.
+    let w = screen.width.saturating_sub(8).max(20).min(200);
+    if w < 20 || screen.height < 8 {
+        return;
+    }
+    let inner_w = w.saturating_sub(2) as usize; // Borders steal 2 cells
+    if inner_w == 0 {
+        return;
+    }
+    let chars: Vec<char> = state.buffer.chars().collect();
+    // Compute wrapped-row count from buffer length. Grow the box to
+    // fit up to 8 rows of buffer; anything beyond that scrolls
+    // vertically so the cursor row stays visible.
+    let rows_needed = (chars.len() / inner_w + 1).max(1);
+    let inner_h = rows_needed.min(8) as u16;
+    let h = inner_h + 2; // + border rows
+    let max_h = screen.height.saturating_sub(6);
+    let h = h.min(max_h.max(3));
+    let x = screen.x + (screen.width - w) / 2;
+    let y = screen.y + screen.height.saturating_sub(h + 3);
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            " \u{f040} JQL — type to edit · Enter=run · Esc=cancel ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(ratatui::widgets::Clear, area);
+    f.render_widget(block, area);
+    // #1115 f/u2 — register the inner rect + wrap width so mouse
+    // clicks can place the cursor. Only the visible rows are
+    // clickable — clicks outside the inner rect fall through (used
+    // for click-outside-to-cancel elsewhere; here we just ignore).
+    app.rects.jql_editor_inner = Some((inner, inner_w as u16));
+    // Wrap: hard-split buffer into rows of `inner_w` chars each.
+    // Insert the cursor block `│` at the cursor byte-index (chars).
+    let cursor = state.cursor.min(chars.len());
+    // Build one flat char stream with the cursor sigil inserted
+    // in-line, then chunk by inner_w. Cursor sigil counts as 1 cell.
+    let mut with_cursor: Vec<(char, bool)> = Vec::with_capacity(chars.len() + 1);
+    for (i, c) in chars.iter().enumerate() {
+        if i == cursor {
+            with_cursor.push(('│', true));
+        }
+        with_cursor.push((*c, false));
+    }
+    if cursor == chars.len() {
+        with_cursor.push(('│', true));
+    }
+    // Chunk into rows of inner_w cells. Scroll vertically to keep
+    // the cursor row on-screen when the buffer overflows the
+    // rendered inner height.
+    let total_rows = with_cursor.len().div_ceil(inner_w);
+    let cursor_flat_idx = with_cursor
+        .iter()
+        .position(|(_, is_cursor)| *is_cursor)
+        .unwrap_or(0);
+    let cursor_row = cursor_flat_idx / inner_w;
+    let visible_rows = inner_h as usize;
+    let scroll_row = cursor_row.saturating_sub(visible_rows.saturating_sub(1));
+    let first_row = scroll_row.min(total_rows.saturating_sub(1));
+    let last_row = (first_row + visible_rows).min(total_rows);
+    let mut lines: Vec<Line> = Vec::new();
+    for r in first_row..last_row {
+        let start = r * inner_w;
+        let end = (start + inner_w).min(with_cursor.len());
+        let mut spans: Vec<Span> = Vec::new();
+        let mut buf = String::new();
+        let mut buf_is_cursor = false;
+        let flush = |buf: &mut String, is_cursor: bool, spans: &mut Vec<Span<'static>>| {
+            if buf.is_empty() {
+                return;
+            }
+            let style = if is_cursor {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(std::mem::take(buf), style));
+        };
+        for (c, is_cursor) in &with_cursor[start..end] {
+            if *is_cursor != buf_is_cursor {
+                flush(&mut buf, buf_is_cursor, &mut spans);
+                buf_is_cursor = *is_cursor;
+            }
+            buf.push(*c);
+        }
+        flush(&mut buf, buf_is_cursor, &mut spans);
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -923,8 +1232,11 @@ fn draw_kanban_column(
             "spike" => ("\u{F0EB}", Color::Yellow),
             _ => ("\u{F02B}", Color::DarkGray),
         };
-        // Chevron (▸/▾) as a clickable widget on the KEY line.
-        let chevron_char = if is_expanded { "▾" } else { "▸" };
+        // Chevron as a clickable widget on the KEY line. #1045 —
+        // shape follows mnml's `[ui] expand_indicator` (env var
+        // `MNML_EXPAND_INDICATOR`); default chevron / big `▼/▶`,
+        // triangle / small `▾/▸`.
+        let chevron_char = expand_arrow(is_expanded);
         let mut card_lines_here = 0;
         lines.push(Line::from(vec![
             Span::styled(
@@ -1181,23 +1493,13 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let title_area = parts[0];
     let body_area = parts[1];
 
-    // 2026-08-18 (#991) — render the version segment as a
-    // clickable chip with `▾` dropdown indicator. Click opens the
-    // tab-view fix-version picker (same as pressing `f` on this
-    // tab). Discoverability win over the hidden `f` keychord.
-    //
-    // #1084 (2026-08-19) — on Work-family tabs, the fixVersion chip
-    // is meaningless (Work JQLs don't scope by version), so swap it
-    // for a Resolved/Unresolved/All scope-filter chip instead. The
-    // filter is purely client-side (see `tree_rows` in tree.rs) —
-    // fits WorkUnified best (which fetches both), and on
-    // WorkAssigned the "Resolved" mode will just be empty since the
-    // JQL only returns unresolved. Users learn the constraint fast.
-    let bold = Style::default()
-        .fg(Color::Gray)
-        .add_modifier(Modifier::BOLD);
-    let leading = format!("{tab_name} · ");
-    let leading_w = leading.chars().count() as u16;
+    // #1103 (2026-08-20) — Jira Cloud-style filter toolbar. Left
+    // side: mode toggle (Basic/JQL) + Search + Space/Assignee/
+    // Type/Status filter chips + fixVersion pill (removable) +
+    // More filters + Save filter. Right side: refresh chip. Chips
+    // are compact `[ Label ]` in DarkGray, `[ Label ]` in Cyan bold
+    // when active — same visual language as the kanban toolbar and
+    // the Bitbucket toolbar.
     let is_work_family = matches!(
         tab_cfg.kind,
         Some(crate::config::TabKind::WorkAssigned)
@@ -1206,43 +1508,233 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             | Some(crate::config::TabKind::WorkUnified)
             | Some(crate::config::TabKind::Filter)
     );
-    let chip_label = if is_work_family {
-        format!(" {} ▾ ", tab.work_scope_filter.label())
-    } else {
-        match &fixv {
-            Some(v) => format!(" {v} ▾ "),
-            None => " Set fixVersion ▾ ".to_string(),
-        }
-    };
-    let chip_w = chip_label.chars().count() as u16;
-    let chip_style = Style::default()
+    let has_fixv = fixv.is_some();
+    let is_fix_versions_tab =
+        matches!(tab_cfg.kind, Some(crate::config::TabKind::FixVersionTree));
+    let chip_style_dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    let chip_style_active = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let refresh_chip_style = Style::default()
         .fg(Color::Black)
         .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let trailing = format!(" · {ticket_count} ticket{ticket_suffix}");
-    let spans: Vec<Span<'static>> = vec![
-        Span::styled(leading, bold),
-        Span::styled(chip_label, chip_style),
-        Span::styled(trailing, bold),
-    ];
-    f.render_widget(Paragraph::new(Line::from(spans)), title_area);
-    // Chip rect (computed here; assigned after render_stateful_widget
-    // consumes table_rows and drops the &app borrow). Same rect
-    // whether the chip is the fixVersion picker or the Work scope
-    // cycler — mouse dispatch routes on `is_work_family`.
-    let chip_rect = Rect {
-        x: title_area.x + leading_w,
-        y: title_area.y,
-        width: chip_w,
-        height: 1,
+    let mut entries: Vec<(String, bool, crate::app::WorkFilterChip)> = Vec::new();
+    // #1115 (2026-08-21) — Basic ↔ JQL mode toggle. Clicking either
+    // chip flips `TabState.show_jql`; the JQL row (with pencil-edit
+    // affordance) renders on a second toolbar line only when JQL is
+    // active. Basic reads as the friendly-chips view.
+    let jql_mode = app.tabs[app.active_tab].show_jql;
+    entries.push((
+        "Basic".to_string(),
+        !jql_mode,
+        crate::app::WorkFilterChip::ModeBasic,
+    ));
+    entries.push((
+        "JQL".to_string(),
+        jql_mode,
+        crate::app::WorkFilterChip::ModeJql,
+    ));
+    // Search — free-text filter (wired via existing `/` prompt).
+    let search_label = app
+        .filter
+        .as_ref()
+        .map(|f| {
+            if f.buffer.is_empty() {
+                "🔍 Search".to_string()
+            } else {
+                format!("🔍 {}", f.buffer)
+            }
+        })
+        .unwrap_or_else(|| "🔍 Search".to_string());
+    let search_active = app
+        .filter
+        .as_ref()
+        .is_some_and(|f| !f.buffer.is_empty());
+    entries.push((search_label, search_active, crate::app::WorkFilterChip::Search));
+    // Space (project). Every Work tab has a project baked into its
+    // JQL — the chip is ALWAYS filtered, never "unset." Show the
+    // active project name so the label reflects reality (mirrors the
+    // `version_label` pattern below). Picker itself is still a
+    // follow-up — click still bounces off the "not wired" toast.
+    let space_label = match tab_cfg.project.as_deref() {
+        Some(p) if !p.is_empty() => format!("Space: {p} ▾"),
+        _ => "Space ▾".to_string(),
     };
-    // 2026-08-19 (#1053) — right-aligned refresh chip. Renders as
-    // a second Paragraph on the same title row so mouse-only users
-    // can trigger `refresh_active` without the `r` keychord. Skips
-    // when the title area is too narrow to hold both chips comfortably.
+    let space_active = tab_cfg
+        .project
+        .as_deref()
+        .is_some_and(|p| !p.is_empty());
+    entries.push((
+        space_label,
+        space_active,
+        crate::app::WorkFilterChip::Space,
+    ));
+    // Assignee — label + active state reflect the current
+    // `active_assignee_ids` set so the user can see what the filter
+    // is at a glance. `— Me —` when it's only their own account_id;
+    // `— Unassigned —` for the sentinel; a display-name fallback when
+    // it's one other person; `N selected` for multi.
+    let (assignee_label, assignee_active) = {
+        let tab_i = app.active_tab;
+        let ids = &app.tabs[tab_i].active_assignee_ids;
+        let me = app
+            .my_account_id
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
+        if ids.is_empty() {
+            ("Assignee ▾".to_string(), false)
+        } else if ids.len() == 1 {
+            let only = ids.iter().next().unwrap();
+            let name = if Some(only.as_str()) == me.as_deref() {
+                "Me".to_string()
+            } else if only == crate::app::UNASSIGNED_SENTINEL {
+                "Unassigned".to_string()
+            } else {
+                app.tabs[tab_i]
+                    .assignee_cache
+                    .as_ref()
+                    .and_then(|c| c.iter().find(|a| a.account_id == *only))
+                    .map(|a| a.display_name.clone())
+                    .unwrap_or_else(|| "1 selected".to_string())
+            };
+            (format!("Assignee: {name} ▾"), true)
+        } else {
+            let n = ids.len();
+            (format!("Assignee: {n} selected ▾"), true)
+        }
+    };
+    entries.push((
+        assignee_label,
+        assignee_active,
+        crate::app::WorkFilterChip::Assignee,
+    ));
+    // Type — placeholder.
+    entries.push((
+        "Type ▾".to_string(),
+        false,
+        crate::app::WorkFilterChip::Type,
+    ));
+    // Status — wired to work_scope_filter cycle on Work-family
+    // tabs. On Fix Versions (which reuses the tree renderer for a
+    // fixVersion-scoped view), the Status chip is still meaningful
+    // (Resolved / Unresolved / All).
+    let status_label = if is_work_family || is_fix_versions_tab {
+        format!("Status: {} ▾", tab.work_scope_filter.label())
+    } else {
+        "Status ▾".to_string()
+    };
+    let status_active = tab.work_scope_filter != crate::app::WorkScopeFilter::All;
+    entries.push((
+        status_label,
+        status_active,
+        crate::app::WorkFilterChip::Status,
+    ));
+    // Fix versions pill — appears only when the active tab has a
+    // fixVersion filter in its JQL. Renders as `Fix versions = X ⓧ`
+    // (two hit rects: the label opens the picker, the `ⓧ` removes).
+    let fixv_labeled = fixv.clone();
+    // More filters (placeholder) + Save filter (placeholder).
+    entries.push((
+        "More filters ▾".to_string(),
+        false,
+        crate::app::WorkFilterChip::MoreFilters,
+    ));
+    entries.push((
+        "Save filter".to_string(),
+        false,
+        crate::app::WorkFilterChip::SaveFilter,
+    ));
+    // Register chip rects locally; assign into app.rects after the
+    // &app borrow (via `tab`) has ended so the borrow checker stays
+    // happy — mirrors the pre-existing chip_rect handling below.
+    let mut pending_chip_rects: Vec<(Rect, crate::app::WorkFilterChip)> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut cursor_x: u16 = title_area.x;
+    // #1116 audit SEV-2 (2026-08-21) — reserve space for the
+    // right-aligned Refresh pill so a wide left-chip run can't overlap
+    // it. The refresh label width is fixed (` ⟳ Refresh ` = 11 cells)
+    // + the 2-cell gap the render site already guards with.
+    let refresh_reserve: u16 = 11 + 2;
+    let left_budget = title_area
+        .x
+        .saturating_add(title_area.width)
+        .saturating_sub(refresh_reserve);
+    for (label, active, kind) in &entries {
+        let style = if *active {
+            chip_style_active
+        } else {
+            chip_style_dim
+        };
+        let text = format!(" [ {label} ] ");
+        let w = text.chars().count() as u16;
+        if cursor_x + w > left_budget {
+            break;
+        }
+        pending_chip_rects.push((
+            Rect {
+                x: cursor_x,
+                y: title_area.y,
+                width: w,
+                height: 1,
+            },
+            *kind,
+        ));
+        spans.push(Span::styled(text, style));
+        cursor_x += w;
+    }
+    // Fix versions pill — after the fixed chips so its position
+    // depends on which core chips fit. The pill is rendered as two
+    // segments (`Fix versions = X ▾` and ` ⓧ `) with separate hit
+    // rects so the two clicks route to distinct actions.
+    if has_fixv {
+        if let Some(v) = fixv_labeled.as_ref() {
+            let label = format!(" [ Fix versions = {v} ▾ ] ");
+            let w = label.chars().count() as u16;
+            let remove = " [ⓧ] ".to_string();
+            let rw = remove.chars().count() as u16;
+            if cursor_x + w + rw <= left_budget {
+                pending_chip_rects.push((
+                    Rect {
+                        x: cursor_x,
+                        y: title_area.y,
+                        width: w,
+                        height: 1,
+                    },
+                    crate::app::WorkFilterChip::FixVersionPicker,
+                ));
+                spans.push(Span::styled(label, chip_style_active));
+                cursor_x += w;
+                pending_chip_rects.push((
+                    Rect {
+                        x: cursor_x,
+                        y: title_area.y,
+                        width: rw,
+                        height: 1,
+                    },
+                    crate::app::WorkFilterChip::FixVersionRemove,
+                ));
+                spans.push(Span::styled(remove, chip_style_active));
+                cursor_x += rw;
+            }
+        }
+    }
+    // Trailing count as dim text (last-item summary).
+    let trailing = format!(" · {ticket_count} ticket{ticket_suffix}");
+    let trailing_w = trailing.chars().count() as u16;
+    if cursor_x + trailing_w <= left_budget {
+        spans.push(Span::styled(trailing, chip_style_dim));
+        cursor_x += trailing_w;
+    }
+    let _ = cursor_x; // suppress unused warning after last append
+    f.render_widget(Paragraph::new(Line::from(spans)), title_area);
+    // Right-aligned refresh chip (pre-existing).
     let refresh_label = " ⟳ Refresh ";
     let refresh_w = refresh_label.chars().count() as u16;
-    let refresh_rect: Option<Rect> = if title_area.width > leading_w + chip_w + refresh_w + 2 {
+    let refresh_rect: Option<Rect> = if title_area.width > refresh_w + 2 {
         let x = title_area.x + title_area.width - refresh_w;
         let r = Rect {
             x,
@@ -1251,12 +1743,24 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             height: 1,
         };
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(refresh_label, chip_style))),
+            Paragraph::new(Line::from(Span::styled(refresh_label, refresh_chip_style))),
             r,
         );
         Some(r)
     } else {
         None
+    };
+    // Legacy version_chip / work_scope_chip fields kept alive for
+    // now — they used to hold the single title-bar chip that the
+    // filter toolbar has since replaced. The Status chip in the
+    // new toolbar takes over the scope-cycle role, so mark them
+    // unused (their rect vecs stay empty this pass).
+    let _ = is_work_family;
+    let chip_rect = Rect {
+        x: title_area.x,
+        y: title_area.y,
+        width: 0,
+        height: 0,
     };
 
     let table = Table::new(table_rows, widths)
@@ -1271,16 +1775,14 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let mut state = TableState::default();
     state.select(Some(tab_selected.min(rows.len().saturating_sub(1))));
     f.render_stateful_widget(table, body_area, &mut state);
-    // Register the chip click rect now that table_rows is consumed
-    // and the &app borrow has ended (#991). Same rect slot on the
-    // title strip; the two rect fields tell the mouse dispatcher
-    // which action to take (#1084).
-    if is_work_family {
-        app.rects.work_scope_chip = Some(chip_rect);
-    } else {
-        app.rects.version_chip = Some(chip_rect);
-    }
-    // 2026-08-19 (#1053) — register the refresh-chip click rect.
+    // #1103 (2026-08-20) — assign toolbar chip rects (buffered during
+    // paint above; deferred until here so the &app borrow for the
+    // `tab` binding has ended). The legacy single-chip rects
+    // (`work_scope_chip` / `version_chip`) are superseded by the
+    // filter toolbar's chip registry and stay as degenerate rects.
+    app.rects.work_filter_chips = pending_chip_rects;
+    app.rects.work_scope_chip = Some(chip_rect);
+    app.rects.version_chip = Some(chip_rect);
     app.rects.refresh_chip = refresh_rect;
 
     // 2026-08-07 — register mouse rects for "show N more" rows.
@@ -1318,7 +1820,7 @@ fn tree_row_for<'a>(
             count,
             expanded,
         } => {
-            let arrow = if *expanded { "▼" } else { "▶" };
+            let arrow = expand_arrow(*expanded);
             let label = format!(" {arrow} {status} ({count})");
             let style = Style::default()
                 .fg(Color::Cyan)
@@ -1341,7 +1843,22 @@ fn tree_row_for<'a>(
                 .tree
                 .as_ref()
                 .is_some_and(|t| t.expanded_tickets.contains(&issue.key));
-            let arrow = if expanded { "▼" } else { "▶" };
+            // #1110 f/u3 (2026-08-21) — hide chevron when we KNOW the
+            // ticket has no linked PRs (empty cache). Cache miss (None)
+            // keeps the chevron so the user can trigger a fetch.
+            let has_linked_prs = tab
+                .tree
+                .as_ref()
+                .map(|t| match t.pr_cache.get(&issue.key) {
+                    Some(prs) => !prs.is_empty(),
+                    None => true,
+                })
+                .unwrap_or(true);
+            let arrow = if has_linked_prs {
+                expand_arrow(expanded).to_string()
+            } else {
+                " ".to_string()
+            };
             let bump_mark = if *was_bumped { " ★" } else { "" };
             let key_cell = format!("    {arrow} {}{bump_mark}", issue.key);
             let status = issue
@@ -1626,24 +2143,29 @@ fn tree_row_for<'a>(
             ]);
             Row::new(vec![Cell::from(line)])
         }
-        VisibleRow::PrShowMore { hidden, .. } => Row::new(vec![
-            // 2026-08-18 (#994) — was "show N more" with a staircase
-            // reveal (+3 per click). Now one click reveals everything.
-            // 2026-08-19 (#1052) — dropped the leading `▸ ` chevron
-            // (looks like a tiny arrow before the link) and added
-            // UNDERLINED so the row reads as a hyperlink chip instead
-            // of another tree branch.
-            Cell::from(format!(
-                "        Show all {} PR{}",
-                hidden,
-                if *hidden == 1 { "" } else { "s" }
-            ))
-            .style(
+        VisibleRow::PrShowMore { hidden, .. } => {
+            // 2026-08-21 (#1116 f/u) — was a single-cell Row so the
+            // affordance clipped to the KEY column ("Show all 1 PR"
+            // → "Show all 1" cut off). Put it in the SUMMARY column
+            // (last) with an aligned KEY placeholder so the link
+            // isn't chopped no matter how tight KEY is. Prior text +
+            // underline styling preserved.
+            let plural = if *hidden == 1 { "" } else { "s" };
+            let link = Cell::from(format!(" Show all {hidden} PR{plural} ↴")).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            ),
-        ]),
+            );
+            Row::new(vec![
+                // Indent placeholder in KEY so the row aligns visually
+                // as a child of the ticket above it.
+                Cell::from("        ⋯").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                link,
+            ])
+        }
     }
 }
 
@@ -1793,15 +2315,62 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty()),
         ChipKind::Search,
     ));
-    entries.push((
-        team_label,
-        cfg_tab.is_some_and(|t| t.team.is_some()),
-        ChipKind::Team,
-    ));
+    // #1103 f/u8 (2026-08-20) — dropped Team chip. Jira Cloud's
+    // toolbar doesn't have one; user reported it as visual noise.
+    // Team-based JQL scoping still works via config (`team =` on
+    // the tab entry) and shows up in the resolved query. The
+    // avatar assignee-picker below replaces it in the toolbar slot.
+    let _ = team_label;
+    // #1110 (2026-08-20) — avatar cluster is rendered INLINE via
+    // a separate span-build below so per-avatar deterministic
+    // colors + payload-carrying (account_id) hitrects don't fit
+    // into the ChipKind/Copy-enum kanban_chips channel. See
+    // `paint_avatar_cluster` inside the render loop.
+    let assignee_summaries: Vec<(String, String, usize)> = tab_state
+        .and_then(|t| t.assignee_cache.as_ref())
+        .map(|v| {
+            v.iter()
+                .take(5)
+                .map(|s| (s.account_id.clone(), s.display_name.clone(), s.count))
+                .collect()
+        })
+        .unwrap_or_default();
+    let active_assignee_ids: std::collections::HashSet<String> = tab_state
+        .map(|t| t.active_assignee_ids.clone())
+        .unwrap_or_default();
+    // #1110 f/u (2026-08-20) — total assignee count feeds the `+N`
+    // overflow chip visibility + label. Unassigned toggle is
+    // always shown when there IS an assignee cluster (there's no
+    // "cluster is empty AND unassigned matters" case worth
+    // solving — an empty board is empty).
+    let total_assignees: usize = tab_state
+        .and_then(|t| t.assignee_cache.as_ref())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let unassigned_active =
+        active_assignee_ids.contains(crate::app::UNASSIGNED_SENTINEL);
     entries.push((version_label, version_active, ChipKind::Version));
     entries.push(("Epic ▾".to_string(), false, ChipKind::Epic));
-    entries.push(("Type ▾".to_string(), false, ChipKind::Type));
-    entries.push(("Label ▾".to_string(), false, ChipKind::Label));
+    // Type + Label: pickers already wire commits back to
+    // `cfg_tab.issue_type` / `cfg_tab.label`, but the chip was still
+    // rendering "Type ▾" / "Label ▾" with `active: false` regardless
+    // of state (#1116 audit SEV-2). Mirror the version_label pattern.
+    let type_label = match cfg_tab.and_then(|t| t.issue_type.as_deref()) {
+        Some(v) if !v.is_empty() => format!("Type: {v} ▾"),
+        _ => "Type ▾".to_string(),
+    };
+    let type_active = cfg_tab
+        .and_then(|t| t.issue_type.as_deref())
+        .is_some_and(|v| !v.is_empty());
+    entries.push((type_label, type_active, ChipKind::Type));
+    let label_label = match cfg_tab.and_then(|t| t.label.as_deref()) {
+        Some(v) if !v.is_empty() => format!("Label: {v} ▾"),
+        _ => "Label ▾".to_string(),
+    };
+    let label_active = cfg_tab
+        .and_then(|t| t.label.as_deref())
+        .is_some_and(|v| !v.is_empty());
+    entries.push((label_label, label_active, ChipKind::Label));
     entries.push((
         quickfilters_label,
         quickfilters_active,
@@ -1813,8 +2382,12 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         entries.push(("⚙ Settings".to_string(), false, ChipKind::BoardSettings));
     }
     app.rects.kanban_chips.clear();
+    app.rects.kanban_avatar_chips.clear();
     let mut spans: Vec<Span> = Vec::new();
     let mut cursor_x: u16 = area.x;
+    // #1110 (2026-08-20) — the avatar cluster inserts between the
+    // Search chip and the Version chip. We paint entries in order
+    // but slip the cluster in after ChipKind::Search's slot.
     for (label, active, kind) in &entries {
         let s = chip(label, *active);
         let w = s.content.chars().count() as u16;
@@ -1831,8 +2404,163 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         }
         cursor_x = cursor_x.saturating_add(w);
         spans.push(s);
+        // Inject avatar cluster right after the Search chip.
+        if matches!(kind, ChipKind::Search) && !assignee_summaries.is_empty() {
+            // Small leading separator so avatars don't butt up
+            // against the Search chip's `]`.
+            spans.push(Span::styled(" ", Style::default()));
+            cursor_x = cursor_x.saturating_add(1);
+            for (account_id, display_name, _count) in &assignee_summaries {
+                let initials = compute_initials(display_name);
+                let is_active = active_assignee_ids.contains(account_id);
+                let color = deterministic_color(account_id);
+                let label = format!(" {initials} ");
+                let w = label.chars().count() as u16;
+                if cursor_x + w > area.x + area.width {
+                    break;
+                }
+                let (fg, bg, modifier) = if is_active {
+                    (Color::Black, color, Modifier::BOLD)
+                } else {
+                    (color, Color::Reset, Modifier::BOLD)
+                };
+                app.rects.kanban_avatar_chips.push((
+                    Rect {
+                        x: cursor_x,
+                        y: area.y,
+                        width: w,
+                        height: 1,
+                    },
+                    account_id.clone(),
+                ));
+                spans.push(Span::styled(
+                    label,
+                    Style::default().fg(fg).bg(bg).add_modifier(modifier),
+                ));
+                cursor_x = cursor_x.saturating_add(w);
+            }
+            // #1110 f/u (2026-08-20) — inline `[?]` unassigned
+            // quick-toggle. Positioned RIGHT AFTER the 5 avatars so
+            // it reads as part of the same cluster. Active state
+            // renders like an active avatar (bold, filled bg).
+            {
+                let label = " [?] ";
+                let w = label.chars().count() as u16;
+                if cursor_x + w <= area.x + area.width {
+                    let (fg, bg, modifier) = if unassigned_active {
+                        (Color::Black, Color::DarkGray, Modifier::BOLD)
+                    } else {
+                        (Color::DarkGray, Color::Reset, Modifier::BOLD)
+                    };
+                    app.rects.kanban_chips.push((
+                        Rect {
+                            x: cursor_x,
+                            y: area.y,
+                            width: w,
+                            height: 1,
+                        },
+                        ChipKind::Unassigned,
+                    ));
+                    spans.push(Span::styled(
+                        label,
+                        Style::default().fg(fg).bg(bg).add_modifier(modifier),
+                    ));
+                    cursor_x = cursor_x.saturating_add(w);
+                }
+            }
+            // #1110 f/u (2026-08-20) — inline `+N` overflow chip.
+            // Only rendered when there are more than 5 unique
+            // assignees (i.e. cache grew past what the inline
+            // cluster shows). Click opens the full multi-select
+            // picker over every cached assignee + Unassigned.
+            if total_assignees > 5 {
+                let overflow = total_assignees.saturating_sub(5);
+                let label = format!(" +{overflow} ");
+                let w = label.chars().count() as u16;
+                if cursor_x + w <= area.x + area.width {
+                    app.rects.kanban_chips.push((
+                        Rect {
+                            x: cursor_x,
+                            y: area.y,
+                            width: w,
+                            height: 1,
+                        },
+                        ChipKind::AssigneeOverflow,
+                    ));
+                    spans.push(Span::styled(
+                        label,
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    ));
+                    cursor_x = cursor_x.saturating_add(w);
+                }
+            }
+            spans.push(Span::styled(" ", Style::default()));
+            cursor_x = cursor_x.saturating_add(1);
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// #1110 (2026-08-20) — 2-char initials from a display name. Takes
+/// the first char of the first two whitespace-separated tokens
+/// ("Chris McLennan" → "CM", "Liaan" → "LI").
+/// #1045 (2026-08-20) — honor mnml's `[ui] expand_indicator`. mnml
+/// stamps `MNML_EXPAND_INDICATOR` on every Pty child. Values:
+/// "triangle" → small `▾/▸`; "chevron" (default) → big `▼/▶`
+/// matching mnml's non-Nerd fallback. Standalone launches (no
+/// env) fall through to the chevron default. Applied to tree
+/// GroupHeader + Ticket-row arrows in Jira Work / Fix Versions
+/// panes AND to the kanban card-expand chevron.
+fn expand_arrow(expanded: bool) -> &'static str {
+    let triangle = std::env::var("MNML_EXPAND_INDICATOR")
+        .map(|v| v.eq_ignore_ascii_case("triangle"))
+        .unwrap_or(false);
+    match (expanded, triangle) {
+        (true, true) => "▾",
+        (false, true) => "▸",
+        (true, false) => "▼",
+        (false, false) => "▶",
+    }
+}
+
+fn compute_initials(name: &str) -> String {
+    let mut chars: Vec<char> = Vec::with_capacity(2);
+    for tok in name.split_whitespace().take(2) {
+        if let Some(c) = tok.chars().next() {
+            chars.push(c.to_ascii_uppercase());
+        }
+    }
+    if chars.is_empty() {
+        chars.push('?');
+    }
+    if chars.len() == 1 {
+        // Single-word name — use first two letters instead of one.
+        if let Some(second) = name.chars().nth(1) {
+            chars.push(second.to_ascii_uppercase());
+        }
+    }
+    chars.iter().collect()
+}
+
+/// #1110 (2026-08-20) — deterministic bg-color assignment per
+/// account_id. Same account always gets the same avatar color
+/// across renders + reloads. Uses FxHash-style xor-shift so the
+/// distribution is even across the 8-color palette.
+fn deterministic_color(account_id: &str) -> Color {
+    let mut hash: u32 = 5381;
+    for b in account_id.bytes() {
+        hash = hash.wrapping_mul(33) ^ b as u32;
+    }
+    match hash % 8 {
+        0 => Color::Green,
+        1 => Color::Blue,
+        2 => Color::Yellow,
+        3 => Color::Magenta,
+        4 => Color::Cyan,
+        5 => Color::Red,
+        6 => Color::LightBlue,
+        _ => Color::LightMagenta,
+    }
 }
 
 fn draw_filter_strip(f: &mut Frame, area: Rect, app: &App) {
@@ -2347,6 +3075,7 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &mut App) {
         crate::app::FieldKind::QuickFilter => "quick filters",
         crate::app::FieldKind::IssueType => "type",
         crate::app::FieldKind::Label => "label",
+        crate::app::FieldKind::AvatarCluster => "assignees",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -2363,6 +3092,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &mut App) {
         " switch sprint ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::QuickFilter) {
         " toggle quick filters (Space) ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::AvatarCluster) {
+        " filter by assignees (Space toggles) ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::FixVersion) && target_count == 1 {
         // Disambiguate from the tab-view picker — "on ticket" makes
         // it obvious this is a per-row assign, not a view switch.
@@ -2632,6 +3363,12 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::Sprint => app.open_sprint_picker().await,
         ChipKind::Search => app.open_filter(),
         ChipKind::Team => app.open_team_picker(),
+        ChipKind::Assignee => {
+            // #1110 (2026-08-20) — avatar cluster took over this
+            // slot; this arm remains for enum exhaustiveness and
+            // toasts a hint in case a stale hit-rect lingers.
+            app.status = "click an avatar to filter by assignee".to_string();
+        }
         ChipKind::Version => app.open_tab_fix_version_picker().await,
         ChipKind::QuickFilters => app.open_quickfilter_picker().await,
         ChipKind::BoardSettings => app.open_board_settings(),
@@ -2644,6 +3381,31 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::Epic => {
             app.status = "Epic filter — coming soon (needs project epic-link field)".to_string();
         }
+        // #1110 f/u (2026-08-20) — inline quick-toggle for the
+        // "Unassigned" sentinel. Mutates active_assignee_ids
+        // directly; re-clamps so the cursor doesn't fall off if
+        // the currently-focused row gets filtered out.
+        ChipKind::Unassigned => {
+            let idx = app.active_tab;
+            if app.tabs[idx]
+                .active_assignee_ids
+                .contains(crate::app::UNASSIGNED_SENTINEL)
+            {
+                app.tabs[idx]
+                    .active_assignee_ids
+                    .remove(crate::app::UNASSIGNED_SENTINEL);
+            } else {
+                app.tabs[idx]
+                    .active_assignee_ids
+                    .insert(crate::app::UNASSIGNED_SENTINEL.to_string());
+            }
+            app.clamp_selection_to_filter_public();
+        }
+        // #1110 f/u (2026-08-20) — open the full multi-select picker
+        // over every cached assignee + the Unassigned row. Only
+        // reachable when there ARE more than 5 assignees (chip is
+        // not painted otherwise), so we never open an empty modal.
+        ChipKind::AssigneeOverflow => app.open_avatar_cluster_picker(),
     }
 }
 

@@ -152,7 +152,9 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         "id = \"jira_work_assigned\"\n",
         "source = \"jira_work_values\"\n",
         "glyph = \"\u{F0303}\"\n",
-        "color = \"magenta\"\n",
+        // 2026-08-20 — Jira-brand blue (#1B5DCF) for the chip bg.
+        // mnml accepts `#RRGGBB` alongside the theme keys.
+        "color = \"#1B5DCF\"\n",
         "format = \"{assigned_open}\"\n",
         "tooltip = \"Jira tickets assigned to you (non-Done). Click to open Jira Work.\"\n",
         "click_command = \"jira_work.open\"\n",

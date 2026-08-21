@@ -26,6 +26,21 @@ pub enum Action {
     FilterCancel,
     /// Drop the committed filter, returning to the full list.
     FilterClear,
+    /// #1115 (2026-08-21) — JQL editor overlay actions. Opened by the
+    /// toolbar `JQL` chip click; keyboard while overlay is up.
+    JqlEditorEdit(Option<char>),
+    JqlEditorCommit,
+    JqlEditorCancel,
+    /// #1115 f/u2 (2026-08-21) — modern text-editing affordances.
+    JqlEditorCursorLeft,
+    JqlEditorCursorRight,
+    JqlEditorCursorHome,
+    JqlEditorCursorEnd,
+    JqlEditorDeleteForward,
+    JqlEditorWordLeft,
+    JqlEditorWordRight,
+    JqlEditorDeleteWordBack,
+    JqlEditorInsertStr(String),
     /// `t` — open the status transition picker for the focused ticket.
     OpenTransitionPicker,
     /// Transition-picker arrow keys + digit jumps + commit + cancel.
@@ -196,6 +211,42 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char(c) if !m.contains(KeyModifiers::CONTROL) => {
                 Some(Action::FilterEdit(Some(c)))
             }
+            _ => None,
+        };
+    }
+    // #1115 (2026-08-21) — JQL editor greedy mode. Mirrors the filter
+    // editor above; when the overlay is up every printable / Esc /
+    // Enter belongs to it and never routes to list nav.
+    if let Some(j) = app.jql_editor.as_ref()
+        && j.editing
+    {
+        let ctrl = m.contains(KeyModifiers::CONTROL);
+        // macOS convention: Cmd-arrow / Cmd-Backspace act as
+        // line-boundary shortcuts. On terminals that report Super, we
+        // treat it same as Ctrl for these bindings. Alt/Option is the
+        // word-boundary modifier on macOS.
+        let super_or_ctrl = ctrl || m.contains(KeyModifiers::SUPER);
+        let alt = m.contains(KeyModifiers::ALT);
+        return match key.code {
+            KeyCode::Esc => Some(Action::JqlEditorCancel),
+            KeyCode::Enter => Some(Action::JqlEditorCommit),
+            KeyCode::Backspace if ctrl || alt => Some(Action::JqlEditorDeleteWordBack),
+            KeyCode::Backspace => Some(Action::JqlEditorEdit(None)),
+            KeyCode::Delete => Some(Action::JqlEditorDeleteForward),
+            KeyCode::Home => Some(Action::JqlEditorCursorHome),
+            KeyCode::End => Some(Action::JqlEditorCursorEnd),
+            KeyCode::Left if super_or_ctrl => Some(Action::JqlEditorCursorHome),
+            KeyCode::Right if super_or_ctrl => Some(Action::JqlEditorCursorEnd),
+            KeyCode::Left if alt => Some(Action::JqlEditorWordLeft),
+            KeyCode::Right if alt => Some(Action::JqlEditorWordRight),
+            KeyCode::Left => Some(Action::JqlEditorCursorLeft),
+            KeyCode::Right => Some(Action::JqlEditorCursorRight),
+            // Emacs-style line-boundary shortcuts (Ctrl+A / Ctrl+E)
+            // common in most modern terminal text fields.
+            KeyCode::Char('a') if ctrl => Some(Action::JqlEditorCursorHome),
+            KeyCode::Char('e') if ctrl => Some(Action::JqlEditorCursorEnd),
+            KeyCode::Char('u') if ctrl => Some(Action::JqlEditorDeleteWordBack),
+            KeyCode::Char(c) if !ctrl => Some(Action::JqlEditorEdit(Some(c))),
             _ => None,
         };
     }
@@ -387,6 +438,19 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::FilterCommit => app.close_filter(FilterClose::Commit),
         Action::FilterCancel => app.close_filter(FilterClose::Cancel),
         Action::FilterClear => app.filter = None,
+        Action::JqlEditorEdit(Some(c)) => app.jql_editor_insert(c),
+        Action::JqlEditorEdit(None) => app.jql_editor_backspace(),
+        Action::JqlEditorCommit => app.close_jql_editor(FilterClose::Commit).await,
+        Action::JqlEditorCancel => app.close_jql_editor(FilterClose::Cancel).await,
+        Action::JqlEditorCursorLeft => app.jql_editor_cursor_left(),
+        Action::JqlEditorCursorRight => app.jql_editor_cursor_right(),
+        Action::JqlEditorCursorHome => app.jql_editor_cursor_home(),
+        Action::JqlEditorCursorEnd => app.jql_editor_cursor_end(),
+        Action::JqlEditorDeleteForward => app.jql_editor_delete_forward(),
+        Action::JqlEditorWordLeft => app.jql_editor_word_left(),
+        Action::JqlEditorWordRight => app.jql_editor_word_right(),
+        Action::JqlEditorDeleteWordBack => app.jql_editor_delete_word_back(),
+        Action::JqlEditorInsertStr(s) => app.jql_editor_insert_str(&s),
         Action::OpenTransitionPicker => app.open_transition_picker().await,
         Action::TransitionUp => app.transition_picker_move(-1),
         Action::TransitionDown => app.transition_picker_move(1),
