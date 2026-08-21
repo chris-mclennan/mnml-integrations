@@ -50,6 +50,10 @@ struct Cli {
     /// Remove the mnml integration manifest for this sibling.
     #[arg(long)]
     uninstall: bool,
+    /// #1103 f/u7 (2026-08-20) — dump a diagnostic report to stdout
+    /// (auth source, config summary, runtime info) and exit.
+    #[arg(long)]
+    diag: bool,
 }
 
 #[tokio::main]
@@ -92,6 +96,25 @@ async fn main() -> Result<()> {
             );
         }
         println!("(auth: defers to the `aws` CLI's own credential chain)");
+        return Ok(());
+    }
+
+    if cli.diag {
+        println!("mnml-aws-cloudwatch-logs · diagnostics");
+        println!();
+        println!("Auth");
+        println!("  \u{2514}\u{2500} (run `--check` for full auth resolution details)");
+        println!();
+        println!("Config");
+        println!("  \u{2514}\u{2500} path: {}", config::config_path().display());
+        println!();
+        println!("Runtime");
+        println!("  \u{251c}\u{2500} integration: {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "  \u{2514}\u{2500} os/arch: {} / {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         return Ok(());
     }
 

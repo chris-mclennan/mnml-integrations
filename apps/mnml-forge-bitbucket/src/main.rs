@@ -23,6 +23,15 @@ struct Cli {
     /// to verify the app password works (`/2.0/user`).
     #[arg(long)]
     check: bool,
+    /// #1103 f/u7 (2026-08-20) — dump a human-readable diagnostic
+    /// report to stdout, then exit. Covers auth resolution, whoami
+    /// live-test, config summary, and version info. Powers mnml's
+    /// `integrations.diag` palette command + the "Run diagnostics"
+    /// chip context menu. Distinct from `--check` (which is a
+    /// simple pass/fail probe): `--diag` is a full tree of state
+    /// intended for support conversations.
+    #[arg(long)]
+    diag: bool,
     /// Headless: print every open PR the configured PR tabs would
     /// surface, as JSON on stdout, then exit. Used by mnml's
     /// `pr.picker` cross-host palette command and by the rail's
@@ -111,6 +120,7 @@ async fn main() -> Result<()> {
         && !cli.install
         && !cli.uninstall
         && !cli.check
+        && !cli.diag
     {
         eprintln!("Bitbucket · loading…");
     }
@@ -342,8 +352,83 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.diag {
+        return run_diag(&cfg, &client, &token_source.to_string(), token.len()).await;
+    }
+
     let mut app = app::App::new(cfg, client).await?;
     app.hide_tab_strip = force_hide_strip;
 
     ui::run(&mut app).await
+}
+
+/// #1103 f/u7 (2026-08-20) — human-readable diagnostic dump.
+/// Structured tree format so `mnml-forge-bitbucket --diag` output
+/// is scannable in a Pty pane or a shell. Sections cover auth
+/// (source + live whoami test), config summary, and runtime info.
+/// Every section runs independently so a failure in one doesn't
+/// suppress the rest — the user gets to see WHY something broke
+/// alongside what's working.
+async fn run_diag(
+    cfg: &config::Config,
+    client: &bitbucket::Client,
+    token_source: &str,
+    token_len: usize,
+) -> Result<()> {
+    println!("mnml-forge-bitbucket · diagnostics");
+    println!();
+    println!("Auth");
+    println!("  ├─ source: {token_source}");
+    println!("  ├─ token length: {token_len} chars");
+    println!("  ├─ email: {}", cfg.email);
+    match client.whoami().await {
+        Ok(u) => {
+            println!("  └─ whoami: ✓ {}", u.display_name);
+            println!(
+                "     account_id: {}",
+                u.account_id.as_deref().unwrap_or("<none returned>")
+            );
+        }
+        Err(e) => {
+            println!("  └─ whoami: ✗ {e}");
+            println!("     mine-only filters, --values, and workspace repo enumeration all depend on this succeeding.");
+        }
+    }
+    println!();
+    println!("Config");
+    println!("  ├─ path: {}", config::config_path().display());
+    println!("  ├─ workspace: {}", cfg.workspace);
+    println!("  ├─ scope: {}", cfg.scope);
+    println!("  ├─ recent_window_days: {}", cfg.recent_window_days);
+    println!("  ├─ refresh_interval_secs: {}", cfg.refresh_interval_secs);
+    if cfg.repos.is_empty() {
+        println!("  ├─ repos allowlist: (none — enumerating all)");
+    } else {
+        println!("  ├─ repos allowlist: {} entries", cfg.repos.len());
+        for r in cfg.repos.iter().take(5) {
+            println!("  │   {r}");
+        }
+        if cfg.repos.len() > 5 {
+            println!("  │   … and {} more", cfg.repos.len() - 5);
+        }
+    }
+    println!("  └─ tabs: {}", cfg.tabs.len());
+    for (i, t) in cfg.tabs.iter().enumerate() {
+        let shape = match (&t.mode, &t.repo, &t.q) {
+            (Some(m), _, _) => format!("mode={m}"),
+            (None, Some(r), _) => format!("repo={r}"),
+            (None, None, Some(_)) => "q=<custom>".into(),
+            _ => format!("kind={}", t.kind),
+        };
+        println!("      {}. {} ({shape}, state={})", i + 1, t.name, t.state);
+    }
+    println!();
+    println!("Runtime");
+    println!("  ├─ integration: {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "  └─ os/arch: {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    Ok(())
 }

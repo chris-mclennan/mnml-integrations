@@ -29,6 +29,10 @@ struct Cli {
     /// Remove the mnml integration manifest for this sibling.
     #[arg(long)]
     uninstall: bool,
+    /// #1103 f/u7 (2026-08-20) — dump a diagnostic report to stdout
+    /// (auth source, config summary, runtime info) and exit.
+    #[arg(long)]
+    diag: bool,
 }
 
 fn main() -> Result<()> {
@@ -130,6 +134,25 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     };
+
+    if cli.diag {
+        println!("mnml-cdn-cloudflare · diagnostics");
+        println!();
+        println!("Auth");
+        println!("  \u{2514}\u{2500} (run `--check` for full auth resolution details)");
+        println!();
+        println!("Config");
+        println!("  \u{2514}\u{2500} path: {}", config::config_path().display());
+        println!();
+        println!("Runtime");
+        println!("  \u{251c}\u{2500} integration: {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "  \u{2514}\u{2500} os/arch: {} / {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        return Ok(());
+    }
 
     let mut app = app::App::new(cfg, auth)?;
     ui::run(&mut app)

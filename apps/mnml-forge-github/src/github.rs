@@ -30,6 +30,32 @@ impl Client {
         })
     }
 
+    /// #1103 f/u7 (2026-08-20) — verify the current auth token by
+    /// calling `GET /user`. Returns the authenticated user's login
+    /// on success; errors surface HTTP status + body for `--diag`.
+    pub async fn whoami(&self) -> Result<String> {
+        let resp = self
+            .http
+            .get("https://api.github.com/user")
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("GitHub /user request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("GitHub /user failed: {status}: {text}"));
+        }
+        #[derive(Deserialize)]
+        struct WhoamiResp {
+            login: String,
+        }
+        let u: WhoamiResp = resp.json().await.context("parsing /user response")?;
+        Ok(u.login)
+    }
+
     /// Run a GitHub issue-search query. Returns up to `per_page`
     /// results (the API caps this at 100). Pagination isn't wired
     /// in v0.2 — first page only.

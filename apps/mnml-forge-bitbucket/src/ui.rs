@@ -110,16 +110,76 @@ async fn event_loop(
                                 app.refresh_active().await;
                                 last_refresh = Instant::now();
                             }
-                        } else if state_chip_at(m.row, app) {
-                            // #998 (2026-08-18) — click the compact
-                            // state-switcher chip → cycle to next
-                            // tab. Mirrors the `m` chord. Fires only
-                            // in mnml-hosted mode (hide_tab_strip on).
-                            let next = (app.active_tab + 1) % app.tabs.len();
-                            app.switch_tab(next);
-                            if app.tabs[app.active_tab].last_fetched.is_none() {
-                                app.refresh_active().await;
-                                last_refresh = Instant::now();
+                        } else if let Some(kind) = filter_chip_at(m.column, m.row, app) {
+                            use crate::app::FilterChip;
+                            match kind {
+                                FilterChip::Status => {
+                                    // #1103 — Status chip cycles tabs
+                                    // (each tab is a PR-state slice).
+                                    // Preserves the pre-existing `m`
+                                    // chord behavior. Skipped when
+                                    // there's only one tab (nothing
+                                    // to cycle to).
+                                    if app.tabs.len() > 1 {
+                                        let next = (app.active_tab + 1) % app.tabs.len();
+                                        app.switch_tab(next);
+                                        if app.tabs[app.active_tab].last_fetched.is_none() {
+                                            app.refresh_active().await;
+                                            last_refresh = Instant::now();
+                                        }
+                                    } else {
+                                        app.status = "only one tab configured".into();
+                                    }
+                                }
+                                FilterChip::Author => {
+                                    // #1116 audit SEV-1 (2026-08-21)
+                                    // — Author chip now owns the
+                                    // mine_only toggle (the separate
+                                    // `All` chip that used to do this
+                                    // has been retired since its
+                                    // label lied about the semantics).
+                                    // Only meaningful on PR-family
+                                    // tabs; toggle_active_mine_only
+                                    // rejects other kinds internally.
+                                    app.toggle_active_mine_only();
+                                    app.refresh_active().await;
+                                    last_refresh = Instant::now();
+                                }
+                                FilterChip::All => {
+                                    // Legacy variant, chip retired.
+                                    // Kept in the enum so old rects
+                                    // registered during a prior draw
+                                    // don't panic on a stray click.
+                                }
+                                FilterChip::ActionRefresh => {
+                                    // #1053-analog (2026-08-21) —
+                                    // right-side Refresh chip, mirror
+                                    // of Jira Work's refresh chip.
+                                    app.refresh_active().await;
+                                    last_refresh = Instant::now();
+                                }
+                                FilterChip::Search
+                                | FilterChip::TargetBranch
+                                | FilterChip::Branch
+                                | FilterChip::PipelineType
+                                | FilterChip::TriggerType
+                                | FilterChip::ActionRunPipeline
+                                | FilterChip::ActionSchedules
+                                | FilterChip::ActionCaches
+                                | FilterChip::ActionUsage => {
+                                    // Visual placeholders — no click
+                                    // action yet. Follow-up: Search =
+                                    // free-text `/` prompt; Author =
+                                    // account picker; TargetBranch /
+                                    // Branch = branch picker;
+                                    // PipelineType / TriggerType =
+                                    // enum picker; Run pipeline /
+                                    // Schedules / Caches / Usage =
+                                    // navigate to Bitbucket Cloud in
+                                    // the browser.
+                                    app.status =
+                                        "filter not wired yet (round-1 visual)".into();
+                                }
                             }
                         } else if let Some(row_idx) = table_row_at(m.row, app) {
                             // 2026-07-19 — click a tree row: focus
@@ -175,18 +235,12 @@ async fn event_loop(
 /// that row. tree-redesign 2026-07-19 mouse pass.
 fn table_row_at(row: u16, app: &App) -> Option<usize> {
     let show_tabs = !app.hide_tab_strip && app.tabs.len() > 1;
-    // #998 (2026-08-18) — the state switcher chip eats row 0 when
-    // it's visible (mnml-hosted mode with multiple tabs). Push the
-    // table area down by 1 in that case so row-index math stays
-    // aligned.
-    let show_state_chip = app.hide_tab_strip && app.tabs.len() > 1;
-    let area_y: u16 = if show_tabs {
-        3
-    } else if show_state_chip {
-        1
-    } else {
-        0
-    };
+    // #1103 (2026-08-20) — the filter toolbar (1 row) sits above the
+    // table on every launch mode. Tabs strip (3 rows) sits above the
+    // toolbar when it's visible. Table body starts below both.
+    let tab_height: u16 = if show_tabs { 3 } else { 0 };
+    let toolbar_height: u16 = 1;
+    let area_y: u16 = tab_height + toolbar_height;
     // 2026-07-24 — body starts 1 row below area_y when running
     // inside mnml (no border, just the header row), 2 rows below
     // when standalone (border top + header). All the RepoPrTree /
@@ -371,6 +425,25 @@ fn inside_mnml() -> bool {
     std::env::var_os("MNML_PANE").is_some()
 }
 
+/// #1045 (2026-08-20) — honor mnml's `[ui] expand_indicator` so
+/// the repo-tree headers paint the same shape mnml's own file
+/// tree does. mnml stamps `MNML_EXPAND_INDICATOR` on every Pty
+/// child. Values: "triangle" → small `▾/▸` (Neovim/kanban look);
+/// "chevron" (default, or env unset) → big `▼/▶` matching mnml's
+/// non-Nerd fallback for the chevron mode. Standalone launches
+/// (no env) fall through to the chevron default.
+fn expand_arrow(expanded: bool) -> &'static str {
+    let triangle = std::env::var("MNML_EXPAND_INDICATOR")
+        .map(|v| v.eq_ignore_ascii_case("triangle"))
+        .unwrap_or(false);
+    match (expanded, triangle) {
+        (true, true) => "▾",
+        (false, true) => "▸",
+        (true, false) => "▼",
+        (false, false) => "▶",
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
     // Hide the tab strip when the caller passed `--only <family>` (mnml
@@ -378,32 +451,37 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // = "this session is a single-purpose view; the switcher just
     // wastes a row."
     let show_tabs = !app.hide_tab_strip && app.tabs.len() > 1;
-    // #998 (2026-08-18) — mnml-hosted view (`--only prs`) suppresses
-    // the tab strip AND the outer border/title, so the only way to
-    // switch state was the `m` chord — completely invisible to
-    // mouse users. When we're in that mode and there ARE multiple
-    // tabs (rare — `--only prs` normally leaves the family's tabs),
-    // paint a compact single-row state switcher chip at the top.
-    let show_state_chip = app.hide_tab_strip && app.tabs.len() > 1;
-    let tab_height = if show_tabs {
-        3
-    } else if show_state_chip {
-        1
-    } else {
-        0
-    };
+    // #1103 (2026-08-20) — one-row filter toolbar above the table on
+    // every launch mode. Replaces the pre-existing state-switcher
+    // chip (which only fired in mnml-hosted mode with >1 tab). The
+    // toolbar always renders because filter chips are relevant even
+    // when the tabs strip is present.
+    let show_toolbar = true;
+    let tab_height = if show_tabs { 3 } else { 0 };
+    let toolbar_height: u16 = if show_toolbar { 1 } else { 0 };
+    let chrome_height = tab_height + toolbar_height;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(tab_height),
+            Constraint::Length(chrome_height),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(size);
-    if show_tabs {
-        draw_tabs(f, chunks[0], app);
-    } else if show_state_chip {
-        draw_state_switcher_chip(f, chunks[0], app);
+    if chrome_height > 0 {
+        let chrome = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(tab_height),
+                Constraint::Length(toolbar_height),
+            ])
+            .split(chunks[0]);
+        if show_tabs {
+            draw_tabs(f, chrome[0], app);
+        }
+        if show_toolbar {
+            draw_filter_toolbar(f, chrome[1], app);
+        }
     }
     if app.details_visible {
         let body = Layout::default()
@@ -560,41 +638,228 @@ fn state_color(state: &str) -> Color {
     }
 }
 
-/// #998 (2026-08-18) — one-row state switcher chip for the mnml-
-/// hosted view. Renders as ` ▸ <tab.name> ↔ (i/n) ` at the top row
-/// so mouse users see the current state AND that it's cyclable.
-/// Left-click anywhere on the row cycles to the next tab (mirrors
-/// the `m` chord).
-fn draw_state_switcher_chip(f: &mut Frame, area: Rect, app: &App) {
+/// #1103 (2026-08-20) — filter toolbar for BB PRs, one row above the
+/// table. Mirrors Bitbucket Cloud's PR filter bar:
+///   `[ 🔍 Search ]  [ Status: <state> ▾ ]  [ Author ▾ ]  [ Target branch ▾ ]  [ All ▾ ]`
+/// Chip visual language is shared with Jira Boards (`[ Label ]` in
+/// DarkGray, `[ Label: value ]` in Cyan bold when active).
+/// Populates `app.filter_chip_rects` for click routing.
+///
+/// Wiring status (round 1):
+///   - Status chip → cycles to next tab (mirrors old `m` chord;
+///     tabs correspond to states: Open+Draft / Merged / …).
+///   - All chip → toggles `mine_only` on the active tab, invalidating
+///     the fetch so the next refresh re-queries with the new scope.
+///   - Search / Author / Target branch → visual only (follow-up).
+/// #1103 f/u4 (2026-08-20) — normalize Bitbucket's uppercase PR
+/// state (`OPEN`, `MERGED`, `DECLINED`, `SUPERSEDED`) into the
+/// title-cased form Bitbucket Cloud's own filter bar shows
+/// (`Open`, `Merged`, `Declined`, `Superseded`). Unknown values
+/// pass through as-is so a hand-edited config doesn't blank the
+/// chip.
+fn title_case_state(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + &chars.as_str().to_ascii_lowercase(),
+        None => String::new(),
+    }
+}
+
+fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
     if area.height == 0 {
         return;
     }
+    use crate::app::{FilterChip, TabKind};
     let tab = &app.tabs[app.active_tab];
-    let n = tab.data.len();
-    let idx = app.active_tab + 1;
-    let total = app.tabs.len();
-    let count_seg = if tab.last_fetched.is_some() {
-        format!(" ({n})")
-    } else {
-        String::new()
+    // Left-side (filter) entries and right-side (sort/action)
+    // entries are laid out from the two ends of the row, per
+    // Bitbucket Cloud's own toolbar. Route by tab kind — PR family
+    // and pipeline family have different filter sets.
+    let (left, right): (
+        Vec<(String, bool, FilterChip)>,
+        Vec<(String, bool, FilterChip)>,
+    ) = match tab.spec.kind {
+        // #1116 audit SEV-1 (2026-08-21) — Branches tab was falling
+        // into the PR-family `_` arm and rendering `Author`/`Target
+        // branch`/`All` chips that make no sense for a branch list
+        // (and where clicking `All` guarantees an error toast because
+        // `toggle_active_mine_only` explicitly rejects non-PR tabs).
+        // Minimal Branches bar: just the Search placeholder + the
+        // right-side Refresh.
+        TabKind::Branches => (
+            vec![("\u{f349} Search".to_string(), false, FilterChip::Search)],
+            vec![("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh)],
+        ),
+        TabKind::Pipelines | TabKind::WorkspacePipelines => (
+            vec![
+                ("Branch ▾".to_string(), false, FilterChip::Branch),
+                (
+                    "Pipeline type ▾".to_string(),
+                    false,
+                    FilterChip::PipelineType,
+                ),
+                (format!("Status: {} ▾", tab.name), true, FilterChip::Status),
+                (
+                    "Trigger type ▾".to_string(),
+                    false,
+                    FilterChip::TriggerType,
+                ),
+            ],
+            vec![
+                (
+                    "Run pipeline".to_string(),
+                    false,
+                    FilterChip::ActionRunPipeline,
+                ),
+                ("Schedules".to_string(), false, FilterChip::ActionSchedules),
+                ("Caches".to_string(), false, FilterChip::ActionCaches),
+                ("Usage".to_string(), false, FilterChip::ActionUsage),
+                ("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh),
+            ],
+        ),
+        _ => {
+            // PR family. Status chip = PR state (Open/Merged/Declined).
+            // #1103 f/u6 (2026-08-20) — for WorkspaceOpen/Merged
+            // tabs, `spec.state` is empty (set by TabSpec::resolve),
+            // so derive the value from tab KIND instead. Falls back
+            // to spec.state title-cased for per-repo PR tabs.
+            let status_value = match tab.spec.kind {
+                TabKind::WorkspaceOpenPRs => "Open".to_string(),
+                TabKind::WorkspaceMergedPRs => "Merged".to_string(),
+                _ => title_case_state(&tab.spec.state),
+            };
+            let status_label = format!("Status: {status_value} ▾");
+            // Author chip: when mine_only, surface the auth user's
+            // display name so the toolbar reads intuitively; the
+            // "role" axis (`All`) stays a separate chip and always
+            // says All. This maps to Bitbucket Cloud's UI where the
+            // Author picker independently narrows to a specific
+            // person.
+            let author_label = if tab.spec.mine_only {
+                match app.me_display_name.as_deref() {
+                    Some(name) => format!("Author: {name} ▾"),
+                    None => "Author: me ▾".to_string(),
+                }
+            } else {
+                "Author ▾".to_string()
+            };
+            // #1116 audit SEV-1 (2026-08-21) — collapse Author + All
+            // into one working chip. Was: Author LOOKED stateful but
+            // did nothing on click; All *was* the mine_only toggle but
+            // rendered inversely (label said "All" while turning
+            // mine_only ON). Now Author owns both label + click, and
+            // the standalone `All` chip is gone.
+            (
+                vec![
+                    ("\u{f349} Search".to_string(), false, FilterChip::Search),
+                    (status_label, true, FilterChip::Status),
+                    (author_label, tab.spec.mine_only, FilterChip::Author),
+                    (
+                        "Target branch ▾".to_string(),
+                        false,
+                        FilterChip::TargetBranch,
+                    ),
+                ],
+                // Right side: refresh chip (Jira Work parity). Sort
+                // still surfaces on column headers with ▲/▼ direction
+                // indicators (follow-up).
+                vec![("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh)],
+            )
+        }
     };
-    let label = format!(" ▸ {}{} ↔ ({idx}/{total}) ", tab.name, count_seg);
-    let para = Paragraph::new(Line::from(Span::styled(
-        label,
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )));
-    f.render_widget(para, area);
+    let chip = |label: &str, active: bool| -> Span<'static> {
+        let color = if active { Color::Cyan } else { Color::DarkGray };
+        Span::styled(
+            format!(" [ {label} ] "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
+    };
+    // #1116 audit SEV-2 (2026-08-21) — mirror Jira Work's Refresh
+    // "primary action" pill: reversed Black-on-Cyan so users can pick
+    // it out from the dead-placeholder chips next to it.
+    let refresh_pill = |label: &str| -> Span<'static> {
+        Span::styled(
+            format!(" [ {label} ] "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    app.filter_chip_rects.clear();
+    // Left-aligned filter chips.
+    let mut left_spans: Vec<Span> = Vec::new();
+    let mut cursor_x: u16 = area.x;
+    for (label, active, kind) in &left {
+        let s = chip(label, *active);
+        let w = s.content.chars().count() as u16;
+        if cursor_x + w <= area.x + area.width {
+            app.filter_chip_rects.push((
+                Rect {
+                    x: cursor_x,
+                    y: area.y,
+                    width: w,
+                    height: 1,
+                },
+                *kind,
+            ));
+            left_spans.push(s);
+            cursor_x += w;
+        }
+    }
+    let left_para = Paragraph::new(Line::from(left_spans));
+    f.render_widget(left_para, area);
+    // Right-aligned sort/action chips. Compute total width first,
+    // then paint into a right-anchored sub-rect. Skips silently if
+    // the row is too narrow to hold both sides.
+    if !right.is_empty() {
+        let right_spans: Vec<Span> = right
+            .iter()
+            .map(|(label, active, kind)| match kind {
+                FilterChip::ActionRefresh => refresh_pill(label),
+                _ => chip(label, *active),
+            })
+            .collect();
+        let right_w: u16 = right_spans
+            .iter()
+            .map(|s| s.content.chars().count() as u16)
+            .sum();
+        if cursor_x + right_w + 2 <= area.x + area.width {
+            let right_x = area.x + area.width - right_w;
+            let right_rect = Rect {
+                x: right_x,
+                y: area.y,
+                width: right_w,
+                height: 1,
+            };
+            // Register hit rects for each right-side chip.
+            let mut cx = right_x;
+            for (span, (_, _, kind)) in right_spans.iter().zip(right.iter()) {
+                let w = span.content.chars().count() as u16;
+                app.filter_chip_rects.push((
+                    Rect {
+                        x: cx,
+                        y: area.y,
+                        width: w,
+                        height: 1,
+                    },
+                    *kind,
+                ));
+                cx += w;
+            }
+            let right_para = Paragraph::new(Line::from(right_spans));
+            f.render_widget(right_para, right_rect);
+        }
+    }
 }
 
-/// True if the click landed on the state switcher chip. Used by the
-/// mouse handler to route the click to `NextTab`. Only meaningful
-/// when `hide_tab_strip && tabs.len() > 1` (matches the render
-/// gate in `draw`).
-fn state_chip_at(row: u16, app: &App) -> bool {
-    row == 0 && app.hide_tab_strip && app.tabs.len() > 1
+/// Return the FilterChip under the given click position, if any.
+/// Used by the mouse handler to route clicks to the chip action.
+fn filter_chip_at(col: u16, row: u16, app: &App) -> Option<crate::app::FilterChip> {
+    app.filter_chip_rects
+        .iter()
+        .find(|(r, _)| row == r.y && col >= r.x && col < r.x + r.width)
+        .map(|(_, k)| *k)
 }
 
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -715,11 +980,7 @@ fn draw_repo_pr_tree(
     );
     let mut table_rows: Vec<Row> = Vec::new();
     for repo in rows {
-        let arrow = if expanded.contains(&repo.slug) {
-            "▼"
-        } else {
-            "▶"
-        };
+        let arrow = expand_arrow(expanded.contains(&repo.slug));
         // 2026-08-16 (#948) — three header-row shapes now:
         //   normal     → " N PRs " in dim (existing behavior)
         //   errored    → " 429 · retry in 30s " in red so the row
@@ -1095,11 +1356,7 @@ fn draw_repo_tree(
     // the standard TableState highlight machinery works.
     let mut table_rows: Vec<Row> = Vec::new();
     for repo in rows {
-        let arrow = if expanded.contains(&repo.slug) {
-            "▼"
-        } else {
-            "▶"
-        };
+        let arrow = expand_arrow(expanded.contains(&repo.slug));
         // Repo header row: bold, cyan slug, branch count in dim.
         // Leading " " keeps the arrow off the pane border.
         table_rows.push(Row::new(vec![
@@ -1259,13 +1516,21 @@ fn draw_pr_table(
         Constraint::Length(12),
         Constraint::Min(20),
     ];
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
+    // #988 (2026-08-20) — matches the `if !inside_mnml()` guards on
+    // the RepoTree / RepoPrTree tables (draw_repo_pr_tree line 1123,
+    // draw_repo_tree line 1353). Was: unconditional Borders::ALL
+    // added an extra top-of-block row in inside-mnml mode that
+    // `table_row_at`'s body_top math doesn't account for, so every
+    // click on a repo-scoped flat table landed on the row BELOW.
+    let mut table = Table::new(rows, widths).header(header);
+    if !inside_mnml() {
+        table = table.block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", tab.name)),
-        )
+        );
+    }
+    let table = table
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1331,13 +1596,16 @@ fn draw_pipeline_table(
         Constraint::Length(10),
         Constraint::Length(12),
     ];
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
+    // #988 (2026-08-20) — inside-mnml border guard, see draw_pr_table.
+    let mut table = Table::new(rows, widths).header(header);
+    if !inside_mnml() {
+        table = table.block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", tab.name)),
-        )
+        );
+    }
+    let table = table
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1394,13 +1662,16 @@ fn draw_branch_table(
         Constraint::Length(20),
         Constraint::Min(20),
     ];
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
+    // #988 (2026-08-20) — inside-mnml border guard, see draw_pr_table.
+    let mut table = Table::new(rows, widths).header(header);
+    if !inside_mnml() {
+        table = table.block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", tab.name)),
-        )
+        );
+    }
+    let table = table
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)

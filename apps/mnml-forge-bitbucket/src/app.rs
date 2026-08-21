@@ -392,6 +392,10 @@ pub struct App {
     /// the approve/unapprove toggle + the "✓ approved by you" badge.
     /// `None` ⇒ no Account:Read scope or whoami failed.
     pub me_account_id: Option<String>,
+    /// #1103 f/u6 (2026-08-20) — auth user's display name, cached
+    /// at startup from whoami. Used by the filter toolbar to label
+    /// the Author chip when the tab is mine-filtered.
+    pub me_display_name: Option<String>,
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: String,
@@ -448,6 +452,43 @@ pub struct App {
     /// physical key presses, so mouse and keyboard stay one code
     /// path. Empty until first `draw`.
     pub hint_chip_rects: Vec<(ratatui::layout::Rect, crossterm::event::KeyEvent)>,
+    /// #1103 (2026-08-20) — filter toolbar chip rects. Populated by
+    /// `draw_filter_toolbar`; consumed by the mouse handler to
+    /// route clicks to the right chip action (Status cycle, All =
+    /// mine toggle, etc.). Empty until first `draw`.
+    pub filter_chip_rects: Vec<(ratatui::layout::Rect, FilterChip)>,
+}
+
+/// #1103 (2026-08-20) — filter toolbar chip identity. The PR-family
+/// tabs (WorkspaceOpenPRs / WorkspaceMergedPRs / PullRequests) get
+/// the PR filter bar (Search/Status/Author/TargetBranch/All);
+/// pipeline tabs (Pipelines / WorkspacePipelines) get the pipeline
+/// filter bar (Branch/PipelineType/Status/TriggerType). Which chips
+/// render is decided in `draw_filter_toolbar` per active tab's
+/// `TabKind`. Not every chip is wired yet — see `ui.rs` click
+/// routing for current status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterChip {
+    // PRs
+    Search,
+    Status,
+    Author,
+    TargetBranch,
+    All,
+    // Pipelines
+    Branch,
+    PipelineType,
+    TriggerType,
+    /// Pipelines — right-aligned action chips (Bitbucket Cloud shows
+    /// these as the primary CTAs on the Pipelines page).
+    ActionRunPipeline,
+    ActionSchedules,
+    ActionCaches,
+    ActionUsage,
+    /// #1053-analog (2026-08-21) — Refresh chip on the right side of
+    /// both PR and Pipeline toolbars, mirroring the Jira Work refresh
+    /// chip. Fires `refresh_active`. Shown for every tab kind.
+    ActionRefresh,
 }
 
 /// Cached PR detail + comments. Fetched lazily on first focus while
@@ -604,9 +645,16 @@ impl App {
         // Resolve current-user account_id once. Failure is non-fatal
         // — non-auto tabs still work; auto-mode PR tabs surface the
         // error on their first refresh.
-        let (me_account_id, whoami_err) = match client.whoami().await {
-            Ok(u) => (u.account_id, None),
-            Err(e) => (None, Some(e.to_string())),
+        let (me_account_id, me_display_name, whoami_err) = match client.whoami().await {
+            Ok(u) => {
+                let name = if u.display_name.is_empty() {
+                    None
+                } else {
+                    Some(u.display_name)
+                };
+                (u.account_id, name, None)
+            }
+            Err(e) => (None, None, Some(e.to_string())),
         };
         let mut tabs = Vec::with_capacity(cfg.tabs.len());
         for t in &cfg.tabs {
@@ -646,6 +694,7 @@ impl App {
             cfg,
             client,
             me_account_id,
+            me_display_name,
             tabs,
             active_tab: 0,
             status,
@@ -659,6 +708,7 @@ impl App {
             pr_pipeline_cache: HashMap::new(),
             show_all_repos: HashSet::new(),
             hint_chip_rects: Vec::new(),
+            filter_chip_rects: Vec::new(),
         };
         // Startup prefetch: refresh EVERY configured tab up front so
         // subsequent 1/2/3 (or click) tab-switches show cached data
@@ -704,6 +754,37 @@ impl App {
     }
     pub fn active_mut(&mut self) -> &mut TabState {
         &mut self.tabs[self.active_tab]
+    }
+
+    /// #1103 (2026-08-20) — toggle the current tab's `mine_only`
+    /// server-side filter and invalidate the tab data so the next
+    /// refresh re-fetches with the new predicate. Wired into the
+    /// filter toolbar's "All ▾" chip (label swaps between "All" /
+    /// "Authored by me"). Only meaningful on WorkspaceOpenPRs /
+    /// WorkspaceMergedPRs; a no-op elsewhere so click-through on
+    /// other tab kinds doesn't corrupt state.
+    pub fn toggle_active_mine_only(&mut self) {
+        use crate::app::TabKind;
+        let tab = &mut self.tabs[self.active_tab];
+        match tab.spec.kind {
+            TabKind::WorkspaceOpenPRs | TabKind::WorkspaceMergedPRs => {
+                tab.spec.mine_only = !tab.spec.mine_only;
+                tab.last_fetched = None;
+                tab.last_error = None;
+                self.status = format!(
+                    "{}: filter → {}",
+                    tab.name,
+                    if tab.spec.mine_only {
+                        "Authored by me"
+                    } else {
+                        "All"
+                    }
+                );
+            }
+            _ => {
+                self.status = "Author filter not supported on this tab".into();
+            }
+        }
     }
 
     pub fn switch_tab(&mut self, idx: usize) {
@@ -1453,27 +1534,40 @@ impl App {
                         return;
                     }
                 };
-                // tree-redesign 2026-07-15 — user asked for per-repo
-                // drill-down on Open+Draft too. Fetch by-repo so the
-                // tab renders as `TabData::RepoPrTree` (grouped) instead
-                // of a flat PR list.
-                let mut result = self
-                    .client
-                    .list_workspace_open_prs_by_repo(&workspace, &repos, 25)
-                    .await;
-                // #1099 f/u (2026-08-20) — post-fetch `mine_only`
-                // filter. Drop non-mine PRs per repo; drop the repo
-                // entirely if it has no mine PRs after filtering
-                // (keeps the tree tidy — no empty repo headers).
-                if spec.mine_only
+                // #1099 f/u v2 (2026-08-20) — when `mine_only`, filter
+                // SERVER-SIDE via BBQL `author.account_id = <me>` per
+                // repo. The prior post-fetch client-side filter over
+                // the top-25 per repo would silently drop mine PRs
+                // older than the 25 most-recently-updated PRs in a
+                // busy repo — the exact reason the chip counter said
+                // "4" but the pane rendered "0 rows". Now the pane
+                // fetches ONLY the user's own PRs per repo (no cap
+                // pressure), then groups into RepoPrs.
+                let mut result = if spec.mine_only
                     && let Some(me) = self.me_account_id.as_deref()
+                {
+                    self.client
+                        .list_workspace_open_prs_by_repo_bbql(
+                            &workspace,
+                            &repos,
+                            &format!("author.account_id = \"{me}\""),
+                            50,
+                        )
+                        .await
+                } else {
+                    // tree-redesign 2026-07-15 — user asked for per-repo
+                    // drill-down on Open+Draft too. Fetch by-repo so the
+                    // tab renders as `TabData::RepoPrTree` (grouped) instead
+                    // of a flat PR list.
+                    self.client
+                        .list_workspace_open_prs_by_repo(&workspace, &repos, 25)
+                        .await
+                };
+                // Post-fetch tidy — drop empty repo headers after
+                // filtering (whether server-side or fallback).
+                if spec.mine_only
                     && let Ok(ref mut repo_prs) = result
                 {
-                    for r in repo_prs.iter_mut() {
-                        r.prs.retain(|pr| {
-                            pr.author.as_ref().and_then(|a| a.account_id.as_deref()) == Some(me)
-                        });
-                    }
                     repo_prs.retain(|r| !r.prs.is_empty());
                 }
                 self.commit_pr_tree_refresh(idx, name, result);

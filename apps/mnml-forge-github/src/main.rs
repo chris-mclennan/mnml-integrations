@@ -56,6 +56,10 @@ struct Cli {
     /// Remove the mnml integration manifest for this sibling.
     #[arg(long)]
     uninstall: bool,
+    /// #1103 f/u7 (2026-08-20) — dump a diagnostic report to stdout
+    /// (auth, live `GET /user` probe, config, runtime) and exit.
+    #[arg(long)]
+    diag: bool,
 }
 
 #[tokio::main]
@@ -134,6 +138,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.diag {
+        return run_diag(&cfg, &client, token.len()).await;
+    }
+
     let tab_count = cfg.tabs.len();
     let mut app = app::App::new(cfg, client).await?;
 
@@ -142,4 +150,48 @@ async fn main() -> Result<()> {
     }
 
     ui::run(&mut app).await
+}
+
+/// #1103 f/u7 (2026-08-20) — mirrors the mnml-forge-bitbucket
+/// `--diag` shape: Auth (source + live probe), Config, Runtime.
+async fn run_diag(cfg: &config::Config, client: &github::Client, token_len: usize) -> Result<()> {
+    println!("mnml-forge-github · diagnostics");
+    println!();
+    println!("Auth");
+    println!("  ├─ token source: {}", auth::token_path().display());
+    println!("  ├─ token length: {token_len} chars");
+    match client.whoami().await {
+        Ok(login) => {
+            println!("  └─ /user: ✓ login={login}");
+        }
+        Err(e) => {
+            println!("  └─ /user: ✗ {e}");
+            println!("     Issues search + Actions runs depend on this succeeding.");
+        }
+    }
+    println!();
+    println!("Config");
+    println!("  ├─ path: {}", config::config_path().display());
+    println!("  ├─ refresh_interval_secs: {}", cfg.refresh_interval_secs);
+    println!("  └─ tabs: {}", cfg.tabs.len());
+    for (i, t) in cfg.tabs.iter().enumerate() {
+        let shape = match t.kind.as_str() {
+            "actions" => format!(
+                "actions repo={:?} branch={:?}",
+                t.repo.as_deref().unwrap_or(""),
+                t.branch.as_deref().unwrap_or("")
+            ),
+            _ => format!("issues query={:?}", t.query.as_deref().unwrap_or("")),
+        };
+        println!("      {}. {} ({shape})", i + 1, t.name);
+    }
+    println!();
+    println!("Runtime");
+    println!("  ├─ integration: {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "  └─ os/arch: {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    Ok(())
 }
