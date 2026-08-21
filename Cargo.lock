@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-aws-amplify"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-forge-bitbucket"
-version = "0.3.22"
+version = "0.3.23"
 dependencies = [
  "anyhow",
  "base64",
@@ -1525,6 +1525,7 @@ dependencies = [
  "dirs",
  "futures",
  "mnml-bridge",
+ "mnml-ratelimit",
  "ratatui",
  "regex",
  "reqwest",
@@ -1539,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-forge-github"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1769,6 +1770,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnml-ratelimit"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "mnml-test-cypress"
 version = "0.1.4"
 dependencies = [
@@ -1805,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-tracker-jira"
-version = "0.2.13"
+version = "0.2.22"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1813,6 +1824,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "mnml-bridge",
+ "mnml-ratelimit",
  "ratatui",
  "reqwest",
  "serde",

@@ -105,6 +105,10 @@ impl std::fmt::Display for FetchErr {
 pub struct Client {
     http: reqwest::Client,
     auth_header: String,
+    /// #1002 f/u (2026-08-21) — cross-process rate limiter shared
+    /// with tattle-claude-plugins' Python `bb_ratelimit`. See
+    /// `Client::gate`.
+    limiter: std::sync::Arc<mnml_ratelimit::Limiter>,
 }
 
 impl Client {
@@ -116,7 +120,40 @@ impl Client {
         Ok(Self {
             http,
             auth_header: format!("Basic {basic}"),
+            limiter: std::sync::Arc::new(mnml_ratelimit::Limiter::for_service("bitbucket")),
         })
+    }
+
+    /// #1002 f/u (2026-08-21) — token-bucket gate every Bitbucket
+    /// request passes through before hitting the network. Shared
+    /// on-disk state (flock-protected JSON) with tattle-claude-
+    /// plugins' Python `bb_ratelimit.py` — mnml + Python scripts
+    /// take turns on ONE bucket, so opening the BB pane while a
+    /// Python agent is running a report won't stack requests +
+    /// cascade into 429s. mnml-only users (no Python installed)
+    /// get a mnml-private fallback path automatically (see
+    /// `mnml_ratelimit::default_state_path`).
+    ///
+    /// Runs inside `spawn_blocking` because `acquire()` is
+    /// synchronous (flock + jittered sleep). Fail-open on any IO
+    /// error inside the limiter — we'd rather send unthrottled
+    /// than freeze the UI.
+    pub(crate) async fn gate(&self) {
+        let l = self.limiter.clone();
+        let _ = tokio::task::spawn_blocking(move || l.acquire()).await;
+    }
+
+    /// #1002 f/u (2026-08-21) — report a 429 to the shared bucket
+    /// so Python + other mnml processes see the cooldown on their
+    /// next `.acquire()`. `retry_after_secs` should be the parsed
+    /// `Retry-After` header value (delta-seconds); pass `None` to
+    /// trip the default cooldown (60s).
+    #[allow(dead_code)]
+    pub(crate) async fn penalize(&self, retry_after_secs: Option<u32>) {
+        let l = self.limiter.clone();
+        // Limiter takes f64 delta-secs; None → 60s default cooldown.
+        let ra = retry_after_secs.map(|v| v as f64).unwrap_or(60.0);
+        let _ = tokio::task::spawn_blocking(move || l.penalize(ra)).await;
     }
 
     /// Pull requests for a single repo. `state` is one of
@@ -165,6 +202,8 @@ impl Client {
         if let Some(query) = q {
             req = req.query(&[("q", query)]);
         }
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = req
             .send()
             .await
@@ -227,6 +266,13 @@ impl Client {
                         .retry_after_secs
                         .unwrap_or(DEFAULT_BACKOFF_SECS)
                         .min(MAX_BACKOFF_SECS);
+                    // #1002 f/u (2026-08-21) — trip the shared bucket
+                    // cooldown so Python + other mnml processes see
+                    // the pressure on their next acquire(). Uses the
+                    // same Retry-After value the retry loop is about
+                    // to wait for so downstream callers back off in
+                    // lockstep with our own retry.
+                    self.penalize(Some(wait as u32)).await;
                     last_err = Some(e);
                     if attempt < MAX_ATTEMPTS - 1 {
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
@@ -477,6 +523,8 @@ impl Client {
         if let Some(s) = state {
             req = req.query(&[("state", s)]);
         }
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = req
             .send()
             .await
@@ -554,6 +602,8 @@ impl Client {
             "{BASE}/repositories/{workspace}?role=member&pagelen=100&fields=values.slug,next"
         );
         loop {
+            // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+            self.gate().await;
             let resp = self
                 .http
                 .get(&url)
@@ -580,6 +630,8 @@ impl Client {
     /// `GET /user` — returns the authenticated user. Used by --check
     /// + to resolve `mode = "mine"` / `mode = "reviewing"` tabs.
     pub async fn whoami(&self) -> Result<AuthUser> {
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .get(format!("{BASE}/user"))
@@ -600,6 +652,8 @@ impl Client {
     /// approval state). Used to populate the right-half detail panel.
     pub async fn get_pr_detail(&self, workspace: &str, repo: &str, id: i64) -> Result<PullRequest> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests/{id}");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -626,6 +680,8 @@ impl Client {
         id: i64,
     ) -> Result<Vec<Comment>> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests/{id}/comments");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -648,6 +704,8 @@ impl Client {
     /// response is the new participant record (approved = true).
     pub async fn approve_pr(&self, workspace: &str, repo: &str, id: i64) -> Result<()> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests/{id}/approve");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .post(&url)
@@ -669,6 +727,8 @@ impl Client {
     /// we surface that as an error so the UI can label it clearly).
     pub async fn unapprove_pr(&self, workspace: &str, repo: &str, id: i64) -> Result<()> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pullrequests/{id}/approve");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .delete(&url)
@@ -693,6 +753,8 @@ impl Client {
         per_page: u32,
     ) -> Result<Vec<Pipeline>> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/pipelines/");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -766,6 +828,8 @@ impl Client {
         per_page: u32,
     ) -> Result<Vec<BranchRef>> {
         let url = format!("{BASE}/repositories/{workspace}/{repo}/refs/branches");
+        // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -836,6 +900,8 @@ impl Client {
             format!("{BASE}/repositories/{workspace}?role=member&pagelen=100&sort=-updated_on");
         let mut pages = 0;
         loop {
+            // #1002 f/u (2026-08-21) — shared-limiter gate before every BB request.
+            self.gate().await;
             let resp = self
                 .http
                 .get(&url)
@@ -1100,6 +1166,87 @@ impl Client {
         // Preserve the input slug order (which reflects the caller's
         // scope + repo_order resolution) by re-indexing against the
         // slugs list — buffer_unordered emits in completion order.
+        let mut by_slug: std::collections::HashMap<String, RepoPrs> =
+            rows.into_iter().map(|r| (r.slug.clone(), r)).collect();
+        let ordered: Vec<RepoPrs> = repo_slugs
+            .iter()
+            .filter_map(|s| by_slug.remove(s))
+            .collect();
+        Ok(ordered)
+    }
+
+    /// #1099 f/u2 (2026-08-21) — BBQL-filtered variant of the
+    /// per-repo Open-PR fan-out. Passes `bbql_predicate` (e.g.
+    /// `author.account_id = "..."`) into each per-repo request so
+    /// server-side filtering does the mine-only narrowing BEFORE
+    /// the `per_repo_per_page` cap applies. Without this, the plain
+    /// fan-out fetches the top-N most-recently-updated OPEN PRs per
+    /// repo across all authors and then filters client-side — which
+    /// silently drops the user's own PRs in busy repos whose top-N
+    /// is dominated by teammates' work. That's the bug user reported
+    /// as "still not seeing my PRs" on the mine-only view.
+    ///
+    /// Same fan-out shape as `list_workspace_open_prs_by_repo` —
+    /// bounded concurrency, empty-repo → last-merged fallback,
+    /// slug-order preserving output.
+    pub async fn list_workspace_open_prs_by_repo_bbql(
+        &self,
+        workspace: &str,
+        repo_slugs: &[String],
+        bbql_predicate: &str,
+        per_repo_per_page: u32,
+    ) -> Result<Vec<RepoPrs>> {
+        if repo_slugs.is_empty() {
+            return Ok(Vec::new());
+        }
+        use futures::stream::{self, StreamExt};
+        let workspace = workspace.to_string();
+        let predicate = bbql_predicate.to_string();
+        let concurrency = 8usize;
+        let slugs = repo_slugs.to_vec();
+        let rows: Vec<RepoPrs> = stream::iter(slugs.into_iter().map(|slug| {
+            let ws = workspace.clone();
+            let q = predicate.clone();
+            let client = self.clone();
+            async move {
+                match client
+                    .list_repo_prs_retry(&ws, &slug, Some("OPEN"), Some(&q), per_repo_per_page)
+                    .await
+                {
+                    Ok(mut prs) => {
+                        prs.sort_by(|a, b| b.updated_on.cmp(&a.updated_on));
+                        // Same last-merged fallback the plain variant
+                        // uses — a repo where the user has no open
+                        // PRs still gets a row so the tree shows
+                        // "recently active" context instead of empty.
+                        let fallback_merged = if prs.is_empty() {
+                            client
+                                .list_repo_prs_fetch(&ws, &slug, Some("MERGED"), Some(&q), 1)
+                                .await
+                                .ok()
+                                .and_then(|v| v.into_iter().next())
+                        } else {
+                            None
+                        };
+                        RepoPrs {
+                            slug,
+                            prs,
+                            error: None,
+                            fallback_merged,
+                        }
+                    }
+                    Err(e) => RepoPrs {
+                        slug,
+                        prs: Vec::new(),
+                        error: Some(e.short_label()),
+                        fallback_merged: None,
+                    },
+                }
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
         let mut by_slug: std::collections::HashMap<String, RepoPrs> =
             rows.into_iter().map(|r| (r.slug.clone(), r)).collect();
         let ordered: Vec<RepoPrs> = repo_slugs

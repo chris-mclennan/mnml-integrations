@@ -5,7 +5,7 @@
 //! `reqwest::Client` internally).
 
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -13,6 +13,7 @@ pub struct Client {
     base: String,
     email: String,
     token: String,
+    limiter: std::sync::Arc<mnml_ratelimit::Limiter>,
 }
 
 impl Client {
@@ -21,12 +22,32 @@ impl Client {
         let http = reqwest::Client::builder()
             .user_agent("mnml-tracker-jira/0.1.0")
             .build()?;
+        let limiter = std::sync::Arc::new(mnml_ratelimit::Limiter::for_service("jira"));
         Ok(Self {
             http,
             base,
             email: email.to_string(),
             token: token.to_string(),
+            limiter,
         })
+    }
+
+    /// Block until the shared cross-process bucket has a token, then return.
+    /// Fail-open: if the limiter can't reach its state file, we prefer sending
+    /// unthrottled over freezing the UI.
+    pub(crate) async fn gate(&self) {
+        let lim = self.limiter.clone();
+        let _ = tokio::task::spawn_blocking(move || lim.acquire()).await;
+    }
+
+    /// Trip the shared bucket cooldown so Python + other mnml processes see the
+    /// pressure on their next `acquire()`. Called from the 429 branch of the
+    /// retry loop with the same Retry-After value we honor locally.
+    #[allow(dead_code)]
+    pub(crate) async fn penalize(&self, retry_after_secs: Option<u32>) {
+        let ra = retry_after_secs.map(|v| v as f64).unwrap_or(60.0);
+        let lim = self.limiter.clone();
+        let _ = tokio::task::spawn_blocking(move || lim.penalize(ra)).await;
     }
 
     /// Run a JQL query. Returns up to `max_results` issues (the
@@ -85,6 +106,7 @@ impl Client {
             if let Some(tok) = next_token.as_ref() {
                 body["nextPageToken"] = serde_json::Value::String(tok.clone());
             }
+            self.gate().await;
             let resp = self
                 .http
                 .post(&url)
@@ -119,6 +141,7 @@ impl Client {
     /// date ascending (so `[0]` is the next-up release).
     pub async fn unreleased_versions(&self, project_key: &str) -> Result<Vec<ProjectVersion>> {
         let url = format!("{}/rest/api/3/project/{project_key}/versions", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -187,6 +210,7 @@ impl Client {
         application_type: &str,
     ) -> Result<Vec<LinkedPr>> {
         let url = format!("{}/rest/dev-status/latest/issue/detail", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -233,6 +257,7 @@ impl Client {
     /// (lacks permission, or a terminal state with no outgoing edges).
     pub async fn fetch_transitions(&self, key: &str) -> Result<Vec<Transition>> {
         let url = format!("{}/rest/api/3/issue/{key}/transitions", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -269,6 +294,7 @@ impl Client {
     pub async fn watch_issue(&self, key: &str) -> Result<()> {
         let url = format!("{}/rest/api/3/issue/{key}/watchers", self.base);
         // The endpoint accepts an empty string for "current user".
+        self.gate().await;
         let resp = self
             .http
             .post(&url)
@@ -295,6 +321,7 @@ impl Client {
             "{}/rest/api/3/issue/{key}/watchers?accountId={account_id}",
             self.base
         );
+        self.gate().await;
         let resp = self
             .http
             .delete(&url)
@@ -317,6 +344,7 @@ impl Client {
     /// stateless / re-runnable).
     pub async fn myself(&self) -> Result<String> {
         let url = format!("{}/rest/api/3/myself", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -350,6 +378,7 @@ impl Client {
             "{}/rest/api/3/user/assignable/search?project={project_key}&query={query}&maxResults=50",
             self.base
         );
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -434,6 +463,7 @@ impl Client {
             {
                 req = req.query(&[("jql", j)]);
             }
+            self.gate().await;
             let resp = req
                 .send()
                 .await
@@ -473,6 +503,7 @@ impl Client {
     /// instead of the numeric `[Board:200]`.
     pub async fn fetch_board(&self, board_id: u64) -> Result<Board> {
         let url = format!("{}/rest/agile/1.0/board/{board_id}", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -510,6 +541,7 @@ impl Client {
             fields.join(",")
         };
         let url = format!("{}/rest/api/3/issue/{key}", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -536,6 +568,7 @@ impl Client {
     /// "scrum" | "kanban" | "simple".
     pub async fn fetch_boards_for_project(&self, project_key: &str) -> Result<Vec<Board>> {
         let url = format!("{}/rest/agile/1.0/board", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -618,6 +651,7 @@ impl Client {
         let url = format!("{}/rest/agile/1.0/board/{board_id}/sprint", self.base);
         let start_str = start_at.to_string();
         let max_str = max_results.to_string();
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -652,6 +686,7 @@ impl Client {
             total: u32,
         }
         let url = format!("{}/rest/agile/1.0/board/{board_id}/sprint", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -679,6 +714,7 @@ impl Client {
     /// quick filters. The UI collapses the chip in that case.
     pub async fn fetch_quickfilters_for_board(&self, board_id: u64) -> Result<Vec<QuickFilter>> {
         let url = format!("{}/rest/agile/1.0/board/{board_id}/quickfilter", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -707,6 +743,7 @@ impl Client {
     /// most-recent / next-up versions show up first.
     pub async fn fetch_versions(&self, project_key: &str) -> Result<Vec<ProjectVersion>> {
         let url = format!("{}/rest/api/3/project/{project_key}/versions", self.base);
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -763,6 +800,7 @@ impl Client {
             None => serde_json::Value::Null,
         };
         let body = serde_json::json!({ "fields": { "assignee": assignee } });
+        self.gate().await;
         let resp = self
             .http
             .put(&url)
@@ -790,6 +828,7 @@ impl Client {
             .map(|n| serde_json::json!({ "name": n }))
             .collect();
         let body = serde_json::json!({ "fields": { "fixVersions": versions } });
+        self.gate().await;
         let resp = self
             .http
             .put(&url)
@@ -817,6 +856,7 @@ impl Client {
         let body = serde_json::json!({
             "body": plain_to_adf(text),
         });
+        self.gate().await;
         let resp = self
             .http
             .post(&url)
@@ -843,6 +883,7 @@ impl Client {
         let body = serde_json::json!({
             "transition": { "id": transition_id }
         });
+        self.gate().await;
         let resp = self
             .http
             .post(&url)
@@ -871,6 +912,7 @@ impl Client {
             "{}/rest/api/3/issue/{key}?fields=description,comment,watches,summary,status,assignee,issuetype,priority,fixVersions,updated,reporter",
             self.base
         );
+        self.gate().await;
         let resp = self
             .http
             .get(&url)
@@ -1106,7 +1148,7 @@ struct SearchResult {
 /// lives in a different sibling).
 const MAX_PAGINATION_ISSUES: usize = 500;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Issue {
     /// Numeric internal ID — REQUIRED by the dev-status API to look
     /// up linked PRs. Jira's search endpoint returns it alongside
@@ -1117,7 +1159,7 @@ pub struct Issue {
     pub fields: Fields,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct Fields {
     pub summary: String,
@@ -1157,7 +1199,7 @@ pub struct Fields {
     pub extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct NamedField {
     pub name: String,
 }
@@ -1262,7 +1304,7 @@ impl LinkedPr {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct User {
     #[serde(rename = "displayName", default)]
     pub display_name: String,

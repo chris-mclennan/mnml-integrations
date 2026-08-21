@@ -31,6 +31,12 @@ members = [
     "apps/mnml-test-playwright",
     "apps/mnml-tracker-jira",
     "apps/mnml-virt-docker",
+    # #1002 (2026-08-20) — shared cross-process rate limiter, Rust
+    # port of tattle-claude-plugins/skills/bitbucket/shared/
+    # bb_ratelimit.py. Consumed by integrations that share a per-IP
+    # API budget (Bitbucket, Jira) via path-dep; publishable to
+    # crates.io later so community integrations can opt in.
+    "crates/mnml-ratelimit",
 ]
 
 # Every member crate gets these shared dependency versions when it
