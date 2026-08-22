@@ -2,7 +2,7 @@
 //! each configured tab. The UI layer reads from this.
 
 use crate::config::{Config, ResolveMode, Tab, TabKind};
-use crate::jira::{Client, Issue, IssueDetail, QuickFilter, Sprint, Transition};
+use crate::jira::{Board, Client, Issue, IssueDetail, QuickFilter, Sprint, Transition};
 use crate::tree::TreeState;
 use anyhow::{Context, Result};
 use ratatui::layout::Rect;
@@ -196,11 +196,17 @@ pub enum ChipKind {
     /// Click opens the sprint picker.
     Sprint,
     Search,
+    /// Scaffolding: chip dispatch is wired in `ui.rs`
+    /// (`ChipKind::Team => app.open_team_picker()`), but no code path
+    /// constructs this variant yet. Kept for the team-picker flow the
+    /// board picker + epic filter will wire downstream.
+    #[allow(dead_code)]
     Team,
     /// #1103 f/u8 (2026-08-20) — Assignee chip. Placeholder for the
     /// avatar-cluster multi-select filter Jira Cloud shows between
     /// Search and Version. Click opens (TODO) an assignee picker;
     /// visual for now.
+    #[allow(dead_code)]
     Assignee,
     Version,
     Epic,
@@ -316,6 +322,22 @@ pub enum FieldKind {
     /// inline avatar toggles already drive, so both surfaces stay
     /// in sync.
     AvatarCluster,
+    /// 2026-08-21 — Board picker for board tabs. Items come from
+    /// `TabState.boards_cache` (fetched via
+    /// `Client::fetch_boards_for_project` on first open, cached
+    /// thereafter). Committing writes `cfg.tabs[idx].board_id` in
+    /// memory and refetches so the kanban reflects the newly-chosen
+    /// board's saved filter + active sprint. Route only fires for
+    /// tabs that carry a `project` (needed to scope the API call).
+    Board,
+    /// 2026-08-21 — Epic filter for board tabs. Multi-select over
+    /// the distinct epic keys linked from the current tab's
+    /// fetched issues. Items are `(epic_key, "KEY  Summary")`.
+    /// Commit writes back to `TabState.active_epic_keys` — a client-
+    /// side render filter, no refetch. Epic-link field is detected
+    /// via `TabState.epic_link_field` (probed from the fetched
+    /// issues on first open; see `open_epic_picker`).
+    Epic,
 }
 
 /// #1110 f/u (2026-08-20) — sentinel account_id used inside
@@ -397,6 +419,7 @@ pub struct TabState {
     ///   - `tree.is_some()` (FixVersionTree tabs): index into
     ///     `visible_rows(cfg, tab_cfg)` — a mixed list of
     ///     GroupHeader / Ticket / LinkedPr / etc.
+    ///
     /// Callers use the type-directed helpers on TabState below
     /// rather than reading `.selected` raw.
     pub selected: usize,
@@ -465,6 +488,39 @@ pub struct TabState {
     /// actually inserted (failed lookups shouldn't fire the seed on
     /// every subsequent refresh either).
     pub assignee_default_seeded: bool,
+    /// 2026-08-21 — lazy-loaded board list for the tab's `project`.
+    /// Populated on first Board-picker open (via
+    /// `Client::fetch_boards_for_project`); re-used across
+    /// subsequent opens until an explicit refresh. `None` = never
+    /// fetched; `Some(vec)` = fetched (empty vec = project has no
+    /// visible boards for this user).
+    pub boards_cache: Option<Vec<Board>>,
+    /// 2026-08-21 — detected Jira field id that holds the "Epic
+    /// Link". Two shapes are recognised:
+    ///
+    ///   - `"parent"` — modern team-managed + newer company-managed
+    ///     projects put the epic on the standard `parent` field
+    ///     when the parent's issuetype is `"Epic"`. Comes back via
+    ///     `Fields.extras["parent"]` when `parent` is in the fetch
+    ///     field list (added to the default set in this task).
+    ///   - `"customfield_XXXXX"` — legacy Epic Link custom field
+    ///     (id varies per Jira instance; commonly
+    ///     `customfield_10014`). Discovered by scanning the tab's
+    ///     issues for a customfield whose value is an issue-key
+    ///     string (`[A-Z]+-\d+`).
+    ///
+    /// `None` until `open_epic_picker` runs and probes the current
+    /// tab's issues. Sticky across refreshes (no reason for the
+    /// answer to change until the tab's project changes).
+    pub epic_link_field: Option<String>,
+    /// 2026-08-21 — active epic-filter selection. Multi-select over
+    /// epic keys (e.g. `{"NTL-123", "NTL-456"}`). When non-empty,
+    /// `visible_indices` keeps only issues whose epic-link field
+    /// value is in the set. Empty set = no filter.
+    ///
+    /// Purely a client-side render filter (like `active_assignee_ids`
+    /// / `issue_type` / `label`) — no refetch needed on change.
+    pub active_epic_keys: BTreeSet<String>,
 }
 
 /// #1110 (2026-08-20) — one assignee's aggregate presence on the
@@ -665,6 +721,9 @@ impl App {
                 show_jql: false,
                 assignee_default_seeded: false,
                 quick_filters_cache: None,
+                boards_cache: None,
+                epic_link_field: None,
+                active_epic_keys: BTreeSet::new(),
             });
         }
         let mut app = App {
@@ -840,10 +899,10 @@ impl App {
         // tab (flag prevents re-seeding after the user actively clears
         // the filter through the picker).
         if !self.tabs[idx].assignee_default_seeded && self.my_account_id.is_some() {
-            if let Some(Ok(id)) = self.my_account_id.as_ref() {
-                if self.tabs[idx].active_assignee_ids.is_empty() {
-                    self.tabs[idx].active_assignee_ids.insert(id.clone());
-                }
+            if let Some(Ok(id)) = self.my_account_id.as_ref()
+                && self.tabs[idx].active_assignee_ids.is_empty()
+            {
+                self.tabs[idx].active_assignee_ids.insert(id.clone());
             }
             self.tabs[idx].assignee_default_seeded = true;
         }
@@ -1035,8 +1094,7 @@ impl App {
                 // cache already exists (idempotent) and on tabs
                 // without a board_id (Work / FixVersions / raw JQL).
                 if self.tabs[idx].sprints_cache.is_none()
-                    && let Some(board_id) =
-                        self.cfg.tabs.get(idx).and_then(|t| t.board_id)
+                    && let Some(board_id) = self.cfg.tabs.get(idx).and_then(|t| t.board_id)
                     && let Ok(list) = self.client.fetch_sprints_for_board(board_id).await
                 {
                     self.tabs[idx].sprints_cache = Some(list);
@@ -1206,10 +1264,10 @@ impl App {
         };
         match row {
             VisibleRow::GroupHeader { status, .. } => {
-                if let Some(tree) = self.active_mut().tree.as_mut() {
-                    if !tree.collapsed_groups.insert(status.clone()) {
-                        tree.collapsed_groups.remove(&status);
-                    }
+                if let Some(tree) = self.active_mut().tree.as_mut()
+                    && !tree.collapsed_groups.insert(status.clone())
+                {
+                    tree.collapsed_groups.remove(&status);
                 }
             }
             VisibleRow::Ticket { issue_idx, .. } => {
@@ -1480,6 +1538,7 @@ impl App {
     ///   - the key isn't in the tab's `issues` list (nothing to
     ///     look up an `issue.id` for);
     ///   - the PR cache already has an entry (avoid re-fetch spam).
+    ///
     /// Errors surface on `self.status` and leave the cache absent
     /// so a subsequent explicit refresh can retry.
     pub async fn ensure_ticket_prs(&mut self, issue_key: &str) {
@@ -1738,17 +1797,9 @@ impl App {
     }
     /// Delete the word before the cursor (Ctrl+Backspace / Alt+Bksp).
     pub fn jql_editor_delete_word_back(&mut self) {
-        let start = self
-            .jql_editor
-            .as_ref()
-            .map(|j| j.cursor)
-            .unwrap_or(0);
+        let start = self.jql_editor.as_ref().map(|j| j.cursor).unwrap_or(0);
         self.jql_editor_word_left();
-        let end = self
-            .jql_editor
-            .as_ref()
-            .map(|j| j.cursor)
-            .unwrap_or(0);
+        let end = self.jql_editor.as_ref().map(|j| j.cursor).unwrap_or(0);
         if end == start {
             return;
         }
@@ -1769,6 +1820,44 @@ impl App {
             .unwrap_or_else(|| j.buffer.len());
         j.buffer.replace_range(start_byte..end_byte, "");
         j.cursor = end;
+    }
+    /// 2026-08-21 — kill (readline `unix-line-discard`): delete from
+    /// the cursor to the start of the buffer. Bound to Ctrl-U. Matches
+    /// modern-terminal readline convention (superseding the earlier
+    /// Ctrl-U → delete-word-back mapping we shipped in #1115 f/u2).
+    pub fn jql_editor_kill_to_start(&mut self) {
+        let Some(j) = self.jql_editor.as_mut() else {
+            return;
+        };
+        if j.cursor == 0 {
+            return;
+        }
+        let end_byte = j
+            .buffer
+            .char_indices()
+            .nth(j.cursor)
+            .map(|(b, _)| b)
+            .unwrap_or_else(|| j.buffer.len());
+        j.buffer.replace_range(0..end_byte, "");
+        j.cursor = 0;
+    }
+    /// 2026-08-21 — kill (readline `kill-line`): delete from the
+    /// cursor to the end of the buffer. Bound to Ctrl-K.
+    pub fn jql_editor_kill_to_end(&mut self) {
+        let Some(j) = self.jql_editor.as_mut() else {
+            return;
+        };
+        let chars_len = j.buffer.chars().count();
+        if j.cursor >= chars_len {
+            return;
+        }
+        let start_byte = j
+            .buffer
+            .char_indices()
+            .nth(j.cursor)
+            .map(|(b, _)| b)
+            .unwrap_or_else(|| j.buffer.len());
+        j.buffer.truncate(start_byte);
     }
     /// Bulk-insert a string at the cursor (paste path).
     pub fn jql_editor_insert_str(&mut self, s: &str) {
@@ -1891,12 +1980,33 @@ impl App {
                 None => tab.active_assignee_ids.contains(UNASSIGNED_SENTINEL),
             }
         };
+        // 2026-08-21 — epic-filter pass. Same shape as assignee_pass:
+        // empty set = no filter; non-empty set = keep only issues
+        // whose detected epic-link value is in the set. Requires the
+        // tab to have already probed its epic-link field; when it
+        // hasn't the filter has nothing to check against and passes
+        // everything (so an out-of-band mutation to `active_epic_keys`
+        // won't hide every row — though the picker always writes
+        // `epic_link_field` at the same time as it can write
+        // `active_epic_keys`).
+        let epic_pass = |issue: &crate::jira::Issue| -> bool {
+            if tab.active_epic_keys.is_empty() {
+                return true;
+            }
+            let Some(field) = tab.epic_link_field.as_deref() else {
+                return true;
+            };
+            match extract_epic_from_issue(issue, field) {
+                Some((key, _)) => tab.active_epic_keys.contains(&key),
+                None => false,
+            }
+        };
         let Some(filter) = self.filter.as_ref() else {
             return tab
                 .issues
                 .iter()
                 .enumerate()
-                .filter_map(|(i, issue)| assignee_pass(issue).then_some(i))
+                .filter_map(|(i, issue)| (assignee_pass(issue) && epic_pass(issue)).then_some(i))
                 .collect();
         };
         let needle = filter.buffer.to_ascii_lowercase();
@@ -1905,14 +2015,14 @@ impl App {
                 .issues
                 .iter()
                 .enumerate()
-                .filter_map(|(i, issue)| assignee_pass(issue).then_some(i))
+                .filter_map(|(i, issue)| (assignee_pass(issue) && epic_pass(issue)).then_some(i))
                 .collect();
         }
         tab.issues
             .iter()
             .enumerate()
             .filter_map(|(i, issue)| {
-                if !assignee_pass(issue) {
+                if !assignee_pass(issue) || !epic_pass(issue) {
                     return None;
                 }
                 let key_match = issue.key.to_ascii_lowercase().contains(&needle);
@@ -2017,6 +2127,123 @@ pub fn is_unresolved_issue(issue: &crate::jira::Issue) -> bool {
     };
     let name = status.name.to_ascii_lowercase();
     !matches!(name.as_str(), "done" | "closed" | "resolved" | "released")
+}
+
+/// 2026-08-21 — very-cheap issue-key heuristic. True when `s` looks
+/// like a Jira key: one or more uppercase letters, a hyphen, one or
+/// more decimal digits. Chosen to be tight enough to avoid false
+/// positives on `2026-08-21`-style ISO dates or freeform text, but
+/// permissive on the actual space of Jira project prefixes (which
+/// Atlassian permits letters + digits, though letters-only remains
+/// the overwhelming convention).
+fn looks_like_issue_key(s: &str) -> bool {
+    let (prefix, suffix) = match s.split_once('-') {
+        Some(pair) => pair,
+        None => return false,
+    };
+    if prefix.is_empty() || suffix.is_empty() {
+        return false;
+    }
+    prefix.chars().all(|c| c.is_ascii_uppercase()) && suffix.chars().all(|c| c.is_ascii_digit())
+}
+
+/// 2026-08-21 — inspect `raw` for something that looks like the
+/// value of an epic-link field. Returns `(epic_key, epic_summary)`
+/// when found — `summary` may be empty when the field carries only
+/// a bare key string. Two shapes recognised:
+///
+///   - Object shape (modern `parent` field): `{ key: "NTL-123",
+///     fields: { summary: "…", issuetype: { name: "Epic" } } }`.
+///     The `issuetype.name == "Epic"` check is what distinguishes a
+///     parent-epic (what we want) from a parent-story (irrelevant
+///     for a sub-task). When `issuetype` is missing entirely we
+///     fall back to accepting the key — Jira's legacy Epic Link
+///     customfield returns object shape without an issuetype hint
+///     but the key is still an epic in practice.
+///   - String shape (legacy customfield): the bare key
+///     (`"NTL-123"`).
+fn epic_value_from_raw(raw: &serde_json::Value) -> Option<(String, String)> {
+    if let Some(key) = raw.as_str()
+        && looks_like_issue_key(key)
+    {
+        return Some((key.to_string(), String::new()));
+    }
+    if let Some(obj) = raw.as_object() {
+        let key = obj.get("key").and_then(|k| k.as_str())?;
+        if !looks_like_issue_key(key) {
+            return None;
+        }
+        // Prefer nested `fields.issuetype.name == "Epic"` (the
+        // modern `parent` shape). When issuetype is absent we
+        // still return the key — legacy customfield_10014 responses
+        // don't carry it, but they're always epics.
+        let issuetype_ok = obj
+            .get("fields")
+            .and_then(|f| f.get("issuetype"))
+            .and_then(|it| it.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|n| n.eq_ignore_ascii_case("epic"))
+            .unwrap_or(true);
+        if !issuetype_ok {
+            return None;
+        }
+        let summary = obj
+            .get("fields")
+            .and_then(|f| f.get("summary"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default();
+        return Some((key.to_string(), summary.to_string()));
+    }
+    None
+}
+
+/// 2026-08-21 — detect the Jira field id holding the "Epic Link"
+/// for the current tab's issues. Two probes:
+///
+///   1. `extras["parent"]` — when the parent's issuetype is
+///      `"Epic"`, pin `"parent"` as the field. Modern (team-managed
+///      + newer company-managed) Jira Cloud path.
+///   2. `extras["customfield_1XXXX"]` — first customfield whose
+///      value is (or contains) an issue-key string. Legacy Epic
+///      Link field, id varies per instance.
+///
+/// Returns `None` when no candidate shows up in any of the tab's
+/// issues — either because the tab is empty, or because the fetch
+/// didn't request customfields (see the note on `open_epic_picker`
+/// for the empty-tab toast contract).
+pub fn detect_epic_link_field(issues: &[crate::jira::Issue]) -> Option<String> {
+    // Prefer `parent` — modern Jira, and it's in the default field
+    // set as of this same task.
+    for issue in issues {
+        if let Some(raw) = issue.fields.extras.get("parent")
+            && epic_value_from_raw(raw).is_some()
+        {
+            return Some("parent".to_string());
+        }
+    }
+    // Fallback: any customfield_1XXXX with an issue-key-shaped
+    // value. Only present when the caller pre-declared the field in
+    // `extra_fields` (e.g. via team_field_id or a future explicit
+    // epic-link-field config); best-effort here.
+    for issue in issues {
+        for (key, raw) in &issue.fields.extras {
+            if key.starts_with("customfield_1") && epic_value_from_raw(raw).is_some() {
+                return Some(key.clone());
+            }
+        }
+    }
+    None
+}
+
+/// 2026-08-21 — pull the epic (key, summary) from one issue via
+/// the pre-detected `field_id`. Returns `None` when the field is
+/// absent or its value doesn't parse as an epic reference.
+pub fn extract_epic_from_issue(
+    issue: &crate::jira::Issue,
+    field_id: &str,
+) -> Option<(String, String)> {
+    let raw = issue.fields.extras.get(field_id)?;
+    epic_value_from_raw(raw)
 }
 
 /// How `close_filter` should treat the in-progress buffer.
@@ -2375,6 +2602,251 @@ impl App {
         self.field_picker = None;
     }
 
+    /// 2026-08-21 — Board picker for board tabs. Lists every board
+    /// visible to the current user under this tab's `project`. Uses
+    /// `TabState.boards_cache` when populated, otherwise fetches
+    /// via `/rest/agile/1.0/board?projectKeyOrId=<project>`.
+    ///
+    /// The `— Board default —` sentinel at the top of the list maps
+    /// to `board_id = None`, which reverts the tab to the synthetic-
+    /// JQL fallback (`sprint in openSprints() AND project = X`) so
+    /// users can undo a bad pick without editing the TOML.
+    ///
+    /// Silently toasts + no-ops on tabs with no `project` since the
+    /// board list API is project-scoped.
+    ///
+    /// NOTE: persistence to `mnml-tracker-jira.toml` is deferred —
+    /// like the Sprint / QuickFilter / Team pickers, this writes to
+    /// `cfg.tabs[idx].board_id` in memory only. On restart the tab
+    /// reverts to whatever the file says. Adding a write-back helper
+    /// is a follow-up task the coordinator can pair with the same
+    /// work for the sibling pickers.
+    pub async fn open_board_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(project) = self
+            .cfg
+            .tabs
+            .get(idx)
+            .and_then(|t| t.project.clone())
+            .filter(|p| !p.trim().is_empty())
+        else {
+            self.status = "board picker: this tab has no `project_key`".to_string();
+            return;
+        };
+        // Prime the picker in loading state so the UI can react while
+        // the fetch is in flight — mirrors `open_sprint_picker`.
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::Board,
+            items: Vec::new(),
+            loaded: false,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: None,
+        });
+        let boards = if let Some(cached) = self.tabs[idx].boards_cache.clone() {
+            cached
+        } else {
+            match self.client.fetch_boards_for_project(&project).await {
+                Ok(list) => {
+                    self.tabs[idx].boards_cache = Some(list.clone());
+                    list
+                }
+                Err(e) => {
+                    if let Some(p) = self.field_picker.as_mut() {
+                        p.error = Some(e.to_string());
+                        p.loaded = true;
+                    }
+                    return;
+                }
+            }
+        };
+        // Items: `— Board default —` sentinel (id="", maps to `None`)
+        // then each board tagged by its type (scrum/kanban/simple)
+        // for at-a-glance disambiguation. IDs are decimal strings so
+        // they route through the same `commit_field_picker` string
+        // channel as the sprint picker.
+        let items: Vec<(String, String)> =
+            std::iter::once((String::new(), "— Board default —".to_string()))
+                .chain(boards.iter().map(|b| {
+                    let tag = if b.board_type.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", b.board_type)
+                    };
+                    (b.id.to_string(), format!("{}{tag}", b.name))
+                }))
+                .collect();
+        if items.len() == 1 {
+            // Only the sentinel ⇒ the project exposes no boards to
+            // this user (permissions, or the project doesn't use
+            // Jira Software). Nicer to close + toast than to open
+            // an empty picker on a dead-end.
+            self.field_picker = None;
+            self.status = format!("board picker: project {project} has no visible boards");
+            return;
+        }
+        // Pre-select whatever the tab is currently bound to so the
+        // picker opens on the user's current view — same UX pattern
+        // as `open_sprint_picker`.
+        let current = self
+            .cfg
+            .tabs
+            .get(idx)
+            .and_then(|t| t.board_id)
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let default_pos = items.iter().position(|(id, _)| id == &current).unwrap_or(0);
+        if let Some(p) = self.field_picker.as_mut() {
+            p.items = items;
+            p.selected = default_pos;
+            p.loaded = true;
+        }
+    }
+
+    /// 2026-08-21 — commit for the Board picker. `id` is either an
+    /// empty string (Board default → clears `board_id`) or the
+    /// numeric board id as a decimal string. Writes to
+    /// `cfg.tabs[idx].board_id` in memory; sprint / quick-filter
+    /// caches are cleared because they were scoped to the previous
+    /// board. Refetches so the kanban repopulates from the new
+    /// board's saved filter + active sprint.
+    pub async fn commit_board_picker(&mut self, id: String) {
+        let idx = self.active_tab;
+        let new_id: Option<u64> = if id.trim().is_empty() {
+            None
+        } else {
+            id.parse::<u64>().ok()
+        };
+        if let Some(tab_cfg) = self.cfg.tabs.get_mut(idx) {
+            tab_cfg.board_id = new_id;
+        }
+        // Clear per-board caches — they were tied to the old
+        // board_id. `active_quick_filter_ids` follows because those
+        // ids came from the old board's quick-filter list and
+        // wouldn't resolve on the new one; safer to reset than to
+        // silently drop mismatched ids on the next fetch.
+        self.tabs[idx].sprints_cache = None;
+        self.tabs[idx].quick_filters_cache = None;
+        self.tabs[idx].selected_sprint_id = None;
+        self.tabs[idx].active_quick_filter_ids.clear();
+        // Reset kanban column scroll — the new board's tickets are
+        // unrelated to the old board's rows.
+        self.kanban_col_scroll = [0; 4];
+        self.field_picker = None;
+        self.status = match new_id {
+            Some(id) => format!("board: switched to {id}"),
+            None => "board: back to default (synthetic JQL)".to_string(),
+        };
+        self.refresh_active().await;
+    }
+
+    /// 2026-08-21 — Epic filter picker for board tabs. Multi-select
+    /// over the distinct epic keys the current tab's fetched issues
+    /// link to. Two detection strategies (in order):
+    ///
+    ///   1. `Fields.extras["parent"]` where the parent's
+    ///      `issuetype.name == "Epic"` — modern Jira Cloud path.
+    ///      Requires `parent` in the fetch field list (added in
+    ///      this same task).
+    ///   2. `Fields.extras["customfield_XXXXX"]` whose value is an
+    ///      issue-key string (`[A-Z]+-\d+`) — legacy Epic Link
+    ///      customfield. Only present when the tab's `extra_fields`
+    ///      already includes it (e.g. via user config), so this
+    ///      branch is best-effort.
+    ///
+    /// Empty-tab and no-epic paths toast + return per the task
+    /// contract ("Epic filter: no epic-link field detected …" /
+    /// "Epic filter: no epics found on current issues"). Detection
+    /// result is pinned to `TabState.epic_link_field` on success so
+    /// subsequent opens skip the probe.
+    pub fn open_epic_picker(&mut self) {
+        let idx = self.active_tab;
+        if self.tabs[idx].issues.is_empty() {
+            self.status = "Epic filter: no issues on this tab yet — refresh first".to_string();
+            return;
+        }
+        // Snapshot the detection result to avoid borrowing `self`
+        // both immutably (through &tab.issues) and mutably (through
+        // self.tabs[idx].epic_link_field) at once.
+        let detected: Option<String> = self.tabs[idx]
+            .epic_link_field
+            .clone()
+            .or_else(|| detect_epic_link_field(&self.tabs[idx].issues));
+        let Some(field_id) = detected else {
+            self.status =
+                "Epic filter: no epic-link field detected on this tab's issues yet".to_string();
+            return;
+        };
+        self.tabs[idx].epic_link_field = Some(field_id.clone());
+        // Walk the tab's issues collecting distinct epic keys, and
+        // stash a summary alongside where we can find it — the
+        // `parent` branch gives us `extras["parent"]["fields"]["summary"]`
+        // for free, which makes the picker legible.
+        let mut seen: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for issue in &self.tabs[idx].issues {
+            if let Some((key, summary)) = extract_epic_from_issue(issue, &field_id) {
+                seen.entry(key).or_insert(summary);
+            }
+        }
+        if seen.is_empty() {
+            self.status = "Epic filter: no epics found on current issues".to_string();
+            return;
+        }
+        let items: Vec<(String, String)> = seen
+            .into_iter()
+            .map(|(k, summary)| {
+                let label = if summary.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{k}  {summary}")
+                };
+                (k, label)
+            })
+            .collect();
+        // Seed multi-select with the tab's current filter set so
+        // re-open reflects state, not a blank slate — same UX
+        // pattern as the QuickFilter picker.
+        let mut multi: BTreeSet<String> = BTreeSet::new();
+        for k in &self.tabs[idx].active_epic_keys {
+            multi.insert(k.clone());
+        }
+        self.field_picker = Some(FieldPicker {
+            kind: FieldKind::Epic,
+            items,
+            loaded: true,
+            filter: String::new(),
+            cursor: 0,
+            selected: 0,
+            error: None,
+            multi_selected: Some(multi),
+        });
+    }
+
+    /// 2026-08-21 — commit for the Epic picker. Writes the picker's
+    /// `multi_selected` back into `TabState.active_epic_keys` and
+    /// closes the modal. Client-side filter — no refetch needed.
+    pub fn commit_epic_picker(&mut self) {
+        let idx = self.active_tab;
+        let Some(p) = self.field_picker.as_ref() else {
+            return;
+        };
+        let Some(multi) = p.multi_selected.as_ref() else {
+            return;
+        };
+        self.tabs[idx].active_epic_keys = multi.iter().cloned().collect();
+        self.clamp_selection_to_filter_public();
+        self.field_picker = None;
+        let n = self.tabs[idx].active_epic_keys.len();
+        self.status = if n == 0 {
+            "epic filter: cleared".to_string()
+        } else {
+            format!("epic filter: {n} active")
+        };
+    }
+
     /// 2026-08-17 (task #887) — Sprint picker for board tabs. Opens
     /// a modal listing the tab's board sprints (current + upcoming +
     /// last N closed). Uses the cache when populated, otherwise
@@ -2568,8 +3040,7 @@ impl App {
     ///  - keyboard shortcut in a future pass.
     pub fn open_avatar_cluster_picker(&mut self) {
         let idx = self.active_tab;
-        let cache = self
-            .tabs[idx]
+        let cache = self.tabs[idx]
             .assignee_cache
             .as_ref()
             .cloned()
@@ -2591,7 +3062,10 @@ impl App {
         if let Some(Ok(id)) = self.my_account_id.as_ref() {
             items.push((id.clone(), "— Me (Current User) —".to_string()));
         }
-        items.push((UNASSIGNED_SENTINEL.to_string(), "— Unassigned —".to_string()));
+        items.push((
+            UNASSIGNED_SENTINEL.to_string(),
+            "— Unassigned —".to_string(),
+        ));
         for a in &cache {
             items.push((
                 a.account_id.clone(),
@@ -2926,6 +3400,18 @@ impl App {
             self.commit_avatar_cluster_picker();
             return;
         }
+        // 2026-08-21 — Board picker (Feature 1). Not a per-ticket
+        // mutation; writes cfg.tabs[idx].board_id + refetches.
+        if kind == FieldKind::Board {
+            self.commit_board_picker(id.clone()).await;
+            return;
+        }
+        // 2026-08-21 — Epic filter (Feature 2). Multi-select client-
+        // side render filter; same shape as AvatarCluster routing.
+        if kind == FieldKind::Epic {
+            self.commit_epic_picker();
+            return;
+        }
         let keys: Vec<String> = if self.selection.is_empty() {
             self.focused_key().into_iter().collect()
         } else {
@@ -2961,7 +3447,9 @@ impl App {
                 | FieldKind::QuickFilter
                 | FieldKind::IssueType
                 | FieldKind::Label
-                | FieldKind::AvatarCluster => {
+                | FieldKind::AvatarCluster
+                | FieldKind::Board
+                | FieldKind::Epic => {
                     unreachable!("routed above")
                 }
             };
@@ -2985,7 +3473,9 @@ impl App {
                 | FieldKind::QuickFilter
                 | FieldKind::IssueType
                 | FieldKind::Label
-                | FieldKind::AvatarCluster => {
+                | FieldKind::AvatarCluster
+                | FieldKind::Board
+                | FieldKind::Epic => {
                     unreachable!("routed above")
                 }
             };
@@ -3502,12 +3992,16 @@ impl App {
                     columns: None,
                     bumps: Default::default(),
                     status_order: None,
+                    filter_id: None,
+                    issue_type: None,
+                    label: None,
                 }],
                 release_cut: false,
                 team_field_id: None,
                 team_field_name: None,
                 dispatch_workspace: None,
                 detail_modal: crate::config::DetailModalConfig::default(),
+                projects: Vec::new(),
             },
             client,
             tabs: vec![TabState {
@@ -3527,6 +4021,9 @@ impl App {
                 show_jql: false,
                 assignee_default_seeded: false,
                 quick_filters_cache: None,
+                boards_cache: None,
+                epic_link_field: None,
+                active_epic_keys: BTreeSet::new(),
             }],
             active_tab: 0,
             status: String::new(),
@@ -3669,6 +4166,9 @@ mod tests {
             show_jql: false,
             assignee_default_seeded: false,
             quick_filters_cache: None,
+            boards_cache: None,
+            epic_link_field: None,
+            active_epic_keys: BTreeSet::new(),
         };
         App {
             cfg: Config {
@@ -3681,6 +4181,7 @@ mod tests {
                 team_field_name: None,
                 dispatch_workspace: None,
                 detail_modal: crate::config::DetailModalConfig::default(),
+                projects: Vec::new(),
             },
             client,
             tabs: vec![tab],

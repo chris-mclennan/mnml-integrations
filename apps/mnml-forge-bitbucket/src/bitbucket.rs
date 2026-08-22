@@ -1228,16 +1228,9 @@ impl Client {
                         // merged PR and the fallback would always
                         // return empty.
                         let fallback_merged = if prs.is_empty() {
-                            let merged_q =
-                                q.replace("state = \"OPEN\"", "state = \"MERGED\"");
+                            let merged_q = q.replace("state = \"OPEN\"", "state = \"MERGED\"");
                             client
-                                .list_repo_prs_fetch(
-                                    &ws,
-                                    &slug,
-                                    Some("MERGED"),
-                                    Some(&merged_q),
-                                    1,
-                                )
+                                .list_repo_prs_fetch(&ws, &slug, Some("MERGED"), Some(&merged_q), 1)
                                 .await
                                 .ok()
                                 .and_then(|v| v.into_iter().next())
@@ -1313,7 +1306,8 @@ impl Client {
             .await;
         let (ok, err): (Vec<_>, Vec<_>) = batches.into_iter().partition(std::result::Result::is_ok);
         if !err.is_empty() {
-            let first = err.first()
+            let first = err
+                .first()
                 .and_then(|e| e.as_ref().err())
                 .cloned()
                 .unwrap_or_default();

@@ -10,6 +10,12 @@
 //! Self-contained: no extra deps, no wire-protocol coupling. Path logic mirrors
 //! mnml's ( `$XDG_CONFIG_HOME` else `$HOME/.config` — not `dirs::config_dir()`,
 //! which is `~/Library/...` on macOS).
+//!
+//! Module currently unwired: [`poll_refresh`] / [`remap`] are not called from
+//! the render path yet, so every item lives behind `#![allow(dead_code)]`.
+//! Wiring is a follow-up — remove the allow once the render chokepoint hooks
+//! this in.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};

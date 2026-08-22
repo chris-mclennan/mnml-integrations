@@ -433,7 +433,9 @@ async fn run_diag(
         }
         Err(e) => {
             println!("  └─ whoami: ✗ {e}");
-            println!("     mine-only filters, --values, and workspace repo enumeration all depend on this succeeding.");
+            println!(
+                "     mine-only filters, --values, and workspace repo enumeration all depend on this succeeding."
+            );
         }
     }
     println!();

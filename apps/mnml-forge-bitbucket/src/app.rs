@@ -6,6 +6,15 @@ use crate::config::{Config, Tab};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+/// One row for `tree_focused_row`'s uniform tree walk — a repo slug
+/// plus the child labels visible under it when expanded (branch names
+/// for `RepoTree`, `"PR #N"` synthetics for `RepoPrTree`).
+type TreeRow = (String, Vec<String>);
+
+/// Type-erased iterator over `TreeRow`s so `tree_focused_row` can
+/// walk both `RepoTree` and `RepoPrTree` through a single loop.
+type BoxedTreeRowsIter<'a> = Box<dyn Iterator<Item = TreeRow> + 'a>;
+
 /// Canonical trunk / release / integration branch names, in the
 /// order we want them shown. Case-insensitive match. Anything not on
 /// this list is a "feature" branch. tree-redesign 2026-07-19 —
@@ -238,6 +247,12 @@ impl TabKind {
     /// than from a per-tab `repo` field. Used at resolve-time to
     /// skip the `repo` requirement + at refresh-time to route to
     /// the workspace-wide fetch helpers.
+    ///
+    /// Kept as public API for downstream consumers even though the
+    /// in-tree callers were inlined into TabSpec::resolve — the
+    /// predicate is the canonical way to answer "does this tab kind
+    /// need a per-tab repo?".
+    #[allow(dead_code)]
     pub fn is_workspace_wide(self) -> bool {
         matches!(
             self,
@@ -269,9 +284,9 @@ pub enum TabData {
     /// PRs (with per-PR state / author / branch / date columns)
     /// instead of pipeline branches. Powers the workspace_open_prs
     /// + workspace_merged_prs tabs after the user asked for
-    /// per-repo drill-down on those (2026-07-15). Shares the
-    /// `tree_*` navigation helpers below with RepoTree via the
-    /// generic slug/child-count shape.
+    ///   per-repo drill-down on those (2026-07-15). Shares the
+    ///   `tree_*` navigation helpers below with RepoTree via the
+    ///   generic slug/child-count shape.
     RepoPrTree {
         rows: Vec<RepoPrs>,
         expanded: HashSet<String>,
@@ -438,13 +453,6 @@ pub struct App {
     /// Absent = "not fetched yet or in flight"; present = "ready to
     /// render" (empty vec = fetched, no pipeline ran on that commit).
     pub pr_pipeline_cache: HashMap<(String, i64), Vec<Pipeline>>,
-    /// 2026-07-24 — repos where the user asked to see PRs older than
-    /// 24h ("Show N older" row clicked / activated). Shared across
-    /// tabs — flipping this in the Open PRs tab also relaxes the
-    /// filter in the Merged tab, which matches the "I'm looking at
-    /// this repo in depth" mental model. Empty on startup → every
-    /// repo starts with the 24-hour recency filter applied.
-    pub show_all_repos: HashSet<String>,
     /// #1000 (2026-08-18) — clickable footer chord chips. Rebuilt
     /// every render frame in `ui::draw_status`. Each entry is
     /// `(chip_rect, synthesized_KeyEvent)`; on left-click we route
@@ -474,7 +482,6 @@ pub enum FilterChip {
     Status,
     Author,
     TargetBranch,
-    All,
     // Pipelines
     Branch,
     PipelineType,
@@ -706,7 +713,6 @@ impl App {
             hide_tab_strip: false,
             expanded_prs: HashSet::new(),
             pr_pipeline_cache: HashMap::new(),
-            show_all_repos: HashSet::new(),
             hint_chip_rects: Vec::new(),
             filter_chip_rects: Vec::new(),
         };
@@ -1090,30 +1096,28 @@ impl App {
         // a "PR #N" synthetic label for RepoPrTree — good enough
         // for expand/collapse/hide/reorder decisions which only
         // care about which repo header the cursor sits under.
-        let (rows_iter, expanded): (
-            Box<dyn Iterator<Item = (String, Vec<String>)>>,
-            &HashSet<String>,
-        ) = match &self.active().data {
-            TabData::RepoTree { rows, expanded } => (
-                Box::new(rows.iter().map(|r| {
-                    (
-                        r.slug.clone(),
-                        r.branches.iter().map(|b| b.name.clone()).collect(),
-                    )
-                })),
-                expanded,
-            ),
-            TabData::RepoPrTree { rows, expanded, .. } => (
-                Box::new(rows.iter().map(|r| {
-                    (
-                        r.slug.clone(),
-                        r.prs.iter().map(|p| format!("PR #{}", p.id)).collect(),
-                    )
-                })),
-                expanded,
-            ),
-            _ => return None,
-        };
+        let (rows_iter, expanded): (BoxedTreeRowsIter<'_>, &HashSet<String>) =
+            match &self.active().data {
+                TabData::RepoTree { rows, expanded } => (
+                    Box::new(rows.iter().map(|r| {
+                        (
+                            r.slug.clone(),
+                            r.branches.iter().map(|b| b.name.clone()).collect(),
+                        )
+                    })),
+                    expanded,
+                ),
+                TabData::RepoPrTree { rows, expanded, .. } => (
+                    Box::new(rows.iter().map(|r| {
+                        (
+                            r.slug.clone(),
+                            r.prs.iter().map(|p| format!("PR #{}", p.id)).collect(),
+                        )
+                    })),
+                    expanded,
+                ),
+                _ => return None,
+            };
         let mut idx = self.active().selected;
         for (slug, children) in rows_iter {
             if idx == 0 {
@@ -1290,10 +1294,12 @@ impl App {
             return;
         }
         if let Some((_, pr)) = self.focused_pr()
-            && pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
-                self.toggle_pr_expand().await;
-                return;
-            }
+            && pr.state.eq_ignore_ascii_case("MERGED")
+            && pr.merge_commit.is_some()
+        {
+            self.toggle_pr_expand().await;
+            return;
+        }
         self.tree_toggle_focused_repo();
     }
 
@@ -1336,13 +1342,15 @@ impl App {
     /// Otherwise: repo-level expand-or-descend.
     pub async fn smart_expand_focused(&mut self) {
         if let Some((slug, pr)) = self.focused_pr()
-            && pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
-                let key = (slug, pr.id);
-                if !self.expanded_prs.contains(&key) {
-                    self.toggle_pr_expand().await;
-                }
-                return;
+            && pr.state.eq_ignore_ascii_case("MERGED")
+            && pr.merge_commit.is_some()
+        {
+            let key = (slug, pr.id);
+            if !self.expanded_prs.contains(&key) {
+                self.toggle_pr_expand().await;
             }
+            return;
+        }
         self.tree_expand_focused();
     }
 
@@ -1511,10 +1519,12 @@ impl App {
         // all→recent→explicit transition so the tab doesn't go
         // blank on the switch. User can later hand-edit the config
         // to trim.
-        if next == "explicit" && self.cfg.explicit_repos.is_empty()
-            && let Some(cached) = &self.scope_repos {
-                self.cfg.explicit_repos = cached.clone();
-            }
+        if next == "explicit"
+            && self.cfg.explicit_repos.is_empty()
+            && let Some(cached) = &self.scope_repos
+        {
+            self.cfg.explicit_repos = cached.clone();
+        }
         self.cfg.scope = next.to_string();
         crate::config::save(&self.cfg)?;
         self.invalidate_scope();
@@ -2228,9 +2238,7 @@ pub(crate) fn parse_iso_seconds(s: &str) -> Option<i64> {
     let month: i64 = date_parts.next()?.parse().ok()?;
     let day: i64 = date_parts.next()?.parse().ok()?;
     // Truncate rest at `.` or `+` or `-` or `Z` — we only want HH:MM:SS.
-    let time_end = rest
-        .find(['.', '+', '-', 'Z'])
-        .unwrap_or(rest.len());
+    let time_end = rest.find(['.', '+', '-', 'Z']).unwrap_or(rest.len());
     let time = &rest[..time_end];
     let mut time_parts = time.splitn(3, ':');
     let hh: i64 = time_parts.next()?.parse().ok()?;

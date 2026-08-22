@@ -83,7 +83,8 @@ fn hidden_pr_count_for_render(
     if show_all {
         return 0;
     }
-    prs.len().saturating_sub(visible_prs_for_render(prs, tab, show_all).len())
+    prs.len()
+        .saturating_sub(visible_prs_for_render(prs, tab, show_all).len())
 }
 
 pub async fn run(app: &mut App) -> Result<()> {
@@ -209,12 +210,6 @@ async fn event_loop(
                                     app.refresh_active().await;
                                     last_refresh = Instant::now();
                                 }
-                                FilterChip::All => {
-                                    // Legacy variant, chip retired.
-                                    // Kept in the enum so old rects
-                                    // registered during a prior draw
-                                    // don't panic on a stray click.
-                                }
                                 FilterChip::ActionRefresh => {
                                     // #1053-analog (2026-08-21) —
                                     // right-side Refresh chip, mirror
@@ -241,8 +236,7 @@ async fn event_loop(
                                     // Schedules / Caches / Usage =
                                     // navigate to Bitbucket Cloud in
                                     // the browser.
-                                    app.status =
-                                        "filter not wired yet (round-1 visual)".into();
+                                    app.status = "filter not wired yet (round-1 visual)".into();
                                 }
                             }
                         } else if let Some(row_idx) = table_row_at(m.row, app) {
@@ -360,11 +354,7 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
                 .filter(|r| expanded.contains(&r.slug))
                 .map(|r| hidden_pr_count_for_render(&r.prs, app.active(), *show_all))
                 .sum();
-            if !show_all
-                && footer_hidden > 0
-                && visual + 1 > target
-                && visual <= target
-            {
+            if !show_all && footer_hidden > 0 && visual + 1 > target && visual <= target {
                 return Some(logical);
             }
             None
@@ -714,6 +704,7 @@ fn state_color(state: &str) -> Color {
 ///   - All chip → toggles `mine_only` on the active tab, invalidating
 ///     the fetch so the next refresh re-queries with the new scope.
 ///   - Search / Author / Target branch → visual only (follow-up).
+///
 /// #1103 f/u4 (2026-08-20) — normalize Bitbucket's uppercase PR
 /// state (`OPEN`, `MERGED`, `DECLINED`, `SUPERSEDED`) into the
 /// title-cased form Bitbucket Cloud's own filter bar shows
@@ -733,15 +724,14 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     use crate::app::{FilterChip, TabKind};
+    // One entry in the toolbar row: (label, active?, chip identity).
+    type ToolbarEntry = (String, bool, FilterChip);
     let tab = &app.tabs[app.active_tab];
     // Left-side (filter) entries and right-side (sort/action)
     // entries are laid out from the two ends of the row, per
     // Bitbucket Cloud's own toolbar. Route by tab kind — PR family
     // and pipeline family have different filter sets.
-    let (left, right): (
-        Vec<(String, bool, FilterChip)>,
-        Vec<(String, bool, FilterChip)>,
-    ) = match tab.spec.kind {
+    let (left, right): (Vec<ToolbarEntry>, Vec<ToolbarEntry>) = match tab.spec.kind {
         // #1116 audit SEV-1 (2026-08-21) — Branches tab was falling
         // into the PR-family `_` arm and rendering `Author`/`Target
         // branch`/`All` chips that make no sense for a branch list
@@ -751,7 +741,11 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         // right-side Refresh.
         TabKind::Branches => (
             vec![("\u{f0349} Search".to_string(), false, FilterChip::Search)],
-            vec![("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh)],
+            vec![(
+                "\u{f0450} Refresh".to_string(),
+                false,
+                FilterChip::ActionRefresh,
+            )],
         ),
         TabKind::Pipelines | TabKind::WorkspacePipelines => (
             vec![
@@ -762,11 +756,7 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                     FilterChip::PipelineType,
                 ),
                 (format!("Status: {} ▾", tab.name), true, FilterChip::Status),
-                (
-                    "Trigger type ▾".to_string(),
-                    false,
-                    FilterChip::TriggerType,
-                ),
+                ("Trigger type ▾".to_string(), false, FilterChip::TriggerType),
             ],
             vec![
                 (
@@ -777,7 +767,11 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                 ("Schedules".to_string(), false, FilterChip::ActionSchedules),
                 ("Caches".to_string(), false, FilterChip::ActionCaches),
                 ("Usage".to_string(), false, FilterChip::ActionUsage),
-                ("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh),
+                (
+                    "\u{f0450} Refresh".to_string(),
+                    false,
+                    FilterChip::ActionRefresh,
+                ),
             ],
         ),
         _ => {
@@ -826,7 +820,11 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                 // Right side: refresh chip (Jira Work parity). Sort
                 // still surfaces on column headers with ▲/▼ direction
                 // indicators (follow-up).
-                vec![("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh)],
+                vec![(
+                    "\u{f0450} Refresh".to_string(),
+                    false,
+                    FilterChip::ActionRefresh,
+                )],
             )
         }
     };
@@ -1202,7 +1200,11 @@ fn draw_repo_pr_tree(
                 Cell::from(""),
                 Cell::from(format!(
                     "[ Show {hidden} more {} ]",
-                    if tab.spec.mine_only { "merged" } else { "older" }
+                    if tab.spec.mine_only {
+                        "merged"
+                    } else {
+                        "older"
+                    }
                 ))
                 .style(
                     Style::default()

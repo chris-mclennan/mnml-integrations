@@ -27,7 +27,9 @@ pub enum Action {
     /// Drop the committed filter, returning to the full list.
     FilterClear,
     /// #1115 (2026-08-21) — JQL editor overlay actions. Opened by the
-    /// toolbar `JQL` chip click; keyboard while overlay is up.
+    /// toolbar `JQL` chip click OR (Feature 3, 2026-08-21) by the `E`
+    /// keybinding on the top-level tab view.
+    OpenJqlEditor,
     JqlEditorEdit(Option<char>),
     JqlEditorCommit,
     JqlEditorCancel,
@@ -40,6 +42,15 @@ pub enum Action {
     JqlEditorWordLeft,
     JqlEditorWordRight,
     JqlEditorDeleteWordBack,
+    /// 2026-08-21 — readline `unix-line-discard` (Ctrl-U) — kill from
+    /// cursor to start of line.
+    JqlEditorKillToStart,
+    /// 2026-08-21 — readline `kill-line` (Ctrl-K) — kill from cursor to
+    /// end of line.
+    JqlEditorKillToEnd,
+    /// Bulk-insert (paste). Handler is wired in `apply`; no key path
+    /// constructs it yet — reserved for a paste dispatch downstream.
+    #[allow(dead_code)]
     JqlEditorInsertStr(String),
     /// `t` — open the status transition picker for the focused ticket.
     OpenTransitionPicker,
@@ -121,7 +132,9 @@ pub enum Action {
     /// 2026-08-07 — kanban column vertical scroll (delta = ±1).
     /// Bound to j/k when on a kanban tab (the arrow-key path still
     /// moves the cursor). Column index is derived from
-    /// `App::kanban_selected_col()`.
+    /// `App::kanban_selected_col()`. Handler is wired in `apply`;
+    /// no key path constructs it yet — wired downstream in a follow-up.
+    #[allow(dead_code)]
     KanbanColScroll(i32),
     /// 2026-08-07 — kanban card expand chevron toggle (via
     /// keyboard). Bound to `x` on a kanban tab. Applies to the
@@ -245,7 +258,15 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
             // common in most modern terminal text fields.
             KeyCode::Char('a') if ctrl => Some(Action::JqlEditorCursorHome),
             KeyCode::Char('e') if ctrl => Some(Action::JqlEditorCursorEnd),
-            KeyCode::Char('u') if ctrl => Some(Action::JqlEditorDeleteWordBack),
+            // 2026-08-21 — readline-style kill bindings. Ctrl-U =
+            // unix-line-discard (kill to start), Ctrl-K = kill-line
+            // (kill to end), Ctrl-W = unix-word-rubout (kill word
+            // back). Ctrl-U was previously bound to word-back-delete;
+            // realigned with readline so behavior matches every
+            // modern terminal text field.
+            KeyCode::Char('u') if ctrl => Some(Action::JqlEditorKillToStart),
+            KeyCode::Char('k') if ctrl => Some(Action::JqlEditorKillToEnd),
+            KeyCode::Char('w') if ctrl => Some(Action::JqlEditorDeleteWordBack),
             KeyCode::Char(c) if !ctrl => Some(Action::JqlEditorEdit(Some(c))),
             _ => None,
         };
@@ -308,6 +329,14 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         // `t` opens the status-transition picker for the focused
         // ticket (greedy modal; picker keys take over the next event).
         KeyCode::Char('t') => Some(Action::OpenTransitionPicker),
+        // 2026-08-21 (Feature 3) — `E` opens the JQL editor prompt
+        // seeded with the active tab's current JQL. Uppercase to
+        // avoid stealing lowercase `e` (unbound today, keeping it
+        // free for future filter-editor chords) and to visually
+        // pair with vim's uppercase "big-word" motion vocabulary.
+        // Any tab has a JQL string (built from its kind + config);
+        // no capability check needed beyond "not already editing".
+        KeyCode::Char('E') if app.jql_editor.is_none() => Some(Action::OpenJqlEditor),
         // `w` toggles watch on the focused ticket.
         KeyCode::Char('w') => Some(Action::ToggleWatch),
         // `c` opens the inline comment editor (only meaningful when the
@@ -438,6 +467,7 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::FilterCommit => app.close_filter(FilterClose::Commit),
         Action::FilterCancel => app.close_filter(FilterClose::Cancel),
         Action::FilterClear => app.filter = None,
+        Action::OpenJqlEditor => app.open_jql_editor(),
         Action::JqlEditorEdit(Some(c)) => app.jql_editor_insert(c),
         Action::JqlEditorEdit(None) => app.jql_editor_backspace(),
         Action::JqlEditorCommit => app.close_jql_editor(FilterClose::Commit).await,
@@ -450,6 +480,8 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::JqlEditorWordLeft => app.jql_editor_word_left(),
         Action::JqlEditorWordRight => app.jql_editor_word_right(),
         Action::JqlEditorDeleteWordBack => app.jql_editor_delete_word_back(),
+        Action::JqlEditorKillToStart => app.jql_editor_kill_to_start(),
+        Action::JqlEditorKillToEnd => app.jql_editor_kill_to_end(),
         Action::JqlEditorInsertStr(s) => app.jql_editor_insert_str(&s),
         Action::OpenTransitionPicker => app.open_transition_picker().await,
         Action::TransitionUp => app.transition_picker_move(-1),

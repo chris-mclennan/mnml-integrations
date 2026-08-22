@@ -109,7 +109,6 @@ fn auth_fields() -> Vec<AuthField> {
                     .into(),
             ),
             required: false,
-            ..Default::default()
         },
         AuthField {
             key: "app_password".into(),
@@ -125,7 +124,6 @@ fn auth_fields() -> Vec<AuthField> {
                     .into(),
             ),
             required: false,
-            ..Default::default()
         },
         AuthField {
             key: "username".into(),

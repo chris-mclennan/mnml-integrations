@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-forge-bitbucket"
-version = "0.3.23"
+version = "0.3.28"
 dependencies = [
  "anyhow",
  "base64",
@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-tracker-jira"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",

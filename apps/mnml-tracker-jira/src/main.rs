@@ -247,7 +247,7 @@ async fn run_prefetch(cfg: config::Config, client: jira::Client) -> Result<()> {
 /// #1103 f/u7 (2026-08-20) — human-readable diagnostic dump.
 /// Mirrors the mnml-forge-bitbucket `--diag` shape: Auth (source
 /// + live /myself probe), Config, Runtime. Sections run
-/// independently so a failure in one still shows the rest.
+///   independently so a failure in one still shows the rest.
 async fn run_diag(
     cfg: &config::Config,
     cfg_path: &std::path::Path,

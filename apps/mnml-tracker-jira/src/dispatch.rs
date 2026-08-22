@@ -269,10 +269,7 @@ pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
         .as_ref()
         .map(|s| s.name.to_ascii_lowercase())
         .unwrap_or_default();
-    let is_todo_or_in_progress = matches!(
-        status.as_str(),
-        "to do" | "open" | "in progress"
-    );
+    let is_todo_or_in_progress = matches!(status.as_str(), "to do" | "open" | "in progress");
     let is_pr_review = matches!(
         status.as_str(),
         "in pr review" | "in code review" | "code review" | "pr review" | "in review"

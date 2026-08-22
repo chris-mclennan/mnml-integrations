@@ -24,7 +24,6 @@ const LEGACY_ID: &str = "jira";
 /// mnml-side chip id for right-click / config overrides.
 struct SplitChip {
     id: &'static str,
-    name: &'static str,
     description: &'static str,
     fallback: &'static str,
     label: &'static str,
@@ -45,7 +44,6 @@ struct SplitChip {
 const SPLITS: &[SplitChip] = &[
     SplitChip {
         id: "jira_work",
-        name: "Jira Work",
         description: "Jira: tickets assigned to me + recently done",
         fallback: "JW",
         label: "Jira Work",
@@ -57,7 +55,6 @@ const SPLITS: &[SplitChip] = &[
     },
     SplitChip {
         id: "jira_fix_versions",
-        name: "Jira Fix Versions",
         description: "Jira: current release grouped by status, with linked PRs + pipelines",
         fallback: "JV",
         label: "Jira Fix Versions",
@@ -69,7 +66,6 @@ const SPLITS: &[SplitChip] = &[
     },
     SplitChip {
         id: "jira_boards",
-        name: "Jira Boards",
         description: "Jira: active sprint + backlog",
         fallback: "JB",
         label: "Jira Boards",
@@ -216,7 +212,6 @@ fn auth_fields() -> Vec<AuthField> {
                     .into(),
             ),
             required: true,
-            ..Default::default()
         },
         // Note: `$BITBUCKET_ACCESS_TOKEN` (used by Fix Versions view
         // for PR correlation) is intentionally NOT declared here.

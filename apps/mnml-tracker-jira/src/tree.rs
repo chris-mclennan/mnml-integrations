@@ -83,7 +83,11 @@ pub enum VisibleRow {
     /// rows (or a "no linked PRs" hint) once the fetch resolves.
     PrLoading { issue_idx: usize },
     /// An "no linked PRs" hint under an expanded ticket whose fetch
-    /// resolved to an empty vec.
+    /// resolved to an empty vec. #1110 f/u3 (2026-08-21) suppressed
+    /// construction (see `expand_ticket_sub_rows`), but the variant
+    /// remains as a match arm across `ui.rs` / `app.rs` — kept as
+    /// scaffolding so re-enabling the hint is a one-liner.
+    #[allow(dead_code)]
     PrEmpty { issue_idx: usize },
     /// A "fetching pipeline…" hint under an expanded merged LinkedPr
     /// row. Replaced by PrPipeline / PrPipelineEmpty / PrPipelineError
@@ -508,6 +512,9 @@ mod tests {
             version_name_contains: None,
             team: None,
             board_id: None,
+            filter_id: None,
+            issue_type: None,
+            label: None,
         }
     }
 
@@ -522,6 +529,7 @@ mod tests {
             team_field_name: None,
             dispatch_workspace: None,
             detail_modal: crate::config::DetailModalConfig::default(),
+            projects: Vec::new(),
         }
     }
 

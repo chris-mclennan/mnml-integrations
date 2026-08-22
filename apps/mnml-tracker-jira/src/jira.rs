@@ -84,6 +84,14 @@ impl Client {
             "fixVersions",
             "components",
             "labels",
+            // 2026-08-21 — `parent` lands the modern Jira Cloud
+            // Epic Link (parent-issue-type = "Epic") in
+            // `Fields.extras["parent"]`, which the Epic-filter chip
+            // reads to detect the epic-link field + list distinct
+            // parent epics. Cheap ask (single object), universally
+            // safe: absent when the issue has no parent, ignored
+            // by non-epic callers.
+            "parent",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -430,6 +438,14 @@ impl Client {
             "fixVersions",
             "components",
             "labels",
+            // 2026-08-21 — `parent` lands the modern Jira Cloud
+            // Epic Link (parent-issue-type = "Epic") in
+            // `Fields.extras["parent"]`, which the Epic-filter chip
+            // reads to detect the epic-link field + list distinct
+            // parent epics. Cheap ask (single object), universally
+            // safe: absent when the issue has no parent, ignored
+            // by non-epic callers.
+            "parent",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1124,14 +1140,11 @@ fn walk_adf(node: &serde_json::Value, out: &mut String) {
 #[derive(Debug, Deserialize)]
 struct SearchResult {
     issues: Vec<Issue>,
-    /// Agile API returns `startAt` + `maxResults` + `total`; the
-    /// newer `/rest/api/3/search/jql` returns `isLast` +
-    /// `nextPageToken`. We accept either shape (all optional) and
-    /// let the caller loop on whichever fires.
-    #[serde(default)]
-    start_at: Option<u32>,
-    #[serde(default, rename = "maxResults")]
-    max_results: Option<u32>,
+    /// Agile API returns `total`; the newer `/rest/api/3/search/jql`
+    /// returns `isLast` + `nextPageToken`. We accept either shape
+    /// (all optional) and let the caller loop on whichever fires.
+    /// (`startAt` + `maxResults` are also on the Agile shape but the
+    /// caller tracks `start_at` itself and doesn't need the echo.)
     #[serde(default)]
     total: Option<u32>,
     #[serde(default, rename = "isLast")]

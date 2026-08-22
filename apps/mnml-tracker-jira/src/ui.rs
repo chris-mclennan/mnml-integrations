@@ -5,7 +5,10 @@ use crate::app::{App, FilterClose};
 use crate::keys;
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -26,7 +29,17 @@ pub async fn run(app: &mut App) -> Result<()> {
     // 2026-07-26 — enable mouse capture so tree-tab clicks reach us
     // (tree activation: click a group header to toggle collapse,
     // click a ticket to expand PRs, click a PR to open in browser).
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // 2026-08-21 (Feature 3) — enable bracketed paste so pasted
+    // content (Cmd/Ctrl-V from the terminal emulator, drag-drop file
+    // paths, etc.) arrives as an atomic `Event::Paste(String)` instead
+    // of being interpreted key-by-key. Feeds the JQL editor overlay's
+    // multi-char insert path.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -35,6 +48,7 @@ pub async fn run(app: &mut App) -> Result<()> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
@@ -64,14 +78,7 @@ fn strip_fix_version(jql: &str) -> String {
     let Some(end_quote) = rest.find('"') else {
         return jql.to_string();
     };
-    let clause_end = start_lc
-        + "fixversion".len()
-        + eq
-        + 1
-        + first_quote
-        + 1
-        + end_quote
-        + 1; // include closing quote
+    let clause_end = start_lc + "fixversion".len() + eq + 1 + first_quote + 1 + end_quote + 1; // include closing quote
     // Cut back before the clause: if the char just before it is `A`
     // (start of "AND") swallow the leading connector; same for `OR`.
     let mut before_end = start_lc;
@@ -106,7 +113,9 @@ fn strip_fix_version(jql: &str) -> String {
     } else {
         after_tail
     };
-    let joined = format!("{stripped_before} {skipped_tail}").trim().to_string();
+    let joined = format!("{stripped_before} {skipped_tail}")
+        .trim()
+        .to_string();
     let _ = after_start;
     joined
 }
@@ -134,8 +143,8 @@ fn extract_fix_version(jql: &str) -> Option<String> {
 /// 2026-07-26 — map an absolute screen row → visible-row index in
 /// the table body. Accounts for the tab strip (3 rows when shown)
 /// + one border row + one header row. Ignores columns — a click
-/// anywhere on the row targets that row. Returns None when the
-/// click landed above the table body.
+///   anywhere on the row targets that row. Returns None when the
+///   click landed above the table body.
 fn table_row_at(row: u16, app: &App) -> Option<usize> {
     let show_strip = !app.hide_tab_strip && app.tabs.len() > 1;
     let area_y: u16 = if show_strip { 3 } else { 0 };
@@ -203,16 +212,11 @@ async fn event_loop(
                                 // Recreate the scroll offset the same
                                 // way the renderer computed it (from
                                 // cursor row, keep cursor visible).
-                                let cursor = app
-                                    .jql_editor
-                                    .as_ref()
-                                    .map(|j| j.cursor)
-                                    .unwrap_or(0);
+                                let cursor = app.jql_editor.as_ref().map(|j| j.cursor).unwrap_or(0);
                                 let cursor_row = cursor / inner_w;
                                 let total_rows = (chars_len + 1).div_ceil(inner_w);
-                                let scroll_row = cursor_row.saturating_sub(
-                                    inner_h.saturating_sub(1),
-                                );
+                                let scroll_row =
+                                    cursor_row.saturating_sub(inner_h.saturating_sub(1));
                                 let first_row = scroll_row.min(total_rows.saturating_sub(1));
                                 let target_row = first_row + row_from_top;
                                 let target_col = col.min(inner_w);
@@ -243,12 +247,12 @@ async fn event_loop(
                                     picker.selected = idx;
                                 }
                                 app.commit_field_picker().await;
-                            } else if let Some(body) = app.rects.picker_body {
-                                if !rect_hit(body, m.column, m.row) {
-                                    app.field_picker = None;
-                                    app.rects.picker_rows.clear();
-                                    app.rects.picker_body = None;
-                                }
+                            } else if let Some(body) = app.rects.picker_body
+                                && !rect_hit(body, m.column, m.row)
+                            {
+                                app.field_picker = None;
+                                app.rects.picker_rows.clear();
+                                app.rects.picker_body = None;
                             }
                             continue;
                         }
@@ -372,8 +376,7 @@ async fn event_loop(
                                     // the toolbar owns its own state
                                     // transitions.
                                     let idx = app.active_tab;
-                                    let new_jql =
-                                        strip_fix_version(&app.tabs[idx].jql);
+                                    let new_jql = strip_fix_version(&app.tabs[idx].jql);
                                     app.tabs[idx].jql = new_jql;
                                     app.tabs[idx].last_fetched = None;
                                     app.refresh_active().await;
@@ -410,9 +413,7 @@ async fn event_loop(
                                     if matches!(kind, WorkFilterChip::Search) {
                                         app.open_filter();
                                     } else {
-                                        app.status =
-                                            "filter not wired yet (round-1 visual)"
-                                                .into();
+                                        app.status = "filter not wired yet (round-1 visual)".into();
                                     }
                                 }
                             }
@@ -495,6 +496,16 @@ async fn event_loop(
                     _ => {}
                 },
                 Event::Resize(_, _) => { /* terminal handles re-draw */ }
+                // 2026-08-21 (Feature 3) — bracketed paste: single
+                // atomic insert into whichever text field is open.
+                // Currently only the JQL editor overlay accepts
+                // paste; the `/` filter overlay is a follow-up
+                // (same shape, different target). Non-open state
+                // silently drops the paste so it never lands as
+                // stray text on the kanban.
+                Event::Paste(data) if app.jql_editor.is_some() => {
+                    app.jql_editor_insert_str(&data);
+                }
                 _ => {}
             }
         }
@@ -596,7 +607,7 @@ fn draw_jql_editor_overlay(f: &mut Frame, screen: Rect, app: &mut App) {
     };
     // Take most of the pane width — leave a 4-cell gutter on each
     // side. Small terminals get a smaller box; too narrow → skip.
-    let w = screen.width.saturating_sub(8).max(20).min(200);
+    let w = screen.width.saturating_sub(8).clamp(20, 200);
     if w < 20 || screen.height < 8 {
         return;
     }
@@ -913,8 +924,13 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_kanban_board(f: &mut Frame, area: Rect, app: &mut App) {
     // 2026-08-07 — toolbar row above the columns, Jira-Cloud-style:
     // [Board ▾] [🔍 Search] [👥 Assignees ▾] [Version ▾] [Epic ▾]
-    // [Type ▾] [Label ▾] [⚡ Quick filters ▾]. Board / Search /
-    // Version chips wired; the rest scaffold + toast "coming soon".
+    // [Type ▾] [Label ▾] [⚡ Quick filters ▾].
+    //
+    // 2026-08-21 — as of #1004 + #1110 all chips are wired: Sprint,
+    // Search, Team (avatar cluster), Version, Type, Label, Quick
+    // filters, and the Unassigned quick-toggle. `Board` currently
+    // config-driven only (edit `board_id`); `Epic` still deferred
+    // pending project-scoped epic-link field lookup.
     let (toolbar_area, area) = {
         let parts = Layout::default()
             .direction(Direction::Vertical)
@@ -1436,7 +1452,6 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // register the version-chip rect on app.rects later without
     // holding a &tab across the mutation.
     let tab = app.active();
-    let tab_name = tab.name.clone();
     let tab_jql = tab.jql.clone();
     let tab_selected = tab.selected;
     if rows.is_empty() {
@@ -1509,8 +1524,7 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             | Some(crate::config::TabKind::Filter)
     );
     let has_fixv = fixv.is_some();
-    let is_fix_versions_tab =
-        matches!(tab_cfg.kind, Some(crate::config::TabKind::FixVersionTree));
+    let is_fix_versions_tab = matches!(tab_cfg.kind, Some(crate::config::TabKind::FixVersionTree));
     let chip_style_dim = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
@@ -1549,11 +1563,12 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             }
         })
         .unwrap_or_else(|| "🔍 Search".to_string());
-    let search_active = app
-        .filter
-        .as_ref()
-        .is_some_and(|f| !f.buffer.is_empty());
-    entries.push((search_label, search_active, crate::app::WorkFilterChip::Search));
+    let search_active = app.filter.as_ref().is_some_and(|f| !f.buffer.is_empty());
+    entries.push((
+        search_label,
+        search_active,
+        crate::app::WorkFilterChip::Search,
+    ));
     // Space (project). Every Work tab has a project baked into its
     // JQL — the chip is ALWAYS filtered, never "unset." Show the
     // active project name so the label reflects reality (mirrors the
@@ -1563,15 +1578,8 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         Some(p) if !p.is_empty() => format!("Space: {p} ▾"),
         _ => "Space ▾".to_string(),
     };
-    let space_active = tab_cfg
-        .project
-        .as_deref()
-        .is_some_and(|p| !p.is_empty());
-    entries.push((
-        space_label,
-        space_active,
-        crate::app::WorkFilterChip::Space,
-    ));
+    let space_active = tab_cfg.project.as_deref().is_some_and(|p| !p.is_empty());
+    entries.push((space_label, space_active, crate::app::WorkFilterChip::Space));
     // Assignee — label + active state reflect the current
     // `active_assignee_ids` set so the user can see what the filter
     // is at a glance. `— Me —` when it's only their own account_id;
@@ -1690,36 +1698,34 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // depends on which core chips fit. The pill is rendered as two
     // segments (`Fix versions = X ▾` and ` ⓧ `) with separate hit
     // rects so the two clicks route to distinct actions.
-    if has_fixv {
-        if let Some(v) = fixv_labeled.as_ref() {
-            let label = format!(" [ Fix versions = {v} ▾ ] ");
-            let w = label.chars().count() as u16;
-            let remove = " [ⓧ] ".to_string();
-            let rw = remove.chars().count() as u16;
-            if cursor_x + w + rw <= left_budget {
-                pending_chip_rects.push((
-                    Rect {
-                        x: cursor_x,
-                        y: title_area.y,
-                        width: w,
-                        height: 1,
-                    },
-                    crate::app::WorkFilterChip::FixVersionPicker,
-                ));
-                spans.push(Span::styled(label, chip_style_active));
-                cursor_x += w;
-                pending_chip_rects.push((
-                    Rect {
-                        x: cursor_x,
-                        y: title_area.y,
-                        width: rw,
-                        height: 1,
-                    },
-                    crate::app::WorkFilterChip::FixVersionRemove,
-                ));
-                spans.push(Span::styled(remove, chip_style_active));
-                cursor_x += rw;
-            }
+    if has_fixv && let Some(v) = fixv_labeled.as_ref() {
+        let label = format!(" [ Fix versions = {v} ▾ ] ");
+        let w = label.chars().count() as u16;
+        let remove = " [ⓧ] ".to_string();
+        let rw = remove.chars().count() as u16;
+        if cursor_x + w + rw <= left_budget {
+            pending_chip_rects.push((
+                Rect {
+                    x: cursor_x,
+                    y: title_area.y,
+                    width: w,
+                    height: 1,
+                },
+                crate::app::WorkFilterChip::FixVersionPicker,
+            ));
+            spans.push(Span::styled(label, chip_style_active));
+            cursor_x += w;
+            pending_chip_rects.push((
+                Rect {
+                    x: cursor_x,
+                    y: title_area.y,
+                    width: rw,
+                    height: 1,
+                },
+                crate::app::WorkFilterChip::FixVersionRemove,
+            ));
+            spans.push(Span::styled(remove, chip_style_active));
+            cursor_x += rw;
         }
     }
     // Trailing count as dim text (last-item summary).
@@ -2347,10 +2353,25 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         .and_then(|t| t.assignee_cache.as_ref())
         .map(|v| v.len())
         .unwrap_or(0);
-    let unassigned_active =
-        active_assignee_ids.contains(crate::app::UNASSIGNED_SENTINEL);
+    let unassigned_active = active_assignee_ids.contains(crate::app::UNASSIGNED_SENTINEL);
     entries.push((version_label, version_active, ChipKind::Version));
-    entries.push(("Epic ▾".to_string(), false, ChipKind::Epic));
+    // 2026-08-21 — Epic chip label reflects the active-filter set
+    // shape same as Assignee: `Epic ▾` empty · `Epic: KEY ▾` single
+    // · `Epic: N selected ▾` multi. Active in cyan when non-empty.
+    let (epic_label, epic_active) = {
+        let ids = tab_state
+            .map(|t| t.active_epic_keys.clone())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            ("Epic ▾".to_string(), false)
+        } else if ids.len() == 1 {
+            let only = ids.iter().next().unwrap();
+            (format!("Epic: {only} ▾"), true)
+        } else {
+            (format!("Epic: {} selected ▾", ids.len()), true)
+        }
+    };
+    entries.push((epic_label, epic_active, ChipKind::Epic));
     // Type + Label: pickers already wire commits back to
     // `cfg_tab.issue_type` / `cfg_tab.label`, but the chip was still
     // rendering "Type ▾" / "Label ▾" with `active: false` regardless
@@ -2489,7 +2510,9 @@ fn draw_kanban_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                     ));
                     spans.push(Span::styled(
                         label,
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
                     ));
                     cursor_x = cursor_x.saturating_add(w);
                 }
@@ -3076,6 +3099,8 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &mut App) {
         crate::app::FieldKind::IssueType => "type",
         crate::app::FieldKind::Label => "label",
         crate::app::FieldKind::AvatarCluster => "assignees",
+        crate::app::FieldKind::Board => "board",
+        crate::app::FieldKind::Epic => "epics",
     };
     let target_count = if app.selection.is_empty() {
         1
@@ -3094,6 +3119,10 @@ fn draw_field_picker(f: &mut Frame, screen: Rect, app: &mut App) {
         " toggle quick filters (Space) ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::AvatarCluster) {
         " filter by assignees (Space toggles) ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::Board) {
+        " switch board ".to_string()
+    } else if matches!(picker.kind, crate::app::FieldKind::Epic) {
+        " filter by epic (Space toggles) ".to_string()
     } else if matches!(picker.kind, crate::app::FieldKind::FixVersion) && target_count == 1 {
         // Disambiguate from the tab-view picker — "on ticket" makes
         // it obvious this is a per-row assign, not a view switch.
@@ -3353,13 +3382,10 @@ fn rect_hit(r: Rect, x: u16, y: u16) -> bool {
 async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
     use crate::app::ChipKind;
     match kind {
-        ChipKind::Board => {
-            // v1: no picker yet — clicking cycles a toast reminding
-            // the user how to switch (config-driven for now).
-            app.status =
-                "Board selection is config-driven — edit `board_id` in mnml-tracker-jira.toml"
-                    .into();
-        }
+        // 2026-08-21 — Board picker chip now opens the real modal
+        // (Feature 1). Falls back to a toast when the tab has no
+        // `project` since the board list API is project-scoped.
+        ChipKind::Board => app.open_board_picker().await,
         ChipKind::Sprint => app.open_sprint_picker().await,
         ChipKind::Search => app.open_filter(),
         ChipKind::Team => app.open_team_picker(),
@@ -3373,14 +3399,13 @@ async fn handle_chip_click(app: &mut App, kind: crate::app::ChipKind) {
         ChipKind::QuickFilters => app.open_quickfilter_picker().await,
         ChipKind::BoardSettings => app.open_board_settings(),
         // #1004 (2026-08-18) — Type + Label pickers wire up (client-
-        // side render filters). Epic still deferred pending epic-link
-        // custom-field handling (needs project-scoped field-id lookup
-        // which varies per Jira instance).
+        // side render filters).
         ChipKind::Type => app.open_issue_type_picker(),
         ChipKind::Label => app.open_label_picker(),
-        ChipKind::Epic => {
-            app.status = "Epic filter — coming soon (needs project epic-link field)".to_string();
-        }
+        // 2026-08-21 — Epic filter chip (Feature 2). Multi-select
+        // over epics linked from the current tab's issues; empty-
+        // tab / no-epic-link paths toast + no-op.
+        ChipKind::Epic => app.open_epic_picker(),
         // #1110 f/u (2026-08-20) — inline quick-toggle for the
         // "Unassigned" sentinel. Mutates active_assignee_ids
         // directly; re-clamps so the cursor doesn't fall off if
@@ -3547,7 +3572,7 @@ fn draw_detail_modal(f: &mut Frame, screen: Rect, app: &mut App) {
         let value = resolve_field_value(data, &id);
         if is_long {
             long_text_lines.push(Line::from(vec![Span::styled(
-                format!("{label}"),
+                label.to_string(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -3672,13 +3697,13 @@ fn sprint_label(v: Option<&serde_json::Value>) -> Option<String> {
             // Sprint entries come back as strings (legacy) or
             // objects with `name` (new shape). Handle both.
             s.as_str()
-                .and_then(|raw| {
+                .map(|raw| {
                     // Legacy: `com.atlassian.greenhopper...[id=1,rapidViewId=…,state=ACTIVE,name=Sprint 3,...]`
                     if let Some(start) = raw.find("name=") {
                         let tail = &raw[start + 5..];
-                        Some(tail.split(',').next().unwrap_or("").to_string())
+                        tail.split(',').next().unwrap_or("").to_string()
                     } else {
-                        Some(raw.to_string())
+                        raw.to_string()
                     }
                 })
                 .or_else(|| {
