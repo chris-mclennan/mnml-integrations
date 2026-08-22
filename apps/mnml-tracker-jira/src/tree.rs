@@ -728,15 +728,23 @@ mod tests {
     }
 
     #[test]
-    fn splice_ticket_sub_rows_emits_empty_hint_when_cache_empty_vec() {
+    fn splice_ticket_sub_rows_suppresses_empty_hint_when_cache_empty_vec() {
+        // 2026-08-21 (#1110 f/u3) — user asked us to stop rendering
+        // the "→ no linked PRs" row for expanded tickets whose cache
+        // resolved to an empty vec (it clipped into the KEY column
+        // and was noise). Cache-empty tickets now emit zero sub-rows;
+        // the renderer also hides the ticket's expand chevron in
+        // that state so users don't see "expand to nothing".
         let issues = vec![issue("TE-1", "Testing")];
         let mut tree = TreeState::default();
         tree.expanded_tickets.insert("TE-1".to_string());
         tree.pr_cache.insert("TE-1".to_string(), Vec::new());
         let mut rows = compute_visible_rows(&issues, &tree, &fix_version_tab(), &default_cfg());
+        let baseline = rows.len();
         splice_ticket_sub_rows(&mut rows, &issues, &tree);
         let has_empty = rows.iter().any(|r| matches!(r, VisibleRow::PrEmpty { .. }));
-        assert!(has_empty);
+        assert!(!has_empty, "PrEmpty hint should be suppressed");
+        assert_eq!(rows.len(), baseline, "no sub-rows spliced in");
     }
 
     #[test]

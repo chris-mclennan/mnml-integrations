@@ -851,7 +851,7 @@ mod tests {
     fn example_config_parses_and_validates() {
         let cfg: Config = toml::from_str(Config::EXAMPLE).expect("example parses");
         cfg.validate().expect("example validates");
-        assert_eq!(cfg.tabs.len(), 5, "example should have 5 tabs");
+        assert_eq!(cfg.tabs.len(), 6, "example should have 6 tabs");
         assert!(
             cfg.tabs
                 .iter()
@@ -1006,7 +1006,10 @@ project = "TE"
     }
 
     #[test]
-    fn columns_default_set_is_the_five_classic_columns() {
+    fn columns_default_set_is_five_classic_columns_plus_actions() {
+        // 2026-08-21 (#890) — the Actions column was appended as a
+        // sixth default so Work-tab rows carry the dispatch buttons
+        // without users having to opt in.
         assert_eq!(
             Column::default_set(),
             vec![
@@ -1015,6 +1018,7 @@ project = "TE"
                 Column::Assignee,
                 Column::Updated,
                 Column::Summary,
+                Column::Actions,
             ]
         );
     }

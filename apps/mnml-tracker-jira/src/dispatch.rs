@@ -250,7 +250,7 @@ pub fn workspace_dispatch_paths(root: Option<&Path>) -> (Option<PathBuf>, Option
 /// exact casings) but we lowercase-match to be robust.
 ///
 /// Rules:
-///   - Story / Task in To Do / In Progress ⇒ [ Implement ]
+///   - Story / Task in To Do / In Progress ⇒ [ Implement ] [ Triage ]
 ///   - Bug in To Do / In Progress ⇒ [ Fix ] [ Triage ]
 ///   - Any type in Testing ⇒ [ Test ]     (2026-08-21 user ask)
 ///   - Any type in In PR Review ⇒ [ Review ]  (2026-08-21 user ask)
@@ -383,15 +383,15 @@ mod tests {
     }
 
     #[test]
-    fn story_in_to_do_gets_implement_only() {
+    fn story_in_to_do_gets_implement_and_triage() {
         let buttons = buttons_for_ticket(&issue("TE-1", "To Do", "Story", "s"));
-        assert_eq!(buttons, vec![TicketButton::Implement]);
+        assert_eq!(buttons, vec![TicketButton::Implement, TicketButton::Triage]);
     }
 
     #[test]
-    fn task_in_progress_gets_implement() {
+    fn task_in_progress_gets_implement_and_triage() {
         let buttons = buttons_for_ticket(&issue("TE-1", "In Progress", "Task", "t"));
-        assert_eq!(buttons, vec![TicketButton::Implement]);
+        assert_eq!(buttons, vec![TicketButton::Implement, TicketButton::Triage]);
     }
 
     #[test]
@@ -401,15 +401,15 @@ mod tests {
     }
 
     #[test]
-    fn bug_in_testing_gets_triage_only() {
+    fn ticket_in_testing_gets_test() {
         let buttons = buttons_for_ticket(&issue("TE-1", "Testing", "Bug", "b"));
-        assert_eq!(buttons, vec![TicketButton::Triage]);
+        assert_eq!(buttons, vec![TicketButton::Test]);
     }
 
     #[test]
-    fn bug_in_pr_review_gets_triage_only() {
+    fn ticket_in_pr_review_gets_review() {
         let buttons = buttons_for_ticket(&issue("TE-1", "In PR Review", "Bug", "b"));
-        assert_eq!(buttons, vec![TicketButton::Triage]);
+        assert_eq!(buttons, vec![TicketButton::Review]);
     }
 
     #[test]
