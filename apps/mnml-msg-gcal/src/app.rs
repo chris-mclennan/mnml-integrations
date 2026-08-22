@@ -61,7 +61,7 @@ impl App {
         let client = gcal::Client::new(&token.access_token);
         match client.list_events(&self.cfg.calendar_id, start, end) {
             Ok(mut evs) => {
-                evs.sort_by_key(|e| event_start_ts(e));
+                evs.sort_by_key(event_start_ts);
                 self.events = evs;
                 self.selected = self.selected.min(self.events.len().saturating_sub(1));
                 self.last_error = None;

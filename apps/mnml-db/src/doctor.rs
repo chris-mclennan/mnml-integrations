@@ -37,20 +37,18 @@ pub async fn run(cfg: &Config) -> Result<()> {
         .max(6);
 
     println!(
-        "{:<id_w$}  {:<engine_w$}  {:<6}  {}",
+        "{:<id_w$}  {:<engine_w$}  {:<6}  DETAIL",
         "ID",
         "ENGINE",
         "STATUS",
-        "DETAIL",
         id_w = id_w,
         engine_w = engine_w,
     );
     println!(
-        "{:<id_w$}  {:<engine_w$}  {:<6}  {}",
+        "{:<id_w$}  {:<engine_w$}  {:<6}  ────────────────────────────────────",
         "─".repeat(id_w),
         "─".repeat(engine_w),
         "──────",
-        "────────────────────────────────────",
         id_w = id_w,
         engine_w = engine_w,
     );

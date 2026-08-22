@@ -24,39 +24,8 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
 
 const INTEGRATION_ID: &str = "cloudwatch_logs";
-
-/// Resolve `assets/icons/cloudwatch.svg` to an absolute path.
-/// Looks next to the running binary first (release layout), then
-/// walks upward for the `assets/` dir (dev / cargo-install layout).
-/// Returns `None` if the SVG can't be found — in that case
-/// `install_integration` still writes the manifest, mnml just
-/// won't have an SVG to bake.
-fn cloudwatch_svg_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/cloudwatch.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/cloudwatch.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/cloudwatch.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {

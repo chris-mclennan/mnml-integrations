@@ -212,10 +212,6 @@ impl App {
         }
     }
 
-    pub fn drain(&mut self) -> bool {
-        false
-    }
-
     pub fn focused_queue(&self) -> Option<&Queue> {
         let t = self.active();
         t.data.queues.get(t.data.selected)

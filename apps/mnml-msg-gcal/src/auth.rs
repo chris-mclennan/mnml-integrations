@@ -265,9 +265,8 @@ fn parse_code_from_target(target: &str) -> Option<String> {
     // Extract query string.
     let q = target.split('?').nth(1)?;
     for pair in q.split('&') {
-        let mut it = pair.splitn(2, '=');
-        let k = it.next()?;
-        let v = it.next()?;
+        let (k, v) = pair.split_once('=')?;
+
         if k == "code" {
             return Some(url_decode(v));
         }

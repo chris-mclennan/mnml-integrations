@@ -125,7 +125,10 @@ impl RedshiftDriver {
             });
             (c, task)
         };
-        let _ = driver_task; // borrow-hold; the connection lives as long as the client
+        // Detached deliberately: dropping a JoinHandle does not cancel
+        // the tokio task, so the connection driver keeps running for as
+        // long as the client holds the socket open.
+        let _driver_task = driver_task;
         // Redshift reports as `PostgreSQL 8.0.2 on ...` in
         // version(), plus its own Redshift version tag. Prefer the
         // Redshift-specific view when available.

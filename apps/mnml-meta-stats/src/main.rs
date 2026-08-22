@@ -134,7 +134,7 @@ fn fetch_report(keywords_csv: &str, gh_repo: &str) -> Result<Report> {
             Err(e) => eprintln!("skipping {name}: {e:#}"),
         }
     }
-    crates.sort_by(|a, b| b.total_downloads.cmp(&a.total_downloads));
+    crates.sort_by_key(|c| std::cmp::Reverse(c.total_downloads));
 
     let releases = fetch_release_assets(&c, gh_repo).unwrap_or_else(|e| {
         eprintln!("release fetch failed for {gh_repo}: {e:#}");
@@ -286,7 +286,7 @@ fn fetch_release_assets(c: &reqwest::blocking::Client, repo: &str) -> Result<Vec
             });
         }
     }
-    out.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    out.sort_by_key(|r| std::cmp::Reverse(r.downloads));
     Ok(out)
 }
 
@@ -341,7 +341,7 @@ fn print_report(r: &Report) {
         println!();
         println!("chris-mclennan/mnml — GitHub release assets");
         println!("─────────────────────────────────────────────────────────────────────────");
-        println!("{:<30}  {:>8}  {:>8}  {}", "tag", "dls", "size MB", "asset");
+        println!("{:<30}  {:>8}  {:>8}  asset", "tag", "dls", "size MB");
         println!("─────────────────────────────────────────────────────────────────────────");
         for a in &r.releases {
             println!(

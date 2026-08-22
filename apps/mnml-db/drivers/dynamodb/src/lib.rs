@@ -435,7 +435,7 @@ mod tests {
         let got = build_argv(
             Some("dev"),
             Some("us-east-1"),
-            &vec!["dynamodb".into(), "list-tables".into()],
+            &["dynamodb".into(), "list-tables".into()],
         );
         assert_eq!(
             got,
@@ -455,11 +455,7 @@ mod tests {
 
     #[test]
     fn build_argv_omits_missing_profile_and_region() {
-        let got = build_argv(
-            None,
-            None,
-            &vec!["sts".into(), "get-caller-identity".into()],
-        );
+        let got = build_argv(None, None, &["sts".into(), "get-caller-identity".into()]);
         assert_eq!(
             got,
             vec!["aws", "--output", "json", "sts", "get-caller-identity",]
@@ -547,15 +543,14 @@ mod tests {
         assert!(partiql_keywords().contains(&"SELECT"));
         assert!(partiql_keywords().contains(&"FROM"));
     }
-
-    #[test]
-    fn max_pages_is_bounded() {
-        // Sanity: don't accidentally set to a huge number in a
-        // refactor.
-        assert!(PARTIQL_MAX_PAGES <= 100);
-        assert!(PARTIQL_MAX_PAGES >= 5);
-    }
 }
+
+// Sanity: don't accidentally set PARTIQL_MAX_PAGES to a huge number in
+// a refactor. Was a #[test] with runtime asserts, but both operands are
+// consts, so clippy (rightly) flagged the assertions as constant. A
+// compile-time guard keeps the intent and fails the build instead.
+const _: () = assert!(PARTIQL_MAX_PAGES <= 100);
+const _: () = assert!(PARTIQL_MAX_PAGES >= 5);
 
 /// Marker for deserialize-ability of AWS list-tables responses.
 #[derive(Debug, Deserialize)]

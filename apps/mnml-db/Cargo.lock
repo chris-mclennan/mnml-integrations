@@ -1658,7 +1658,9 @@ dependencies = [
 
 [[package]]
 name = "mnml-bridge"
-version = "0.6.0"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a6aa633d40475834bc9422c8abdd11d136d8156b17f9e39172dc83247d3836"
 dependencies = [
  "serde",
  "serde_json",

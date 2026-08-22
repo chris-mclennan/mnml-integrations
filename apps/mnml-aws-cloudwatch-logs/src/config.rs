@@ -39,8 +39,9 @@ pub struct Tab {
     pub region: Option<String>,
     /// Optional CloudWatch Logs filter pattern. Passed to `aws logs
     /// tail --filter-pattern` directly. Use cases:
-    ///   - `"ERROR"` — substring match
-    ///   - `'{ $.level = "error" }'` — JSON field match
+    /// - `"ERROR"` — substring match
+    /// - `'{ $.level = "error" }'` — JSON field match
+    ///
     /// See https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/FilterAndPatternSyntax.html
     #[serde(default)]
     pub filter: Option<String>,

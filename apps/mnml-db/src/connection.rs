@@ -53,13 +53,6 @@ impl ConnectionSpec {
         self.label.as_deref().unwrap_or(&self.id)
     }
 
-    /// Reject a spec that has anything smelling like a plaintext
-    /// password (`password = "..."` at the top level, or
-    /// `creds.type = "plaintext"`) — v0.1 refuses to load them.
-    pub fn validate_no_plaintext_password(&self, raw: &toml::Value) -> Result<()> {
-        Self::validate_no_plaintext_password_raw(raw)
-    }
-
     /// Raw-value variant that runs BEFORE the strict deserialize
     /// (tester 2026-07-31 SEV-3 — otherwise `deny_unknown_fields`
     /// rejects `password` with a confusing "unknown field" toast
@@ -120,7 +113,7 @@ pub enum CredsSource {
         #[serde(default)]
         region: Option<String>,
     },
-    /// Explicitly rejected by `validate_no_plaintext_password`.
+    /// Explicitly rejected by `validate_no_plaintext_password_raw`.
     /// Present only so a misconfigured file parses far enough to
     /// hit the validator and get a clear error.
     Plaintext {

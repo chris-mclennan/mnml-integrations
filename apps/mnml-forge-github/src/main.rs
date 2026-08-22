@@ -7,7 +7,6 @@ mod github;
 mod headless;
 mod install;
 mod keys;
-mod theme;
 mod ui;
 
 use anyhow::{Context, Result};

@@ -22,33 +22,8 @@ use anyhow::Result;
 use mnml_bridge::{
     ChipSpec, CommandSpec, IntegrationSpec, install_integration, uninstall_integration,
 };
-use std::path::PathBuf;
 
 const INTEGRATION_ID: &str = "cognito";
-
-fn cognito_svg_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let cand = dir.join("assets/icons/cognito.svg");
-        if cand.exists() {
-            return Some(cand);
-        }
-        let mut cur = dir.to_path_buf();
-        while cur.pop() {
-            let cand = cur.join("assets/icons/cognito.svg");
-            if cand.exists() {
-                return Some(cand);
-            }
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    let cand = cwd.join("assets/icons/cognito.svg");
-    if cand.exists() {
-        return Some(cand);
-    }
-    None
-}
 
 pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
