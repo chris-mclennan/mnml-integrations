@@ -9,7 +9,7 @@
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app::parse_iso_seconds;
 
@@ -1313,9 +1313,7 @@ impl Client {
             .await;
         let (ok, err): (Vec<_>, Vec<_>) = batches.into_iter().partition(std::result::Result::is_ok);
         if !err.is_empty() {
-            let first = err
-                .iter()
-                .next()
+            let first = err.first()
                 .and_then(|e| e.as_ref().err())
                 .cloned()
                 .unwrap_or_default();
@@ -1447,13 +1445,13 @@ struct RepoActivityRef {
 /// collapsible row in the RepoTree tab: `▶ repo-slug` collapsed,
 /// or `▼ repo-slug` + one indented `branch STATUS #num date`
 /// row per branch when expanded (mnml-aws-amplify shape).
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RepoPipelines {
     pub slug: String,
     pub branches: Vec<BranchWithPipeline>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BranchWithPipeline {
     pub name: String,
     /// `None` when no pipeline has ever run on this branch (fresh
@@ -1480,7 +1478,7 @@ pub struct BranchWithPipeline {
 /// empty repos — both were indistinguishable from "no repos in
 /// scope" and the user couldn't tell which repos had never been
 /// contacted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RepoPrs {
     pub slug: String,
     pub prs: Vec<PullRequest>,
@@ -1503,7 +1501,7 @@ struct PrPage {
     values: Vec<PullRequest>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct PullRequest {
     pub id: i64,
@@ -1598,7 +1596,7 @@ impl PullRequest {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct User {
     #[serde(default)]
@@ -1609,7 +1607,7 @@ pub struct User {
     pub account_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct Branch {
     #[serde(default)]
@@ -1618,27 +1616,27 @@ pub struct Branch {
     pub repository: Option<Repo>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct BranchName {
     #[serde(default)]
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct Repo {
     #[serde(default)]
     pub full_name: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Links {
     #[serde(default)]
     pub html: Option<HrefLink>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct HrefLink {
     #[serde(default)]
     pub href: String,
@@ -1646,7 +1644,7 @@ pub struct HrefLink {
 
 /// Bitbucket "renderable" — `raw` (markdown), `html` (rendered),
 /// `markup` (markdown variant). v0.1 uses `raw` for description.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct Renderable {
     #[serde(default)]
@@ -1710,7 +1708,7 @@ where
 
 /// Reviewer participation record. On detail responses, `approved`
 /// tells you whether this reviewer has hit the approve button.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct Participant {
     #[serde(default)]
@@ -1732,7 +1730,7 @@ struct CommentPage {
 
 /// A single PR comment. Bitbucket nests body markup the same way as
 /// PR descriptions — `raw` is plain markdown.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct Comment {
     pub id: i64,
@@ -1751,13 +1749,13 @@ pub struct Comment {
     pub inline: Option<InlineRef>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct CommentParent {
     pub id: i64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct InlineRef {
     #[serde(default)]
@@ -1808,7 +1806,7 @@ struct PipelinePage {
     values: Vec<Pipeline>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct Pipeline {
     /// Pipeline UUID — used to build the bitbucket.org browser URL.
@@ -1836,7 +1834,7 @@ pub struct Pipeline {
     pub creator: Option<User>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct PipelineState {
     /// `PENDING` / `IN_PROGRESS` / `COMPLETED` / `HALTED` / `STOPPED`.
@@ -1847,7 +1845,7 @@ pub struct PipelineState {
     pub result: Option<PipelineStateResult>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct PipelineStateResult {
     /// `SUCCESSFUL` / `FAILED` / `STOPPED` / `ERROR`.
@@ -1855,7 +1853,7 @@ pub struct PipelineStateResult {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct PipelineTarget {
     /// `branch` is the usual ref name; `commit` would be set on
@@ -1868,7 +1866,7 @@ pub struct PipelineTarget {
     pub commit: Option<CommitRef>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct PipelineTrigger {
     /// `push` / `schedule` / `manual` / etc.
@@ -1876,7 +1874,7 @@ pub struct PipelineTrigger {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct CommitRef {
     #[serde(default)]
@@ -1980,7 +1978,7 @@ struct BranchRefPage {
     values: Vec<BranchRef>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct BranchRef {
     pub name: String,
@@ -1992,7 +1990,7 @@ pub struct BranchRef {
     pub links: Option<Links>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct BranchTarget {
     #[serde(default)]
@@ -2005,7 +2003,7 @@ pub struct BranchTarget {
     pub author: Option<BranchAuthor>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[allow(dead_code)]
 pub struct BranchAuthor {
     /// On branch targets Bitbucket sends `raw` ("Name <email>") rather
@@ -2236,7 +2234,7 @@ mod tests {
         let hdr = future.to_rfc2822();
         let got = parse_retry_after(&hdr).unwrap_or(0);
         // Rounding: chrono::Duration::seconds truncates; allow ±2s slack.
-        assert!(got >= 118 && got <= 122, "expected ~120, got {got}");
+        assert!((118..=122).contains(&got), "expected ~120, got {got}");
     }
 
     #[test]

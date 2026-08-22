@@ -216,6 +216,20 @@ pub fn install() -> Result<()> {
                 path.display()
             );
         }
+        // #1117 (2026-08-21) — background prefetch. Bridge 0.7
+        // doesn't know about `[[prefetch]]` either, so we raw-append
+        // the block like we do for statusline segments. mnml core
+        // polls this command in the background and stamps the
+        // resulting cache path on the child env; the interactive
+        // launch hydrates from it. Idempotent — the id-uniqueness
+        // grep in append_prefetch_block prevents doubling on
+        // re-install.
+        if let Err(e) = append_prefetch_block(chip.id, chip.only_flag, &path) {
+            eprintln!(
+                "note: couldn't append [[prefetch]] to {} ({e}) — hand-edit that file to add the block",
+                path.display()
+            );
+        }
         println!("wrote manifest: {}", path.display());
     }
     println!("\nrun mnml + `integrations.refresh` (or restart) to pick up the new chips");
@@ -277,6 +291,54 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         out.push('\n');
     }
     out.push_str(block);
+    std::fs::write(path, out)
+}
+
+/// #1117 (2026-08-21) — append a `[[prefetch]]` block to a
+/// freshly-written chip manifest. Bridge 0.7 doesn't serialize this
+/// section yet (mnml core's `PrefetchSource` schema lives in
+/// mnml/src/integration_manifest.rs); once bridge 0.8+ ships typed
+/// support the whole helper can be deleted.
+///
+/// Idempotent — a re-install with the same prefetch id is a no-op.
+/// `for_pane_kind` matches the mnml-side pane kind mnml core opens
+/// when the split chip fires: workspace_open_prs for the PRs chip,
+/// workspace_pipelines for the Pipelines chip. Poll cadence at
+/// 600s (10 min) mirrors the jira `[[values_sources]]` default and
+/// is comfortably under Bitbucket's per-workspace rate ceiling.
+fn append_prefetch_block(
+    chip_id: &str,
+    only_flag: &str,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    // The two split chips each get one prefetch entry. Nothing
+    // else — the legacy combined manifest is removed at install
+    // start, and retired chips are cleaned in `uninstall`.
+    let (prefetch_id, for_pane_kind) = match chip_id {
+        "bitbucket_prs" => ("bitbucket_prs_prefetch", "workspace_open_prs"),
+        "bitbucket_pipelines" => ("bitbucket_pipelines_prefetch", "workspace_pipelines"),
+        _ => return Ok(()),
+    };
+    let current = std::fs::read_to_string(path)?;
+    // Idempotence guard — prefetch id is unique across the two chips.
+    if current.contains(prefetch_id) {
+        return Ok(());
+    }
+    let block = format!(
+        "\n# mnml 0.2.11+ background prefetch — appended by\n\
+         # mnml-forge-bitbucket --install. Idempotent: re-install\n\
+         # skips this if `{prefetch_id}` is already present.\n\
+         [[prefetch]]\n\
+         id = \"{prefetch_id}\"\n\
+         command = \"mnml-forge-bitbucket --prefetch --only {only_flag}\"\n\
+         poll_interval_secs = 600\n\
+         for_pane_kind = \"{for_pane_kind}\"\n",
+    );
+    let mut out = current;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&block);
     std::fs::write(path, out)
 }
 

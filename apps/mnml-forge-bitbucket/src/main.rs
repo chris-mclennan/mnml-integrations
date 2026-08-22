@@ -6,7 +6,6 @@ mod config;
 mod headless;
 mod install;
 mod keys;
-mod theme;
 mod ui;
 
 use anyhow::{Context, Result};
@@ -92,6 +91,29 @@ struct Cli {
     ///   `branches`  → legacy branches kind
     #[arg(long)]
     only: Option<String>,
+    /// #1117 (2026-08-21) — mnml core's prefetch worker invokes
+    /// `mnml-forge-bitbucket --prefetch --only <kind>` on a background
+    /// cadence and stashes stdout under
+    /// `~/.cache/mnml/prefetch/bitbucket_prs-<id>.json`. When the user
+    /// then opens the corresponding pane, mnml passes the cache path
+    /// via `MNML_PREFETCH_CACHE_FILE` and the interactive launch
+    /// hydrates from it instead of doing a cold Bitbucket fetch — the
+    /// pane paints populated on frame one.
+    ///
+    /// Emits a JSON object of shape:
+    ///   { "generated_at": <unix_secs>,
+    ///     "tabs": [
+    ///       { "name": "Open PRs", "kind": "RepoPrTree",
+    ///         "rows": [ /* RepoPrs */ ] },
+    ///       { "name": "Pipelines", "kind": "RepoTree",
+    ///         "rows": [ /* RepoPipelines */ ] },
+    ///       ...
+    ///     ] }
+    ///
+    /// Runs headless — no TUI. Same 10s timeout as `--values` so a
+    /// slow Bitbucket doesn't wedge the worker.
+    #[arg(long)]
+    prefetch: bool,
 }
 
 #[tokio::main]
@@ -121,6 +143,7 @@ async fn main() -> Result<()> {
         && !cli.uninstall
         && !cli.check
         && !cli.diag
+        && !cli.prefetch
     {
         eprintln!("Bitbucket · loading…");
     }
@@ -228,6 +251,25 @@ async fn main() -> Result<()> {
         return match tokio::time::timeout(std::time::Duration::from_secs(10), fut).await {
             Ok(r) => r,
             Err(_) => Err(anyhow::anyhow!("--values timed out after 10s")),
+        };
+    }
+
+    if cli.prefetch {
+        // #1117 (2026-08-21) — background prefetch producer. Build
+        // the App the same way an interactive launch would (so all
+        // tabs are resolved + startup-prefetch fetches the same
+        // rows the pane will show), then emit each tab's data as
+        // JSON for mnml's prefetch worker to cache. 10s timeout
+        // matches --values so a slow Bitbucket doesn't wedge the
+        // worker.
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_prefetch(cfg, client),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow::anyhow!("--prefetch timed out after 10s")),
         };
     }
 
@@ -430,5 +472,82 @@ async fn run_diag(
         std::env::consts::OS,
         std::env::consts::ARCH
     );
+    Ok(())
+}
+
+/// #1117 (2026-08-21) — background prefetch producer. Constructs
+/// the same App the interactive launch would (so tab resolution +
+/// startup-prefetch match exactly), then serializes each tab's row
+/// list as JSON. mnml core caches stdout to
+/// `~/.cache/mnml/prefetch/<int>-<id>.json` and stamps the path on
+/// the child env via `MNML_PREFETCH_CACHE_FILE` when the pane
+/// opens. The interactive launch checks that env in `App::new` +
+/// hydrates from JSON instead of doing a cold fetch — the pane
+/// paints populated on frame one.
+async fn run_prefetch(cfg: config::Config, client: bitbucket::Client) -> Result<()> {
+    use app::TabData;
+    #[derive(serde::Serialize)]
+    struct PrefetchCache {
+        generated_at: u64,
+        tabs: Vec<PrefetchTab>,
+    }
+    #[derive(serde::Serialize)]
+    struct PrefetchTab {
+        name: String,
+        /// TabData variant discriminant so the hydrator on the other
+        /// side can pick the right shape. One of "PullRequests" /
+        /// "Pipelines" / "Branches" / "RepoTree" / "RepoPrTree".
+        kind: &'static str,
+        /// Homogeneous JSON payload per variant — see `kind` for the
+        /// concrete element type. Empty vec on empty / failed tabs so
+        /// the hydrator populates the pane with a real (empty)
+        /// state, not a stale one.
+        rows: serde_json::Value,
+    }
+    // App::new already walks every configured tab and refreshes it
+    // in the startup-prefetch loop (see app.rs). That fetches all
+    // tabs the pane will show — no extra walk needed here.
+    let app = app::App::new(cfg, client).await?;
+    let tabs: Vec<PrefetchTab> = app
+        .tabs
+        .iter()
+        .map(|t| {
+            let (kind, rows) = match &t.data {
+                TabData::PullRequests(v) => (
+                    "PullRequests",
+                    serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                ),
+                TabData::Pipelines(v) => (
+                    "Pipelines",
+                    serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                ),
+                TabData::Branches(v) => (
+                    "Branches",
+                    serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                ),
+                TabData::RepoTree { rows, .. } => (
+                    "RepoTree",
+                    serde_json::to_value(rows).unwrap_or(serde_json::Value::Null),
+                ),
+                TabData::RepoPrTree { rows, .. } => (
+                    "RepoPrTree",
+                    serde_json::to_value(rows).unwrap_or(serde_json::Value::Null),
+                ),
+            };
+            PrefetchTab {
+                name: t.name.clone(),
+                kind,
+                rows,
+            }
+        })
+        .collect();
+    let cache = PrefetchCache {
+        generated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        tabs,
+    };
+    println!("{}", serde_json::to_string(&cache)?);
     Ok(())
 }

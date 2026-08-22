@@ -750,7 +750,7 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         // Minimal Branches bar: just the Search placeholder + the
         // right-side Refresh.
         TabKind::Branches => (
-            vec![("\u{f349} Search".to_string(), false, FilterChip::Search)],
+            vec![("\u{f0349} Search".to_string(), false, FilterChip::Search)],
             vec![("\u{f0450} Refresh".to_string(), false, FilterChip::ActionRefresh)],
         ),
         TabKind::Pipelines | TabKind::WorkspacePipelines => (
@@ -814,7 +814,7 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
             // the standalone `All` chip is gone.
             (
                 vec![
-                    ("\u{f349} Search".to_string(), false, FilterChip::Search),
+                    ("\u{f0349} Search".to_string(), false, FilterChip::Search),
                     (status_label, true, FilterChip::Status),
                     (author_label, tab.spec.mine_only, FilterChip::Author),
                     (

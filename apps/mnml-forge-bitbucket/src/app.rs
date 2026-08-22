@@ -710,6 +710,17 @@ impl App {
             hint_chip_rects: Vec::new(),
             filter_chip_rects: Vec::new(),
         };
+        // #1117 (2026-08-21) — prefetch hydration. If mnml's
+        // background worker has produced a fresh cache and stamped
+        // its path via `MNML_PREFETCH_CACHE_FILE`, seed the tabs'
+        // data from it instead of doing the cold startup-prefetch
+        // loop. `last_fetched` is stamped so the pane treats
+        // hydrated tabs as recently refreshed. Cache misses / stale
+        // files / parse errors fall through to the normal
+        // cold-fetch path silently — losing hydration is never
+        // worse than the cold behavior.
+        let hydrated = app.hydrate_from_prefetch_cache();
+
         // Startup prefetch: refresh EVERY configured tab up front so
         // subsequent 1/2/3 (or click) tab-switches show cached data
         // instantly. Previously only the active tab was fetched at
@@ -722,8 +733,16 @@ impl App {
         //
         // User waits during the initial prefetch — set status so
         // there's visible progress ("prefetching 2/3 · Merged…").
+        //
+        // Skip the walk entirely when hydration populated every
+        // tab; otherwise refresh only the tabs the cache didn't
+        // touch (a stale cache with a schema mismatch on one tab
+        // still gets a valid render on the other).
         let total_tabs = app.tabs.len();
         for i in 0..total_tabs {
+            if hydrated && app.tabs[i].last_fetched.is_some() {
+                continue;
+            }
             app.active_tab = i;
             app.status = format!(
                 "prefetching {}/{} · {}…",
@@ -754,6 +773,125 @@ impl App {
     }
     pub fn active_mut(&mut self) -> &mut TabState {
         &mut self.tabs[self.active_tab]
+    }
+
+    /// #1117 (2026-08-21) — try to seed `tabs[i].data` from the
+    /// prefetch cache mnml core stamped via `MNML_PREFETCH_CACHE_FILE`.
+    /// Returns `true` iff at least one tab was populated (in which
+    /// case the startup-prefetch loop skips its cold refresh for
+    /// each hydrated tab).
+    ///
+    /// The cache carries a per-tab `kind` discriminant naming which
+    /// `TabData` variant its `rows` JSON matches. On a name-match
+    /// we require the tab's live variant to agree with the cached
+    /// kind — a schema drift (a tab whose `kind =` changed between
+    /// prefetch and open) silently falls through to a cold fetch
+    /// for that tab. Silent fall-through on every possible error
+    /// (env unset, file missing, bad JSON, no name match, no kind
+    /// match). Losing hydration is never worse than cold-fetch
+    /// behavior.
+    fn hydrate_from_prefetch_cache(&mut self) -> bool {
+        use std::collections::HashSet;
+
+        #[derive(serde::Deserialize)]
+        struct PrefetchCache {
+            #[serde(default)]
+            #[allow(dead_code)]
+            generated_at: u64,
+            tabs: Vec<PrefetchTab>,
+        }
+        #[derive(serde::Deserialize)]
+        struct PrefetchTab {
+            name: String,
+            kind: String,
+            #[serde(default)]
+            rows: serde_json::Value,
+        }
+        let Ok(path) = std::env::var("MNML_PREFETCH_CACHE_FILE") else {
+            return false;
+        };
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(cache) = serde_json::from_str::<PrefetchCache>(&body) else {
+            return false;
+        };
+        let mut any = false;
+        for pt in cache.tabs {
+            let Some(tab) = self.tabs.iter_mut().find(|t| t.name == pt.name) else {
+                continue;
+            };
+            // Kind guard: only hydrate when the cached shape matches
+            // the tab's live variant. A schema drift between cache
+            // and app falls through to a cold refresh — always
+            // strictly better than telling the pane "already
+            // fetched" with a wrong shape.
+            let hydrated = match (pt.kind.as_str(), &mut tab.data) {
+                ("PullRequests", TabData::PullRequests(dst)) => {
+                    match serde_json::from_value::<Vec<PullRequest>>(pt.rows) {
+                        Ok(v) => {
+                            *dst = v;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                ("Pipelines", TabData::Pipelines(dst)) => {
+                    match serde_json::from_value::<Vec<Pipeline>>(pt.rows) {
+                        Ok(v) => {
+                            *dst = v;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                ("Branches", TabData::Branches(dst)) => {
+                    match serde_json::from_value::<Vec<BranchRef>>(pt.rows) {
+                        Ok(v) => {
+                            *dst = v;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                ("RepoTree", TabData::RepoTree { rows, expanded }) => {
+                    match serde_json::from_value::<Vec<RepoPipelines>>(pt.rows) {
+                        Ok(v) => {
+                            *rows = v;
+                            *expanded = HashSet::new();
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                (
+                    "RepoPrTree",
+                    TabData::RepoPrTree {
+                        rows,
+                        expanded,
+                        show_all,
+                    },
+                ) => match serde_json::from_value::<Vec<RepoPrs>>(pt.rows) {
+                    Ok(v) => {
+                        *rows = v;
+                        *expanded = HashSet::new();
+                        *show_all = false;
+                        true
+                    }
+                    Err(_) => false,
+                },
+                _ => false,
+            };
+            if hydrated {
+                tab.last_fetched = Some(std::time::Instant::now());
+                tab.last_error = None;
+                any = true;
+            }
+        }
+        if any {
+            self.status = format!("hydrated from prefetch cache · {}", path);
+        }
+        any
     }
 
     /// #1103 (2026-08-20) — toggle the current tab's `mine_only`
@@ -1151,12 +1289,11 @@ impl App {
             self.set_show_all_prs(true);
             return;
         }
-        if let Some((_, pr)) = self.focused_pr() {
-            if pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
+        if let Some((_, pr)) = self.focused_pr()
+            && pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
                 self.toggle_pr_expand().await;
                 return;
             }
-        }
         self.tree_toggle_focused_repo();
     }
 
@@ -1198,15 +1335,14 @@ impl App {
     /// row: expand-if-collapsed (never collapses; Left/h does that).
     /// Otherwise: repo-level expand-or-descend.
     pub async fn smart_expand_focused(&mut self) {
-        if let Some((slug, pr)) = self.focused_pr() {
-            if pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
+        if let Some((slug, pr)) = self.focused_pr()
+            && pr.state.eq_ignore_ascii_case("MERGED") && pr.merge_commit.is_some() {
                 let key = (slug, pr.id);
                 if !self.expanded_prs.contains(&key) {
                     self.toggle_pr_expand().await;
                 }
                 return;
             }
-        }
         self.tree_expand_focused();
     }
 
@@ -1375,11 +1511,10 @@ impl App {
         // all→recent→explicit transition so the tab doesn't go
         // blank on the switch. User can later hand-edit the config
         // to trim.
-        if next == "explicit" && self.cfg.explicit_repos.is_empty() {
-            if let Some(cached) = &self.scope_repos {
+        if next == "explicit" && self.cfg.explicit_repos.is_empty()
+            && let Some(cached) = &self.scope_repos {
                 self.cfg.explicit_repos = cached.clone();
             }
-        }
         self.cfg.scope = next.to_string();
         crate::config::save(&self.cfg)?;
         self.invalidate_scope();
@@ -2094,7 +2229,7 @@ pub(crate) fn parse_iso_seconds(s: &str) -> Option<i64> {
     let day: i64 = date_parts.next()?.parse().ok()?;
     // Truncate rest at `.` or `+` or `-` or `Z` — we only want HH:MM:SS.
     let time_end = rest
-        .find(|c: char| c == '.' || c == '+' || c == '-' || c == 'Z')
+        .find(['.', '+', '-', 'Z'])
         .unwrap_or(rest.len());
     let time = &rest[..time_end];
     let mut time_parts = time.splitn(3, ':');
@@ -2149,6 +2284,7 @@ mod tests {
             state: "OPEN".into(),
             mode: None,
             q: None,
+            mine_only: false,
         }
     }
 
