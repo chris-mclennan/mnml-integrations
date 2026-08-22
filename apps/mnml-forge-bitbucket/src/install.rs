@@ -279,7 +279,14 @@ fn append_segment_blocks(chip_id: &str, path: &std::path::Path) -> std::io::Resu
         // `color` alongside the theme keys.
         "color = \"#8BBF4E\"\n",
         "format = \"{open_mine}({unapproved_mine})\"\n",
-        "tooltip = \"Open PRs you authored (last 90 days, non-release) — parens = still-needs-review count. Click to open the mine-only PRs tab.\"\n",
+        // #1126 (2026-08-22) — spell out the `!` failure state so a
+        // user staring at a red bang has somewhere to start. mnml
+        // core paints `!` when the `--values` fetch returns a
+        // non-zero exit or fails to parse; the two realistic causes
+        // are an expired app_password (Bitbucket returns 401) and a
+        // per-user rate ceiling (429). Both surface a stderr line
+        // from the poller too — see `mnml --logs`.
+        "tooltip = \"Open PRs you authored (last 90 days, non-release) — parens = still-needs-review count. `!` = fetch failed (usually expired token or rate-limited; see mnml --logs). Click to open the mine-only PRs tab.\"\n",
         "click_command = \"bitbucket_prs.open_mine\"\n",
     );
     // Ensure a trailing newline before we append so we never fuse

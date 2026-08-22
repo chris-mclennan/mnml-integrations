@@ -225,14 +225,25 @@ pub async fn list_values(cfg: &Config, client: &Client) -> Result<()> {
         .account_id
         .ok_or_else(|| anyhow::anyhow!("/2.0/user returned no account_id"))?;
 
-    // Build the BBQL predicate: author.account_id = "..." AND
-    // updated_on >= <cutoff> AND NOT source.branch.name ~ "<pat>"...
-    // The staleness cutoff is the big one — accounts with long
-    // histories have 100s of zombie OPEN PRs Bitbucket honestly
-    // returns without one. Release-train pattern exclusion is the
-    // smaller second cut (matches the "Release trains excluded"
-    // Slack report semantic).
-    let mut clauses: Vec<String> = vec![format!("author.account_id = \"{account_id}\"")];
+    // Build the BBQL predicate. Every clause is AND-joined.
+    //
+    // #1126 (2026-08-22) — `state = "OPEN"` is now baked INTO the
+    // predicate. Was: only sent as `?state=OPEN` on the URL. Same
+    // trap as #1099 f/u v3 — Bitbucket IGNORES the URL `?state=`
+    // param when `q=` is also set, so the chip's "open" count was
+    // silently counting every state (merged + declined +
+    // superseded) that matched author + updated_on. Users saw the
+    // chip stuck at values like `4(4)` because a mix of real-open
+    // and merged/declined PRs summed to a stable number that never
+    // matched their actual open queue.
+    //
+    // Release-train pattern exclusion is done CLIENT-SIDE (see
+    // #1040 comment in `count_repo_prs_by_approval`) — Bitbucket
+    // rejects `source.branch.name ~ ...` in BBQL.
+    let mut clauses: Vec<String> = vec![
+        "state = \"OPEN\"".to_string(),
+        format!("author.account_id = \"{account_id}\""),
+    ];
     if cfg.chip_stale_after_days > 0 {
         // Bitbucket accepts ISO-8601 date literals in BBQL — no
         // quotes needed for `>=` on `updated_on`. Format as
