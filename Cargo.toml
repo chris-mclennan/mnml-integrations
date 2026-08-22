@@ -71,3 +71,10 @@ webbrowser = "1"
 strip = true
 opt-level = "z"
 lto = true
+
+# cargo-dist's release profile. Was declared in 12 individual app
+# manifests where cargo silently ignored it (non-root profiles are
+# ignored in a workspace); hoisted here so it actually applies.
+[profile.dist]
+inherits = "release"
+lto = "thin"
