@@ -273,8 +273,13 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
                     // 2026-07-24 — mirror the 24h recency filter
                     // applied in the renderer so click math stays
                     // aligned with what's visible.
+                    //
+                    // 2026-08-21 — mirror the Mine-tab bypass added
+                    // in draw_repo_pr_tree so clicks and keyboard
+                    // nav land on the same rows the renderer shows.
+                    let mine = app.active().spec.mine_only;
                     for pr in repo.prs.iter().filter(|pr| {
-                        if *show_all {
+                        if *show_all || mine {
                             return true;
                         }
                         pr.updated_on
@@ -298,7 +303,11 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
             // 2026-07-24 — synthetic "[ Show N older ]" footer row.
             // Present when show_all=false AND hidden_pr_count > 0.
             // Callers detect it via `is_show_more_footer_row(idx)`.
+            //
+            // 2026-08-21 — no footer on the Mine tab (same reason as
+            // draw_repo_pr_tree above: nothing is filtered out).
             if !show_all
+                && !app.active().spec.mine_only
                 && app.active().data.hidden_pr_count().unwrap_or(0) > 0
                 && visual + 1 > target
                 && visual <= target
@@ -323,6 +332,13 @@ fn is_show_more_footer_row(app: &App, target: usize) -> bool {
             show_all,
         } => {
             if *show_all {
+                return false;
+            }
+            // 2026-08-21 — Mine tab doesn't apply the recency filter
+            // (mine list is inherently narrow; every PR is already
+            // visible), so no "Show N older" footer either. hidden
+            // counts based on the same filter would be misleading.
+            if app.active().spec.mine_only {
                 return false;
             }
             let hidden = app.active().data.hidden_pr_count().unwrap_or(0);
@@ -1080,7 +1096,15 @@ fn draw_repo_pr_tree(
                 // than RECENT_WINDOW_HOURS ago is filtered out; those
                 // hidden PRs are counted so the footer can offer to
                 // reveal them.
-                if show_all {
+                //
+                // 2026-08-21 — bypass the recency filter on the Mine
+                // tab. Mine is inherently narrow (user's OWN open
+                // PRs) — most of a person's PRs sit open for days /
+                // weeks, so a 24h cutoff renders every mine-repo
+                // expansion empty. The filter's real purpose is to
+                // trim the workspace-wide firehose, which the Mine
+                // tab is by construction not.
+                if show_all || tab.spec.mine_only {
                     return true;
                 }
                 pr.updated_on
@@ -1141,7 +1165,10 @@ fn draw_repo_pr_tree(
     // show_all → true (see mouse handler + key handler). Uses
     // ratatui's default Row::height(1) so the cursor lands on it
     // exactly like any other row.
-    if !show_all {
+    //
+    // 2026-08-21 — Mine tab bypasses the recency filter (everything
+    // is already visible), so no "Show N older" footer.
+    if !show_all && !tab.spec.mine_only {
         let hidden = tab.data.hidden_pr_count().unwrap_or(0);
         if hidden > 0 {
             table_rows.push(Row::new(vec![
