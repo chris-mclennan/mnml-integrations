@@ -33,12 +33,4 @@ dirs = "5"
 [dev-dependencies]
 tempfile = "3"
 
-[profile.release]
-strip = true
-opt-level = "z"
-lto = true
-
 # The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"

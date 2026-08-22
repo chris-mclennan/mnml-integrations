@@ -73,8 +73,3 @@ mnml-db-driver-dynamodb   = { path = "drivers/dynamodb",   version = "0.1", opti
 
 [dev-dependencies]
 tempfile = "3"
-
-[profile.release]
-strip = true
-opt-level = "z"
-lto = true
