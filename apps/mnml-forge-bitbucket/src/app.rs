@@ -1546,12 +1546,32 @@ impl App {
                 let mut result = if spec.mine_only
                     && let Some(me) = self.me_account_id.as_deref()
                 {
+                    // #1099 f/u v3 (2026-08-21) — state clause must be
+                    // baked INTO the BBQL predicate. Bitbucket ignores
+                    // the URL `?state=` param when `q=` is also set,
+                    // so the earlier passthrough returned every state
+                    // (500+ historical merges per repo).
+                    //
+                    // Predicate: `(state = "OPEN" OR state = "MERGED")
+                    // AND author.account_id = X`. That gives every
+                    // open PR (what the user cares about now) plus
+                    // enough recent merged to render "1 peek + Show
+                    // N more merged" via `visible_prs_for_render`.
+                    // Page size 20 is a firm cap — enough to cover
+                    // most people's open + a handful of recent
+                    // merges, tiny enough that the pane isn't slow
+                    // on repos where the user has 500 historical
+                    // PRs. The client-side helper then culls to the
+                    // display policy.
                     self.client
                         .list_workspace_open_prs_by_repo_bbql(
                             &workspace,
                             &repos,
-                            &format!("author.account_id = \"{me}\""),
-                            50,
+                            &format!(
+                                "(state = \"OPEN\" OR state = \"MERGED\") \
+                                 AND author.account_id = \"{me}\""
+                            ),
+                            20,
                         )
                         .await
                 } else {

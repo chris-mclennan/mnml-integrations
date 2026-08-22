@@ -1219,9 +1219,25 @@ impl Client {
                         // uses — a repo where the user has no open
                         // PRs still gets a row so the tree shows
                         // "recently active" context instead of empty.
+                        //
+                        // #1099 f/u v3 (2026-08-21) — swap `state =
+                        // "OPEN"` for `state = "MERGED"` in the BBQL
+                        // predicate. Bitbucket ignores the URL
+                        // `?state=` when `q=` is set, so leaving the
+                        // predicate as-is would filter out every
+                        // merged PR and the fallback would always
+                        // return empty.
                         let fallback_merged = if prs.is_empty() {
+                            let merged_q =
+                                q.replace("state = \"OPEN\"", "state = \"MERGED\"");
                             client
-                                .list_repo_prs_fetch(&ws, &slug, Some("MERGED"), Some(&q), 1)
+                                .list_repo_prs_fetch(
+                                    &ws,
+                                    &slug,
+                                    Some("MERGED"),
+                                    Some(&merged_q),
+                                    1,
+                                )
                                 .await
                                 .ok()
                                 .and_then(|v| v.into_iter().next())
