@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook — runs cargo fmt --check + cargo clippy on the
+# staged Rust changes. Blocks the commit on failure.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Bypass for a one-off commit (use sparingly):
+#   git commit --no-verify
+#
+# Ported from mnml core's .githooks/pre-commit, with two changes for
+# this repo's shape. Core is a single crate, so it can afford
+# `cargo clippy --all-targets` over everything. This is a 31-app
+# workspace where that would rebuild every sibling on every commit,
+# so the hook narrows clippy to the packages whose files are
+# actually staged. A change to a workspace-root file (Cargo.toml,
+# Cargo.lock, crates/) widens it back to --workspace. And apps/mnml-db
+# is its own nested workspace (it sits in the root manifest's
+# `exclude` list), so `-p mnml-db` does not resolve from here and it
+# has to be gated in its own directory.
+#
+# --all-targets is the load-bearing flag. Without it, clippy skips
+# the test cfg, and a test module that does not compile stays
+# invisible — which is exactly how mnml-forge-bitbucket,
+# mnml-msg-slack and mnml-tracker-jira each ended up with a test
+# target that had not compiled for weeks.
+
+set -e
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+STAGED_RS=$(echo "$STAGED" | grep -E '\.rs$' || true)
+if [ -z "$STAGED_RS" ]; then
+    exit 0
+fi
+
+echo "── pre-commit: cargo fmt --check ──"
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "✗ cargo fmt found unformatted code. Run: cargo fmt --all" >&2
+    echo "  (or bypass with --no-verify if you know what you're doing)" >&2
+    exit 1
+fi
+
+# The nested workspace, gated in place.
+if echo "$STAGED_RS" | grep -q '^apps/mnml-db/'; then
+    echo "── pre-commit: fmt + clippy --all-targets (apps/mnml-db) ──"
+    if ! (cd apps/mnml-db && cargo fmt --all -- --check); then
+        echo
+        echo "✗ cargo fmt found unformatted code in mnml-db." >&2
+        exit 1
+    fi
+    if ! (cd apps/mnml-db && cargo clippy --workspace --all-targets --quiet -- -D warnings); then
+        echo
+        echo "✗ cargo clippy found warnings in mnml-db (treated as errors)." >&2
+        echo "  Fix them, or bypass with --no-verify." >&2
+        exit 1
+    fi
+    # Nothing else staged? Then mnml-db was the whole change.
+    if [ -z "$(echo "$STAGED_RS" | grep -vE '^apps/mnml-db/' || true)" ]; then
+        echo "✓ pre-commit checks passed"
+        exit 0
+    fi
+fi
+
+# Which packages are in play? apps/<pkg>/... and crates/<pkg>/...
+PKGS=$(echo "$STAGED_RS" | sed -nE 's#^(apps|crates)/([^/]+)/.*#\2#p' | grep -v '^mnml-db$' | sort -u)
+# A root-level manifest or lockfile change can affect every member.
+if echo "$STAGED" | grep -qE '^(Cargo\.(toml|lock))$'; then
+    PKGS=""
+fi
+
+if [ -z "$PKGS" ]; then
+    echo "── pre-commit: cargo clippy --workspace --all-targets ──"
+    if ! cargo clippy --workspace --all-targets --quiet -- -D warnings; then
+        echo
+        echo "✗ cargo clippy found warnings (treated as errors)." >&2
+        echo "  Fix them, or bypass with --no-verify." >&2
+        exit 1
+    fi
+else
+    for pkg in $PKGS; do
+        echo "── pre-commit: cargo clippy -p $pkg --all-targets ──"
+        if ! cargo clippy -p "$pkg" --all-targets --quiet -- -D warnings; then
+            echo
+            echo "✗ cargo clippy found warnings in $pkg (treated as errors)." >&2
+            echo "  Fix them, or bypass with --no-verify." >&2
+            exit 1
+        fi
+    done
+fi
+
+echo "✓ pre-commit checks passed"

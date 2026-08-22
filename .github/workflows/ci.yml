@@ -1,0 +1,109 @@
+name: CI
+
+# Mirrors mnml core's .github/workflows/ci.yml: the same three gates
+# (fmt --check, clippy --all-targets with -D warnings, test) at the
+# same strictness, on the same three platforms.
+#
+# Core's zig / libghostty-vt setup is deliberately absent — no
+# integration app depends on libghostty-vt. That is also why Windows
+# here builds for the DEFAULT msvc target rather than core's
+# x86_64-pc-windows-gnu: core only needs MinGW because upstream
+# ghostty does not support msvc. Nothing here has that constraint, and
+# msvc is what these apps actually ship as (see the
+# *-pc-windows-msvc entries in dist-workspace.toml).
+#
+# Added 2026-08-21. Before this, mnml-integrations had no CI and no
+# git hooks at all, across 31 apps. That is how three packages ended
+# up with test targets that did not compile (a struct field added
+# without updating its test fixture, in mnml-forge-bitbucket,
+# mnml-msg-slack and mnml-tracker-jira) — `cargo build -p X` only
+# builds the bin target, so the broken test cfg stayed invisible.
+# `--all-targets` is the load-bearing flag here, not a nicety.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt · clippy · test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # All three, same as core. mnml is a Windows/macOS/Linux
+        # product and these apps ship accordingly — tracker-jira's
+        # dist-workspace.toml builds aarch64- and x86_64-pc-windows-msvc,
+        # and msg-slack carries real #[cfg(target_os = "windows")] code.
+        # Every std::os::unix use in the repo is already #[cfg(unix)]-
+        # gated, so there is nothing platform-specific to port first.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      # --all-targets pulls in the test/bench cfg. Without it, a test
+      # module that does not compile is invisible. See the header note.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+  # apps/mnml-db is deliberately in the root manifest's `exclude` list
+  # — it is its own workspace with 7 driver crates — so the job above
+  # does not see it at all. Without this, a third of a database tool
+  # (postgres/redis/mariadb/clickhouse/redshift/docdb/dynamodb drivers)
+  # would sit outside the gate that was just added to catch exactly
+  # this class of rot.
+  nested-mnml-db:
+    name: fmt · clippy · test (mnml-db, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: apps/mnml-db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/mnml-db
+          key: ${{ matrix.os }}-mnml-db
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
