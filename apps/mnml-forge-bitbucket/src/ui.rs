@@ -22,17 +22,50 @@ use ratatui::{
 use std::io::Stdout;
 use std::time::{Duration, Instant};
 
+/// #1127 — hard cap on how many MERGED PRs the show_all expansion
+/// reveals per repo. Was: unbounded — a repo with 165 historical
+/// merged PRs would flood the pane with 165 rows the moment the
+/// footer was clicked (user report 2026-08-22). Keeps every OPEN PR
+/// unconditionally; only the merged pile is capped. Same shape as
+/// mine_only's "1 merged peek" but bigger (20 = a comfortable page
+/// of recent history without collapsing the tab entirely).
+const SHOW_ALL_MERGED_CAP: usize = 20;
+
+/// #1125 — the PR-state slice this tab represents. Drives the
+/// Status filter chip label AND the visible-row filter. Was: chip
+/// label was purely cosmetic (derived once for the toolbar); the
+/// render path only consulted `mine_only` + recency, so a
+/// WorkspaceOpenPRs tab could still render MERGED rows (the peek
+/// leak that made the pane look like it was showing merged history
+/// while the chip said "Status: Open"). Now every visible row is
+/// checked against this filter unless show_all bypasses it.
+///
+/// Returns `None` when the tab has no advertised state (Pipelines /
+/// Branches / a per-repo tab with an empty `state` field) — those
+/// paths render unfiltered as before.
+fn implied_pr_state(tab: &crate::app::TabState) -> Option<&str> {
+    use crate::app::TabKind;
+    match tab.spec.kind {
+        TabKind::WorkspaceOpenPRs => Some("OPEN"),
+        TabKind::WorkspaceMergedPRs => Some("MERGED"),
+        TabKind::PullRequests if !tab.spec.state.is_empty() => Some(&tab.spec.state),
+        _ => None,
+    }
+}
+
 /// Filter a repo's PR list down to what should be visible in an
 /// expanded row group. Policy depends on the tab spec:
 ///
-/// - `show_all == true` — always return every PR (the user clicked
-///   "[ Show N older ]" and asked to reveal the pile).
-/// - Mine tab (`tab.spec.mine_only`) — return every OPEN PR plus the
-///   FIRST MERGED PR seen (a peek at your last landed change);
-///   everything else is hidden until show_all. This assumes the fetch
-///   already returns PRs in updated_on-descending order, which is
-///   the Bitbucket Cloud default. Was: bypass all filtering, which
-///   flooded expansions with 50+ historical merges per repo.
+/// - #1125 (2026-08-22) — the tab's implied PR state is honored
+///   FIRST. A WorkspaceOpenPRs tab drops MERGED rows even when the
+///   mine_only fetch pulled some in as a peek; the Status chip label
+///   is now a real filter. See `implied_pr_state`.
+/// - `show_all == true` — reveal the pile, but cap the MERGED
+///   section at `SHOW_ALL_MERGED_CAP` (#1127). OPEN PRs always
+///   render in full so nothing actionable is hidden by the cap.
+/// - Mine tab (`tab.spec.mine_only`) — return every OPEN PR plus at
+///   most one MERGED peek (subject to `implied_pr_state`). The peek
+///   only survives when the tab isn't state-restricted.
 /// - Otherwise (workspace-wide firehose views) — 24-hour recency
 ///   window, matching the historical behavior.
 ///
@@ -43,14 +76,44 @@ fn visible_prs_for_render<'a>(
     tab: &crate::app::TabState,
     show_all: bool,
 ) -> Vec<&'a crate::bitbucket::PullRequest> {
+    let state_filter = implied_pr_state(tab);
+    let matches_state = |pr: &crate::bitbucket::PullRequest| -> bool {
+        match state_filter {
+            Some(s) => pr.state.eq_ignore_ascii_case(s),
+            None => true,
+        }
+    };
     if show_all {
-        return prs.iter().collect();
+        // #1127 — keep every OPEN row, cap MERGED at
+        // SHOW_ALL_MERGED_CAP. Everything else (DECLINED,
+        // SUPERSEDED, …) passes through unchanged so declined-heavy
+        // tabs still work.
+        let mut merged_kept = 0usize;
+        return prs
+            .iter()
+            .filter(|pr| {
+                if !matches_state(pr) {
+                    return false;
+                }
+                if pr.state.eq_ignore_ascii_case("MERGED") {
+                    if merged_kept < SHOW_ALL_MERGED_CAP {
+                        merged_kept += 1;
+                        return true;
+                    }
+                    return false;
+                }
+                true
+            })
+            .collect();
     }
     if tab.spec.mine_only {
         let mut merged_shown = false;
         return prs
             .iter()
             .filter(|pr| {
+                if !matches_state(pr) {
+                    return false;
+                }
                 if pr.state.eq_ignore_ascii_case("OPEN") {
                     return true;
                 }
@@ -64,27 +127,42 @@ fn visible_prs_for_render<'a>(
     }
     prs.iter()
         .filter(|pr| {
-            pr.updated_on
-                .as_deref()
-                .and_then(crate::app::hours_since)
-                .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
-                .unwrap_or(true)
+            matches_state(pr)
+                && pr
+                    .updated_on
+                    .as_deref()
+                    .and_then(crate::app::hours_since)
+                    .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
+                    .unwrap_or(true)
         })
         .collect()
 }
 
 /// Count of PRs hidden by `visible_prs_for_render` at the current
-/// state. Zero when show_all is set (nothing is hidden).
+/// state — used to drive the "[ Show N more … ]" footer.
+///
+/// #1125 (2026-08-22) — PRs filtered out by `implied_pr_state`
+/// don't count as "hidden": they were never candidates for THIS
+/// tab. The footer would otherwise offer "Show N more merged" on
+/// a Status:Open tab where clicking reveals nothing (merged rows
+/// still fail the state check under show_all).
+///
+/// #1127 — under show_all, the residual is whatever the merged cap
+/// clipped. When the cap didn't fire the footer collapses.
 fn hidden_pr_count_for_render(
     prs: &[crate::bitbucket::PullRequest],
     tab: &crate::app::TabState,
     show_all: bool,
 ) -> usize {
-    if show_all {
-        return 0;
-    }
-    prs.len()
-        .saturating_sub(visible_prs_for_render(prs, tab, show_all).len())
+    let state_filter = implied_pr_state(tab);
+    let eligible = prs
+        .iter()
+        .filter(|pr| match state_filter {
+            Some(s) => pr.state.eq_ignore_ascii_case(s),
+            None => true,
+        })
+        .count();
+    eligible.saturating_sub(visible_prs_for_render(prs, tab, show_all).len())
 }
 
 pub async fn run(app: &mut App) -> Result<()> {
@@ -1932,4 +2010,116 @@ fn footer_chips() -> Vec<FooterChip> {
             key: Some(ke(KeyCode::Char('q'))),
         },
     ]
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    //! #1125 / #1127 — regression coverage for the visibility policy.
+    //! Builds `TabState` + `PullRequest` fixtures via `serde_json`
+    //! so tests don't have to know the full struct shape.
+    use super::*;
+    use crate::app::{TabData, TabKind, TabSpec, TabState};
+    use crate::bitbucket::PullRequest;
+
+    fn pr(id: i64, state: &str) -> PullRequest {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": format!("PR {id}"),
+            "state": state,
+        }))
+        .expect("PR fixture parses")
+    }
+
+    fn tab(kind: TabKind, state: &str, mine_only: bool) -> TabState {
+        TabState {
+            name: format!("{kind:?}"),
+            spec: TabSpec {
+                kind,
+                workspace: "ws".into(),
+                repo: None,
+                scope: None,
+                state: state.into(),
+                q: None,
+                mine_only,
+            },
+            data: TabData::empty_for(kind),
+            selected: 0,
+            last_fetched: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn workspace_open_tab_drops_merged_rows_even_with_mine_peek() {
+        // #1125 — the mine_only peek path would previously include
+        // one MERGED PR after all OPEN ones, letting a MERGED row
+        // render under a "Status: Open" chip. Now the state filter
+        // fires first and drops it.
+        let prs = vec![
+            pr(1, "OPEN"),
+            pr(2, "OPEN"),
+            pr(3, "MERGED"),
+            pr(4, "MERGED"),
+        ];
+        let t = tab(TabKind::WorkspaceOpenPRs, "", true);
+        let visible = visible_prs_for_render(&prs, &t, false);
+        assert!(
+            visible.iter().all(|p| p.state == "OPEN"),
+            "state filter must drop MERGED under an Open tab; got {:?}",
+            visible.iter().map(|p| &p.state).collect::<Vec<_>>()
+        );
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn workspace_open_tab_does_not_advertise_merged_footer() {
+        // #1125 — hidden count MUST ignore rows filtered out by
+        // state; a Status:Open tab should never say "Show N more
+        // merged" because the merged rows aren't eligible under
+        // this tab in the first place.
+        let prs = vec![pr(1, "OPEN"), pr(2, "MERGED"), pr(3, "MERGED")];
+        let t = tab(TabKind::WorkspaceOpenPRs, "", true);
+        assert_eq!(hidden_pr_count_for_render(&prs, &t, false), 0);
+    }
+
+    #[test]
+    fn show_all_caps_merged_at_twenty() {
+        // #1127 — a repo with 30 merged PRs on a Status:Merged tab
+        // must clip to 20 under show_all, keeping the pane from
+        // flooding with 165+ historical rows on a `[ Show N more
+        // merged ]` click.
+        let mut prs = Vec::new();
+        for i in 0..30 {
+            prs.push(pr(i, "MERGED"));
+        }
+        let t = tab(TabKind::WorkspaceMergedPRs, "", false);
+        let visible = visible_prs_for_render(&prs, &t, true);
+        assert_eq!(visible.len(), SHOW_ALL_MERGED_CAP);
+        assert_eq!(
+            hidden_pr_count_for_render(&prs, &t, true),
+            30 - SHOW_ALL_MERGED_CAP
+        );
+    }
+
+    #[test]
+    fn show_all_keeps_all_open_rows() {
+        // #1127 — the cap only clips MERGED. OPEN PRs on a mixed
+        // tab must all survive show_all so nothing actionable is
+        // hidden behind the "load more" gesture.
+        let mut prs = Vec::new();
+        for i in 0..25 {
+            prs.push(pr(i, "OPEN"));
+        }
+        for i in 25..55 {
+            prs.push(pr(i, "MERGED"));
+        }
+        // Use a plain per-repo tab with no state restriction so
+        // both states are eligible.
+        let t = tab(TabKind::PullRequests, "", false);
+        let visible = visible_prs_for_render(&prs, &t, true);
+        let open_count = visible.iter().filter(|p| p.state == "OPEN").count();
+        let merged_count = visible.iter().filter(|p| p.state == "MERGED").count();
+        assert_eq!(open_count, 25, "every OPEN row must survive show_all");
+        assert_eq!(merged_count, SHOW_ALL_MERGED_CAP);
+    }
 }
