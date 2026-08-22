@@ -59,7 +59,6 @@ pub struct TabState {
 }
 
 pub struct App {
-    pub cfg: Config,
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: String,
@@ -77,7 +76,6 @@ impl App {
             });
         }
         let mut app = App {
-            cfg,
             tabs,
             active_tab: 0,
             status: String::new(),
@@ -167,13 +165,12 @@ impl App {
                 match rx.try_recv() {
                     Ok(LogTailEvent::Line(text)) => {
                         if let Some(p) = tab.data.pane.as_mut() {
-                            use crate::log_tail::{LineSeverity, LogLine};
-                            let severity = LineSeverity::classify(&text);
-                            p.lines.push(LogLine { text, severity });
-                            if p.lines.len() > 5000 {
-                                let drop = p.lines.len() - 5000;
-                                p.lines.drain(0..drop);
-                            }
+                            // Was an inline copy of push_line with a
+                            // hardcoded 5000 cap and no scroll fixup,
+                            // so dropping old lines shifted the
+                            // viewport for anyone not following the
+                            // tail. push_line handles both.
+                            p.push_line(text);
                             any = true;
                         }
                     }
@@ -183,7 +180,7 @@ impl App {
                         still_open = false;
                         any = true;
                     }
-                    Ok(LogTailEvent::Exited(_)) => {
+                    Ok(LogTailEvent::Exited) => {
                         still_open = false;
                         any = true;
                     }

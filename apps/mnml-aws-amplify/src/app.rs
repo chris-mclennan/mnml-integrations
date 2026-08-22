@@ -1,7 +1,7 @@
 //! App state — per-tab loaded data + selection.
 
 use crate::amplify::{self, AmplifyApp, AmplifyBranch, AmplifyEvent, AmplifyJob};
-use crate::config::{Config, Tab};
+use crate::config::Config;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -29,17 +29,6 @@ pub enum VisibleRow {
         branch_name: String,
         job_id: String,
     },
-}
-
-/// Which branches always show under an expanded app.
-pub fn is_primary_branch(name: &str) -> bool {
-    if name.starts_with("release/") {
-        return true;
-    }
-    matches!(
-        name,
-        "main" | "master" | "develop" | "staging" | "production"
-    )
 }
 
 /// Order among primary branches: main → develop → staging →
@@ -105,17 +94,14 @@ pub fn days_since_iso(iso: &str) -> Option<i64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabKind {
     Apps,
+    /// Per-app detail tab. Scaffolding: nothing constructs this yet
+    /// (the config parser only ever produces `Apps`), so the refresh
+    /// arm below and the `AppTab` payload are unreachable until
+    /// someone wires up tab creation. Kept deliberately rather than
+    /// deleted -- removing it collapses `TabData` to one variant and
+    /// forces a 39-site refactor of every destructuring site.
+    #[allow(dead_code)]
     App,
-}
-
-impl TabKind {
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "apps" => Ok(Self::Apps),
-            "app" => Ok(Self::App),
-            other => anyhow::bail!("unknown tab kind: {other}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -125,36 +111,11 @@ pub struct TabSpec {
     pub app_id: Option<String>,
 }
 
-impl TabSpec {
-    pub fn resolve(t: &Tab, default_region: Option<&str>) -> Result<Self> {
-        let kind = TabKind::from_str(&t.kind)?;
-        let region = t
-            .region
-            .clone()
-            .or_else(|| default_region.map(str::to_string));
-        match kind {
-            TabKind::Apps => Ok(Self {
-                kind,
-                region,
-                app_id: None,
-            }),
-            TabKind::App => {
-                let app_id = t
-                    .app_id
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("`app_id` required for kind `app`"))?;
-                Ok(Self {
-                    kind,
-                    region,
-                    app_id: Some(app_id),
-                })
-            }
-        }
-    }
-}
-
 pub enum TabData {
     Apps(AppsTab),
+    /// Payload for [`TabKind::App`] -- unreachable for the same
+    /// reason. See the note there.
+    #[allow(dead_code)]
     App(AppTab),
 }
 
@@ -196,6 +157,7 @@ pub struct AppsTab {
     pub pending_jobs: Vec<(String, String, Receiver<AmplifyEvent>)>,
 }
 
+#[allow(dead_code)]
 pub struct AppTab {
     pub branches: Vec<AmplifyBranch>,
     pub jobs_for_selected_branch: Vec<AmplifyJob>,
@@ -216,39 +178,7 @@ pub struct AppTab {
     pub last_fetched: Option<std::time::Instant>,
 }
 
-impl TabData {
-    pub fn empty_for(kind: TabKind) -> Self {
-        match kind {
-            TabKind::Apps => Self::Apps(AppsTab {
-                items: Vec::new(),
-                selected: 0,
-                last_error: None,
-                loading: false,
-                pending: None,
-                last_fetched: None,
-                show_hidden: false,
-                expanded: HashSet::new(),
-                branches_by_app: HashMap::new(),
-                jobs_by_key: HashMap::new(),
-                jobs_error_by_key: HashMap::new(),
-                pending_branches: HashMap::new(),
-                pending_jobs: Vec::new(),
-            }),
-            TabKind::App => Self::App(AppTab {
-                branches: Vec::new(),
-                jobs_for_selected_branch: Vec::new(),
-                jobs_by_branch: HashMap::new(),
-                pending_per_branch: Vec::new(),
-                selected: 0,
-                last_error: None,
-                loading: false,
-                pending: None,
-                pending_jobs: None,
-                last_fetched: None,
-            }),
-        }
-    }
-}
+impl TabData {}
 
 pub struct TabState {
     pub name: String,
@@ -280,8 +210,13 @@ pub struct LogsView {
 
 /// Deployment history overlay — mirrors the AWS Amplify console's
 /// "Deployments" tab for one branch. Top: latest deployment
-/// summary. Bottom: scrollable table of every past deployment.
-/// Enter on a row drills into that job's logs via `LogsView`.
+/// summary. Bottom: table of every past deployment. Enter on a row
+/// drills into that job's logs via `LogsView`.
+///
+/// Not scrollable: it carried a `scroll` field that nothing ever
+/// read, so the table has always been clipped to the overlay height
+/// rather than scrolled. Field removed; add it back together with
+/// the key handling if the list needs to grow past one screen.
 pub struct DeploymentHistoryView {
     pub app_id: String,
     pub app_name: String,
@@ -290,7 +225,6 @@ pub struct DeploymentHistoryView {
     pub pending_rx: Option<Receiver<AmplifyEvent>>,
     pub jobs: Vec<AmplifyJob>,
     pub selected: usize,
-    pub scroll: u16,
     pub error: Option<String>,
 }
 
@@ -400,17 +334,16 @@ impl App {
                     // Loading / empty / error placeholders stay as
                     // an extra line on the Branch row itself.
                     let bkey = (app.app_id.clone(), br.branch_name.clone());
-                    if self.expanded_branches.contains(&bkey) {
-                        if let Some(js) = a.jobs_by_key.get(&bkey) {
-                            if !js.is_empty() {
-                                for j in js.iter().take(3) {
-                                    rows.push(VisibleRow::Deployment {
-                                        app_id: app.app_id.clone(),
-                                        branch_name: br.branch_name.clone(),
-                                        job_id: j.job_id.clone(),
-                                    });
-                                }
-                            }
+                    if self.expanded_branches.contains(&bkey)
+                        && let Some(js) = a.jobs_by_key.get(&bkey)
+                        && !js.is_empty()
+                    {
+                        for j in js.iter().take(3) {
+                            rows.push(VisibleRow::Deployment {
+                                app_id: app.app_id.clone(),
+                                branch_name: br.branch_name.clone(),
+                                job_id: j.job_id.clone(),
+                            });
                         }
                     }
                 }
@@ -644,6 +577,16 @@ impl App {
         let spec = self.tabs[idx].spec.clone();
         let name = self.tabs[idx].name.clone();
         match spec.kind {
+            TabKind::App => {
+                self.status = format!("refreshing {name}…");
+                let app_id = spec.app_id.clone().unwrap_or_default();
+                let rx = amplify::spawn_list_branches(app_id, spec.region.clone());
+                if let TabData::App(a) = &mut self.tabs[idx].data {
+                    a.loading = true;
+                    a.last_error = None;
+                    a.pending = Some(rx);
+                }
+            }
             TabKind::Apps => {
                 self.status = format!("refreshing {name}…");
                 let rx = amplify::spawn_list_apps(spec.region.clone());
@@ -702,16 +645,6 @@ impl App {
                         );
                         a.pending_jobs.push((app_id, branch_name, rx));
                     }
-                }
-            }
-            TabKind::App => {
-                self.status = format!("refreshing {name}…");
-                let app_id = spec.app_id.clone().unwrap_or_default();
-                let rx = amplify::spawn_list_branches(app_id, spec.region.clone());
-                if let TabData::App(a) = &mut self.tabs[idx].data {
-                    a.loading = true;
-                    a.last_error = None;
-                    a.pending = Some(rx);
                 }
             }
         }
@@ -1360,10 +1293,10 @@ impl App {
                         app_id: a_id,
                         branch_name: b_name,
                     } = r
+                        && a_id == &app_id
+                        && b_name == &branch_name
                     {
-                        if a_id == &app_id && b_name == &branch_name {
-                            new_sel = i;
-                        }
+                        new_sel = i;
                     }
                 }
                 if let TabData::Apps(a) = &mut self.active_mut().data {
@@ -1439,7 +1372,6 @@ impl App {
             pending_rx: Some(rx),
             jobs: cached,
             selected: 0,
-            scroll: 0,
             error: None,
         });
         self.status = format!("deployments · {branch_name}");
@@ -1482,42 +1414,6 @@ impl App {
         self.status = format!("fetching logs for {branch_name} #{job_id}…");
         self.logs_view = Some(LogsView {
             branch_name,
-            job_id: Some(job_id),
-            commit_message: commit_msg,
-            loading_detail: true,
-            detail_rx: Some(rx),
-            log_rxs: Vec::new(),
-            steps: Vec::new(),
-            error: None,
-            scroll: 0,
-        });
-    }
-
-    fn open_logs_for_branch(&mut self, app_id: &str, branch_name: &str) {
-        let region = self.active().spec.region.clone();
-        let TabData::Apps(a) = &self.active().data else {
-            return;
-        };
-        let jobs = a
-            .jobs_by_key
-            .get(&(app_id.to_string(), branch_name.to_string()))
-            .cloned()
-            .unwrap_or_default();
-        let Some(latest) = jobs.first() else {
-            self.status = format!("no deploys yet for {branch_name}");
-            return;
-        };
-        let job_id = latest.job_id.clone();
-        let commit_msg = latest.commit_message.clone();
-        let rx = amplify::spawn_get_job(
-            app_id.to_string(),
-            branch_name.to_string(),
-            job_id.clone(),
-            region,
-        );
-        self.status = format!("fetching logs for {branch_name} #{job_id}…");
-        self.logs_view = Some(LogsView {
-            branch_name: branch_name.to_string(),
             job_id: Some(job_id),
             commit_message: commit_msg,
             loading_detail: true,

@@ -35,7 +35,6 @@ pub enum S3Event {
 }
 
 pub struct App {
-    pub cfg: Config,
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: String,
@@ -71,7 +70,6 @@ impl App {
             tabs.push(tab_from_config(b));
         }
         let mut app = App {
-            cfg,
             tabs,
             active_tab: 0,
             status: String::new(),

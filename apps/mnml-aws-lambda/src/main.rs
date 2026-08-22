@@ -4,7 +4,6 @@ mod config;
 mod install;
 mod keys;
 mod lambda;
-mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -73,10 +72,16 @@ async fn main() -> Result<()> {
         println!("  \u{2514}\u{2500} (run `--check` for full auth resolution details)");
         println!();
         println!("Config");
-        println!("  \u{2514}\u{2500} path: {}", config::config_path().display());
+        println!(
+            "  \u{2514}\u{2500} path: {}",
+            config::config_path().display()
+        );
         println!();
         println!("Runtime");
-        println!("  \u{251c}\u{2500} integration: {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "  \u{251c}\u{2500} integration: {}",
+            env!("CARGO_PKG_VERSION")
+        );
         println!(
             "  \u{2514}\u{2500} os/arch: {} / {}",
             std::env::consts::OS,

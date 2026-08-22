@@ -45,7 +45,6 @@ pub enum AzureEvent {
 }
 
 pub struct App {
-    pub cfg: Config,
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: String,
@@ -71,7 +70,6 @@ impl App {
             tabs.push(tab_from_config(t));
         }
         let mut app = App {
-            cfg,
             tabs,
             active_tab: 0,
             status: String::new(),

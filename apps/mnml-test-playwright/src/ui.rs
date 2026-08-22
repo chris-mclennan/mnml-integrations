@@ -45,12 +45,11 @@ async fn event_loop(
         if event::poll(Duration::from_millis(250))?
             && let Event::Key(key) = event::read()?
             && key.kind == event::KeyEventKind::Press
+            && let Some(action) = keys::handle(key, app)
         {
-            if let Some(action) = keys::handle(key, app) {
-                let quit = keys::apply(action, app);
-                if quit {
-                    break;
-                }
+            let quit = keys::apply(action, app);
+            if quit {
+                break;
             }
         }
     }
@@ -134,7 +133,7 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             let line = Line::from(vec![
                 Span::styled(format!("{} ", ev.kind.glyph()), glyph_style),
                 Span::styled(
-                    format!("{:>8.3}s  ", ev.at_ms as f64 / 1000.0),
+                    format!("{:>8.3}s  ", ev.at_ms / 1000.0),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw(ev.title.clone()),

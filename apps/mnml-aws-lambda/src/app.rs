@@ -193,11 +193,6 @@ impl App {
         }
     }
 
-    /// No-op kept for blit/event-loop parity with sibling shape.
-    pub fn drain(&mut self) -> bool {
-        false
-    }
-
     pub fn focused_function(&self) -> Option<&Function> {
         let t = self.active();
         t.data.items.get(t.data.selected)

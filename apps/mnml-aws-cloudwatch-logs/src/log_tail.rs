@@ -74,8 +74,6 @@ pub struct LogLine {
 
 #[derive(Debug)]
 pub struct LogTailPane {
-    /// e.g. `logs · b3a47fc8…` (the stream name's prefix).
-    pub title: String,
     /// CloudWatch log group + stream this tail is watching. Stashed so
     /// the renderer can show them in the header.
     pub log_group: String,
@@ -85,8 +83,6 @@ pub struct LogTailPane {
     pub lines: Vec<LogLine>,
     /// Top rendered row. `usize::MAX` ⇒ follow the tail.
     pub scroll: usize,
-    /// Set by the worker thread when the child exits.
-    pub exited: Arc<AtomicBool>,
     /// Set true to ask the worker to kill the child + bail.
     cancel: Arc<AtomicBool>,
     /// Per-line cap to keep memory bounded on long-running tails.
@@ -101,8 +97,10 @@ pub struct LogTailPane {
 pub enum LogTailEvent {
     /// One line of stdout (already trimmed of the trailing `\n`).
     Line(String),
-    /// The aws process exited or was killed.
-    Exited(i32),
+    /// The aws process exited or was killed. Carries no exit code —
+    /// no consumer ever read it, and aws-cli's code is not meaningful
+    /// here (a killed tail and a clean end look the same).
+    Exited,
     /// Spawn / pipe error.
     Failed(String),
 }
@@ -110,20 +108,11 @@ pub enum LogTailEvent {
 const DEFAULT_CAPACITY: usize = 10_000;
 
 impl LogTailPane {
-    /// Spawn `aws logs tail --follow ...` and start streaming lines via
-    /// `tx`. Returns the pane (with the reader thread + child stashed
-    /// for cleanup) and the receiver side of the channel.
-    pub fn spawn(
-        log_group: String,
-        log_stream: Option<String>,
-        aws_region: Option<String>,
-        cwd: std::path::PathBuf,
-    ) -> Result<(Self, Receiver<LogTailEvent>), String> {
-        Self::spawn_with_filter(log_group, log_stream, None, aws_region, cwd)
-    }
-
-    /// Same as [`Self::spawn`] but with an additional CloudWatch
-    /// Logs filter pattern (`aws logs tail --filter-pattern <p>`).
+    /// Spawn `aws logs tail --follow ...` with an optional CloudWatch
+    /// Logs filter pattern (`aws logs tail --filter-pattern <p>`) and
+    /// start streaming lines via `tx`. Returns the pane (with the
+    /// reader thread + child stashed for cleanup) and the receiver
+    /// side of the channel.
     pub fn spawn_with_filter(
         log_group: String,
         log_stream: Option<String>,
@@ -173,9 +162,9 @@ impl LogTailPane {
             .take()
             .ok_or_else(|| "no stdout pipe".to_string())?;
         let stderr = child.stderr.take();
-        let exited = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
-        let exited_for_thread = exited.clone();
+        // Only the worker needs this — the pane never reads it back.
+        let exited_for_thread = Arc::new(AtomicBool::new(false));
         let cancel_for_thread = cancel.clone();
         let tx_err = tx.clone();
         // stderr reader — surface aws CLI errors as `Failed` events.
@@ -210,20 +199,14 @@ impl LogTailPane {
                 }
             }
             exited_for_thread.store(true, Ordering::Relaxed);
-            let _ = tx.send(LogTailEvent::Exited(0));
+            let _ = tx.send(LogTailEvent::Exited);
         });
-        let title = match &log_stream {
-            Some(s) => format!("logs · {}", &s[..s.len().min(8)]),
-            None => format!("logs · {log_group}"),
-        };
         Ok((
             LogTailPane {
-                title,
                 log_group,
                 log_stream,
                 lines: Vec::new(),
                 scroll: usize::MAX,
-                exited,
                 cancel,
                 capacity: DEFAULT_CAPACITY,
                 _reader: Some(reader_handle),
@@ -231,10 +214,6 @@ impl LogTailPane {
             },
             rx,
         ))
-    }
-
-    pub fn tab_title(&self) -> String {
-        self.title.clone()
     }
 
     /// Push a new line, classify it, drop the oldest when over capacity.
@@ -306,12 +285,10 @@ mod tests {
     fn push_line_classifies_and_caps_capacity() {
         // Use a constructor that doesn't shell out — fake the pane.
         let mut p = LogTailPane {
-            title: "test".into(),
             log_group: "g".into(),
             log_stream: Some("s".into()),
             lines: Vec::new(),
             scroll: usize::MAX,
-            exited: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             capacity: 3,
             _reader: None,

@@ -334,8 +334,8 @@ fn default_state_path(service: &str) -> PathBuf {
     let (root, file_shape) = if let Some(v) = std::env::var_os("TATTLE_ARTIFACTS_ROOT") {
         (PathBuf::from(v), true)
     } else {
-        let tattle_default = std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".tattle-claude-artifacts"));
+        let tattle_default =
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".tattle-claude-artifacts"));
         if let Some(p) = tattle_default.as_ref()
             && p.is_dir()
         {
@@ -344,7 +344,10 @@ fn default_state_path(service: &str) -> PathBuf {
             (PathBuf::from(v).join("ratelimit"), false)
         } else if let Some(h) = std::env::var_os("HOME") {
             (
-                PathBuf::from(h).join(".config").join("mnml").join("ratelimit"),
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("mnml")
+                    .join("ratelimit"),
                 false,
             )
         } else {
@@ -397,7 +400,11 @@ fn flock(file: &File) -> Option<FlockGuard> {
     let fd = file.as_raw_fd();
     // SAFETY: fd comes from a live File; LOCK_EX blocks until we own it.
     let rc = unsafe { libc::flock(fd, libc::LOCK_EX) };
-    if rc == 0 { Some(FlockGuard { fd }) } else { None }
+    if rc == 0 {
+        Some(FlockGuard { fd })
+    } else {
+        None
+    }
 }
 
 #[cfg(not(unix))]

@@ -123,7 +123,7 @@ impl Item {
         match self {
             Item::Pool(p) => {
                 let status = p.status.as_deref().unwrap_or("?");
-                format!("{} · {}", status, &p.id)
+                format!("{} · {}", status, p.id)
             }
             Item::User(u) => {
                 let status = u.status.as_deref().unwrap_or("?");

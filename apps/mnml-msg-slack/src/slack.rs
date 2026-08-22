@@ -999,6 +999,11 @@ mod tests {
             user: Some("U99".into()),
             last_read: None,
             purpose: None,
+            // #1044 added these to Channel without updating the
+            // fixtures; `None` = "not reported", which is the
+            // pre-#1044 behavior these tests assert against.
+            unread_count_display: None,
+            mention_count_display: None,
         };
         assert_eq!(c.display_name(), "dm: U99");
     }

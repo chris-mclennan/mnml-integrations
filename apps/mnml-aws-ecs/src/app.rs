@@ -184,10 +184,6 @@ impl App {
         }
     }
 
-    pub fn drain(&mut self) -> bool {
-        false
-    }
-
     pub fn focused_item(&self) -> Option<&Item> {
         let t = self.active();
         t.data.items.get(t.data.selected)
