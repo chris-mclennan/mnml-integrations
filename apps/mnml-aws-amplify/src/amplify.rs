@@ -352,25 +352,89 @@ fn fetch_log(url: &str) -> Result<String> {
 }
 
 fn run_aws(args: &[&str], region: Option<&str>) -> Result<serde_json::Value> {
-    let mut cmd = Command::new("aws");
-    if let Some(r) = region {
-        cmd.arg("--region").arg(r);
+    // 2026-08-22 — throttling retry loop. When ~30 branches × N
+    // `list-jobs` calls fan out at once (Amplify has one shared
+    // per-account TPS bucket ~5-6 for ListJobs), AWS returns
+    // `ThrottlingException: Rate exceeded`. The AWS CLI already
+    // retries internally, but with everything racing at once it
+    // still gives up. Retry the whole subprocess 2 more times
+    // with 500ms → 1500ms backoff so the second wave lands after
+    // the first has drained. Non-throttling errors still return
+    // immediately.
+    let mut delay_ms = 500u64;
+    for attempt in 0..3 {
+        let mut cmd = Command::new("aws");
+        if let Some(r) = region {
+            cmd.arg("--region").arg(r);
+        }
+        cmd.args(args).arg("--output").arg("json");
+        let out = cmd
+            .output()
+            .map_err(|e| anyhow!("spawn aws: {e} — is the AWS CLI on PATH?"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stderr_trim = stderr.trim();
+            if attempt < 2 && is_throttle_error(stderr_trim) {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                delay_ms *= 3;
+                continue;
+            }
+            return Err(anyhow!(
+                "aws {} → {}",
+                args.first().copied().unwrap_or(""),
+                stderr_trim
+            ));
+        }
+        if out.stdout.is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        return serde_json::from_slice(&out.stdout).map_err(|e| anyhow!("parse json: {e}"));
     }
-    cmd.args(args).arg("--output").arg("json");
-    let out = cmd
-        .output()
-        .map_err(|e| anyhow!("spawn aws: {e} — is the AWS CLI on PATH?"))?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "aws {} → {}",
-            args.first().copied().unwrap_or(""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+    unreachable!("retry loop exits via return")
+}
+
+/// True when the AWS CLI stderr looks like a throttling / rate-
+/// limit error worth retrying. AWS surfaces this with a handful
+/// of exception names + a canonical "Rate exceeded" message —
+/// match all of them.
+fn is_throttle_error(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("throttling")
+        || s.contains("throttled")
+        || s.contains("toomanyrequests")
+        || s.contains("rate exceeded")
+        || s.contains("requestlimitexceeded")
+}
+
+/// Classify a raw AWS CLI error string into a compact reason
+/// (`"throttled"`, `"no access"`, `"not found"`, `"err"`) suitable
+/// for a one-line status column. Falls back to the first 20
+/// characters of the trimmed first line when nothing matches.
+pub fn short_error_reason(err: &str) -> String {
+    let s = err.to_ascii_lowercase();
+    if is_throttle_error(&s) {
+        return "throttled".to_string();
     }
-    if out.stdout.is_empty() {
-        return Ok(serde_json::Value::Null);
+    if s.contains("accessdenied")
+        || s.contains("unauthorized")
+        || s.contains("not authorized")
+        || s.contains("expiredtoken")
+        || s.contains("unable to locate credentials")
+    {
+        return "no access".to_string();
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| anyhow!("parse json: {e}"))
+    if s.contains("notfound") || s.contains("resourcenotfound") {
+        return "not found".to_string();
+    }
+    // Fall back to the first line, trimmed + capped so the row
+    // stays one line wide.
+    let first = err.lines().next().unwrap_or(err).trim();
+    let short: String = first.chars().take(20).collect();
+    if short.is_empty() {
+        "err".to_string()
+    } else {
+        format!("err: {short}")
+    }
 }
 
 /// Console URL for an Amplify app (app-level view, no branch).
@@ -493,6 +557,49 @@ mod tests {
     fn console_url_branch_includes_branch() {
         let url = console_url_branch("d2abc123", "main", Some("us-east-1"));
         assert!(url.contains("/branches/main"));
+    }
+
+    #[test]
+    fn classifies_throttle_errors() {
+        let throttle = "An error occurred (ThrottlingException) when calling the ListJobs operation (reached max retries: 4): Rate exceeded";
+        assert_eq!(short_error_reason(throttle), "throttled");
+        let too_many = "An error occurred (TooManyRequestsException) when calling the ListJobs operation: Too Many Requests";
+        assert_eq!(short_error_reason(too_many), "throttled");
+        let rate_only = "botocore.exceptions.ClientError: Rate exceeded";
+        assert_eq!(short_error_reason(rate_only), "throttled");
+    }
+
+    #[test]
+    fn classifies_access_errors() {
+        let denied = "An error occurred (AccessDeniedException) when calling the ListJobs operation: User: ... is not authorized to perform: amplify:ListJobs";
+        assert_eq!(short_error_reason(denied), "no access");
+        let expired =
+            "An error occurred (ExpiredTokenException) when calling the ListJobs operation";
+        assert_eq!(short_error_reason(expired), "no access");
+        let no_creds = "Unable to locate credentials. You can configure credentials by running \"aws configure\".";
+        assert_eq!(short_error_reason(no_creds), "no access");
+    }
+
+    #[test]
+    fn classifies_not_found() {
+        let nf = "An error occurred (ResourceNotFoundException) when calling the ListJobs operation: No branch found";
+        assert_eq!(short_error_reason(nf), "not found");
+    }
+
+    #[test]
+    fn falls_back_to_prefix_on_unknown() {
+        let weird = "Something totally unexpected happened over here";
+        let out = short_error_reason(weird);
+        assert!(out.starts_with("err: "), "got {out:?}");
+        assert!(out.len() <= "err: ".len() + 20, "got {out:?}");
+    }
+
+    #[test]
+    fn throttle_predicate_case_insensitive() {
+        assert!(is_throttle_error("Throttling: Rate exceeded"));
+        assert!(is_throttle_error("throttling"));
+        assert!(is_throttle_error("some Rate Exceeded thing"));
+        assert!(!is_throttle_error("AccessDenied"));
     }
 
     #[test]

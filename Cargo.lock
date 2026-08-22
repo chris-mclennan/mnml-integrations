@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "mnml-aws-amplify"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "chrono",

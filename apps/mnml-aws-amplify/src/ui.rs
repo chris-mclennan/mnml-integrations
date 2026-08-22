@@ -674,12 +674,20 @@ fn draw_unified_view(f: &mut Frame, area: Rect, app: &App) {
                     .pending_jobs
                     .iter()
                     .any(|(a_id, b_name, _)| a_id == &key.0 && b_name == &key.1);
-                let has_error = a.jobs_error_by_key.contains_key(&key);
+                let job_err = a.jobs_error_by_key.get(&key);
                 let (last_text, last_style) = match jobs {
-                    None if has_error => (
-                        "err (see expand)".to_string(),
-                        Style::default().fg(Color::Red),
-                    ),
+                    None if job_err.is_some() => {
+                        // 2026-08-22 (#1123) — was a fixed
+                        // `err (see expand)` filler. Show the
+                        // classified reason ("throttled" /
+                        // "no access" / "not found" / "err: …")
+                        // inline so the user can see at a glance
+                        // what's wrong without opening every row.
+                        let reason = crate::amplify::short_error_reason(
+                            job_err.map(String::as_str).unwrap_or(""),
+                        );
+                        (reason, Style::default().fg(Color::Red))
+                    }
                     None if in_flight => {
                         ("fetching…".to_string(), Style::default().fg(Color::Cyan))
                     }

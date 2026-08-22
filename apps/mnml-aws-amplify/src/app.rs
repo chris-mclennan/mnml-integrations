@@ -3,8 +3,16 @@
 use crate::amplify::{self, AmplifyApp, AmplifyBranch, AmplifyEvent, AmplifyJob};
 use crate::config::Config;
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
+
+/// Cap on simultaneously in-flight `aws amplify list-jobs`
+/// subprocesses. AWS Amplify's `ListJobs` shares a low per-account
+/// TPS bucket (~5-6/s), and firing 30+ requests in parallel (7
+/// apps × ~5 branches each) reliably hits `ThrottlingException`.
+/// Anything past this cap sits in `queued_jobs` and is promoted
+/// each drain tick as slots free up. Bug #1123 (2026-08-22).
+pub const MAX_CONCURRENT_LIST_JOBS: usize = 4;
 
 /// A single visible row on the unified list. The list is a flat
 /// projection of `AppsTab.items` where each app header is
@@ -153,8 +161,14 @@ pub struct AppsTab {
     pub pending_branches: HashMap<String, Receiver<AmplifyEvent>>,
     /// In-flight per-branch job fetches — each carries the app_id
     /// through so the Jobs event can be routed back to
-    /// `jobs_by_key`.
+    /// `jobs_by_key`. Capped at [`MAX_CONCURRENT_LIST_JOBS`] to
+    /// avoid `ThrottlingException` (#1123).
     pub pending_jobs: Vec<(String, String, Receiver<AmplifyEvent>)>,
+    /// Per-branch job fetches waiting for a `pending_jobs` slot —
+    /// FIFO. Promoted to `pending_jobs` each drain tick until
+    /// the concurrency cap is met. See
+    /// [`MAX_CONCURRENT_LIST_JOBS`].
+    pub queued_jobs: VecDeque<(String, String)>,
 }
 
 #[allow(dead_code)]
@@ -179,6 +193,48 @@ pub struct AppTab {
 }
 
 impl TabData {}
+
+/// Enqueue a `list-jobs` fan-out entry, spawning it immediately
+/// when a `pending_jobs` slot is available and otherwise pushing
+/// it to `queued_jobs`. Silently drops duplicates already
+/// pending or queued for the same `(app_id, branch_name)` — the
+/// caller doesn't need to pre-check.
+///
+/// #1123: keeps AWS `ListJobs` fan-out under the account TPS
+/// bucket so branches don't fall out as `ThrottlingException`.
+pub fn enqueue_list_jobs(
+    a: &mut AppsTab,
+    region: &Option<String>,
+    app_id: String,
+    branch_name: String,
+) {
+    let key = (app_id.clone(), branch_name.clone());
+    if a.pending_jobs
+        .iter()
+        .any(|(aid, bn, _)| aid == &key.0 && bn == &key.1)
+        || a.queued_jobs.iter().any(|k| k == &key)
+    {
+        return;
+    }
+    if a.pending_jobs.len() < MAX_CONCURRENT_LIST_JOBS {
+        let rx = amplify::spawn_list_jobs(app_id.clone(), branch_name.clone(), region.clone());
+        a.pending_jobs.push((app_id, branch_name, rx));
+    } else {
+        a.queued_jobs.push_back(key);
+    }
+}
+
+/// Promote queued `list-jobs` entries to `pending_jobs` up to
+/// [`MAX_CONCURRENT_LIST_JOBS`]. Called each drain tick after
+/// completed fetches drop out of `pending_jobs`.
+pub fn promote_queued_jobs(a: &mut AppsTab, region: &Option<String>) {
+    while a.pending_jobs.len() < MAX_CONCURRENT_LIST_JOBS
+        && let Some((app_id, branch_name)) = a.queued_jobs.pop_front()
+    {
+        let rx = amplify::spawn_list_jobs(app_id.clone(), branch_name.clone(), region.clone());
+        a.pending_jobs.push((app_id, branch_name, rx));
+    }
+}
 
 pub struct TabState {
     pub name: String,
@@ -281,6 +337,7 @@ impl App {
                 jobs_error_by_key: HashMap::new(),
                 pending_branches: HashMap::new(),
                 pending_jobs: Vec::new(),
+                queued_jobs: VecDeque::new(),
             }),
         };
         let mut app = App {
@@ -623,11 +680,11 @@ impl App {
                     // "skip the whole app" fallback (which stalled
                     // slow apps for whole cycles). User: rows going
                     // in and out of populated state across ticks.
-                    let in_flight: std::collections::HashSet<(String, String)> = a
-                        .pending_jobs
-                        .iter()
-                        .map(|(app_id, branch_name, _)| (app_id.clone(), branch_name.clone()))
-                        .collect();
+                    // 2026-08-22 (#1123) — enqueue_list_jobs
+                    // deduplicates against both pending_jobs AND
+                    // queued_jobs and honors the concurrency cap,
+                    // so no separate in_flight pre-filter is
+                    // needed here.
                     let known: Vec<(String, String)> = a
                         .branches_by_app
                         .iter()
@@ -635,15 +692,9 @@ impl App {
                             brs.iter()
                                 .map(move |b| (app_id.clone(), b.branch_name.clone()))
                         })
-                        .filter(|k| !in_flight.contains(k))
                         .collect();
                     for (app_id, branch_name) in known {
-                        let rx = amplify::spawn_list_jobs(
-                            app_id.clone(),
-                            branch_name.clone(),
-                            region.clone(),
-                        );
-                        a.pending_jobs.push((app_id, branch_name, rx));
+                        enqueue_list_jobs(a, &region, app_id, branch_name);
                     }
                 }
             }
@@ -812,11 +863,15 @@ impl App {
                 a.jobs_error_by_key.insert(key, err);
             }
         }
-        // 4. Fan out list-jobs for the branches that just landed.
+        // 4. Fan out list-jobs for the branches that just landed —
+        //    via the queue so the AWS ListJobs TPS cap isn't blown
+        //    (#1123).
         for (app_id, branch_name) in new_branch_fanout {
-            let rx = amplify::spawn_list_jobs(app_id.clone(), branch_name.clone(), region.clone());
-            a.pending_jobs.push((app_id, branch_name, rx));
+            enqueue_list_jobs(a, &region, app_id, branch_name);
         }
+        // 4b. Promote queued entries into any freshly-emptied
+        //     `pending_jobs` slots.
+        promote_queued_jobs(a, &region);
         // 5. Deployment-history overlay drain.
         self.drain_deployment_history(&mut any);
         // 6. Logs overlay drain.
@@ -1126,14 +1181,13 @@ impl App {
             let region = self.tabs[self.active_tab].spec.region.clone();
             if let TabData::Apps(a) = &mut self.tabs[self.active_tab].data {
                 let has_data = a.jobs_by_key.get(&key).is_some_and(|v| !v.is_empty());
-                let in_flight = a
-                    .pending_jobs
-                    .iter()
-                    .any(|(a_id, b_name, _)| a_id == &key.0 && b_name == &key.1);
-                if !has_data && !in_flight {
+                if !has_data {
                     a.jobs_error_by_key.remove(&key);
-                    let rx = amplify::spawn_list_jobs(key.0.clone(), key.1.clone(), region.clone());
-                    a.pending_jobs.push((key.0, key.1, rx));
+                    // 2026-08-22 (#1123) — go through the queue so
+                    // eager expand of a batched sibling doesn't
+                    // detonate the AWS TPS cap. enqueue_list_jobs
+                    // dedupes against pending + queued for us.
+                    enqueue_list_jobs(a, &region, key.0.clone(), key.1.clone());
                 }
             }
         }
@@ -1600,5 +1654,94 @@ impl App {
             Ok(()) => self.status = format!("copied {url}"),
             Err(e) => self.status = format!("copy failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_tab() -> AppsTab {
+        AppsTab {
+            items: Vec::new(),
+            selected: 0,
+            last_error: None,
+            loading: false,
+            pending: None,
+            last_fetched: None,
+            show_hidden: false,
+            expanded: HashSet::new(),
+            branches_by_app: HashMap::new(),
+            jobs_by_key: HashMap::new(),
+            jobs_error_by_key: HashMap::new(),
+            pending_branches: HashMap::new(),
+            pending_jobs: Vec::new(),
+            queued_jobs: VecDeque::new(),
+        }
+    }
+
+    /// Once `pending_jobs` fills to the cap, further entries land
+    /// in `queued_jobs` instead of racing straight to AWS.
+    #[test]
+    fn enqueue_respects_concurrency_cap() {
+        let mut a = empty_tab();
+        let region = None::<String>;
+        for i in 0..(MAX_CONCURRENT_LIST_JOBS as u32) {
+            enqueue_list_jobs(&mut a, &region, "app-a".into(), format!("branch-{i}"));
+        }
+        assert_eq!(a.pending_jobs.len(), MAX_CONCURRENT_LIST_JOBS);
+        assert!(a.queued_jobs.is_empty());
+        enqueue_list_jobs(&mut a, &region, "app-a".into(), "overflow".into());
+        assert_eq!(a.pending_jobs.len(), MAX_CONCURRENT_LIST_JOBS);
+        assert_eq!(a.queued_jobs.len(), 1);
+        assert_eq!(
+            a.queued_jobs.front().unwrap(),
+            &("app-a".to_string(), "overflow".to_string())
+        );
+    }
+
+    /// Enqueueing the same `(app_id, branch_name)` twice never
+    /// duplicates it — neither in pending nor in queued.
+    #[test]
+    fn enqueue_dedupes_pending_and_queued() {
+        let mut a = empty_tab();
+        let region = None::<String>;
+        enqueue_list_jobs(&mut a, &region, "app-a".into(), "main".into());
+        assert_eq!(a.pending_jobs.len(), 1);
+        // Same key while it's in pending — no-op.
+        enqueue_list_jobs(&mut a, &region, "app-a".into(), "main".into());
+        assert_eq!(a.pending_jobs.len(), 1);
+        assert!(a.queued_jobs.is_empty());
+        // Fill the remaining pending slots so the next fresh
+        // enqueue must land in the queue.
+        for i in 0..((MAX_CONCURRENT_LIST_JOBS - 1) as u32) {
+            enqueue_list_jobs(&mut a, &region, "app-a".into(), format!("filler-{i}"));
+        }
+        assert_eq!(a.pending_jobs.len(), MAX_CONCURRENT_LIST_JOBS);
+        assert!(a.queued_jobs.is_empty());
+        enqueue_list_jobs(&mut a, &region, "app-b".into(), "develop".into());
+        assert_eq!(a.queued_jobs.len(), 1);
+        // Re-enqueue the queued one — still one.
+        enqueue_list_jobs(&mut a, &region, "app-b".into(), "develop".into());
+        assert_eq!(a.queued_jobs.len(), 1);
+    }
+
+    /// `promote_queued_jobs` drains from the queue into
+    /// `pending_jobs` until the cap is met.
+    #[test]
+    fn promote_drains_up_to_cap() {
+        let mut a = empty_tab();
+        let region = None::<String>;
+        // Seed queued directly to keep the test hermetic.
+        for i in 0..8u32 {
+            a.queued_jobs
+                .push_back(("app".into(), format!("branch-{i}")));
+        }
+        assert!(a.pending_jobs.is_empty());
+        promote_queued_jobs(&mut a, &region);
+        assert_eq!(a.pending_jobs.len(), MAX_CONCURRENT_LIST_JOBS);
+        assert_eq!(a.queued_jobs.len(), 8 - MAX_CONCURRENT_LIST_JOBS);
+        // First-in, first-out order.
+        assert_eq!(a.pending_jobs[0].1, "branch-0");
     }
 }
