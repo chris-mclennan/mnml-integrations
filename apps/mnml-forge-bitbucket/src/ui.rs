@@ -22,6 +22,70 @@ use ratatui::{
 use std::io::Stdout;
 use std::time::{Duration, Instant};
 
+/// Filter a repo's PR list down to what should be visible in an
+/// expanded row group. Policy depends on the tab spec:
+///
+/// - `show_all == true` — always return every PR (the user clicked
+///   "[ Show N older ]" and asked to reveal the pile).
+/// - Mine tab (`tab.spec.mine_only`) — return every OPEN PR plus the
+///   FIRST MERGED PR seen (a peek at your last landed change);
+///   everything else is hidden until show_all. This assumes the fetch
+///   already returns PRs in updated_on-descending order, which is
+///   the Bitbucket Cloud default. Was: bypass all filtering, which
+///   flooded expansions with 50+ historical merges per repo.
+/// - Otherwise (workspace-wide firehose views) — 24-hour recency
+///   window, matching the historical behavior.
+///
+/// Also returns the count of PRs that were filtered out — used to
+/// drive the "[ Show N older PRs ]" footer.
+fn visible_prs_for_render<'a>(
+    prs: &'a [crate::bitbucket::PullRequest],
+    tab: &crate::app::TabState,
+    show_all: bool,
+) -> Vec<&'a crate::bitbucket::PullRequest> {
+    if show_all {
+        return prs.iter().collect();
+    }
+    if tab.spec.mine_only {
+        let mut merged_shown = false;
+        return prs
+            .iter()
+            .filter(|pr| {
+                if pr.state.eq_ignore_ascii_case("OPEN") {
+                    return true;
+                }
+                if pr.state.eq_ignore_ascii_case("MERGED") && !merged_shown {
+                    merged_shown = true;
+                    return true;
+                }
+                false
+            })
+            .collect();
+    }
+    prs.iter()
+        .filter(|pr| {
+            pr.updated_on
+                .as_deref()
+                .and_then(crate::app::hours_since)
+                .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+/// Count of PRs hidden by `visible_prs_for_render` at the current
+/// state. Zero when show_all is set (nothing is hidden).
+fn hidden_pr_count_for_render(
+    prs: &[crate::bitbucket::PullRequest],
+    tab: &crate::app::TabState,
+    show_all: bool,
+) -> usize {
+    if show_all {
+        return 0;
+    }
+    prs.len().saturating_sub(visible_prs_for_render(prs, tab, show_all).len())
+}
+
 pub async fn run(app: &mut App) -> Result<()> {
     let mut stdout = std::io::stdout();
     enable_raw_mode()?;
@@ -270,24 +334,11 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
                 visual += 1;
                 logical += 1;
                 if expanded.contains(&repo.slug) {
-                    // 2026-07-24 — mirror the 24h recency filter
-                    // applied in the renderer so click math stays
-                    // aligned with what's visible.
-                    //
-                    // 2026-08-21 — mirror the Mine-tab bypass added
-                    // in draw_repo_pr_tree so clicks and keyboard
-                    // nav land on the same rows the renderer shows.
-                    let mine = app.active().spec.mine_only;
-                    for pr in repo.prs.iter().filter(|pr| {
-                        if *show_all || mine {
-                            return true;
-                        }
-                        pr.updated_on
-                            .as_deref()
-                            .and_then(crate::app::hours_since)
-                            .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
-                            .unwrap_or(true)
-                    }) {
+                    // Mirror the visibility policy from
+                    // `draw_repo_pr_tree` via the shared helper so
+                    // clicks and keyboard nav land on exactly the
+                    // rows the renderer shows.
+                    for pr in visible_prs_for_render(&repo.prs, app.active(), *show_all) {
                         let is_expanded_pr = pr.state.eq_ignore_ascii_case("MERGED")
                             && pr.merge_commit.is_some()
                             && app.expanded_prs.contains(&(repo.slug.clone(), pr.id));
@@ -300,15 +351,17 @@ fn table_row_at(row: u16, app: &App) -> Option<usize> {
                     }
                 }
             }
-            // 2026-07-24 — synthetic "[ Show N older ]" footer row.
-            // Present when show_all=false AND hidden_pr_count > 0.
-            // Callers detect it via `is_show_more_footer_row(idx)`.
-            //
-            // 2026-08-21 — no footer on the Mine tab (same reason as
-            // draw_repo_pr_tree above: nothing is filtered out).
+            // Synthetic "[ Show N older ]" footer row. Present when
+            // show_all=false AND some PRs are hidden by the tab's
+            // visibility policy (recency on workspace-wide, or the
+            // mine-only merged-cap policy).
+            let footer_hidden: usize = rows
+                .iter()
+                .filter(|r| expanded.contains(&r.slug))
+                .map(|r| hidden_pr_count_for_render(&r.prs, app.active(), *show_all))
+                .sum();
             if !show_all
-                && !app.active().spec.mine_only
-                && app.active().data.hidden_pr_count().unwrap_or(0) > 0
+                && footer_hidden > 0
                 && visual + 1 > target
                 && visual <= target
             {
@@ -334,14 +387,15 @@ fn is_show_more_footer_row(app: &App, target: usize) -> bool {
             if *show_all {
                 return false;
             }
-            // 2026-08-21 — Mine tab doesn't apply the recency filter
-            // (mine list is inherently narrow; every PR is already
-            // visible), so no "Show N older" footer either. hidden
-            // counts based on the same filter would be misleading.
-            if app.active().spec.mine_only {
-                return false;
-            }
-            let hidden = app.active().data.hidden_pr_count().unwrap_or(0);
+            // 2026-08-21 f/u — hidden count computed via the shared
+            // helper so mine_only + workspace-wide use the same
+            // logic. Mine tab hides (merged - 1 shown) + declined;
+            // workspace-wide hides recency-old PRs.
+            let hidden: usize = rows
+                .iter()
+                .filter(|r| expanded.contains(&r.slug))
+                .map(|r| hidden_pr_count_for_render(&r.prs, app.active(), *show_all))
+                .sum();
             if hidden == 0 {
                 return false;
             }
@@ -349,14 +403,7 @@ fn is_show_more_footer_row(app: &App, target: usize) -> bool {
             for repo in rows {
                 logical += 1; // header
                 if expanded.contains(&repo.slug) {
-                    for pr in repo.prs.iter().filter(|pr| {
-                        pr.updated_on
-                            .as_deref()
-                            .and_then(crate::app::hours_since)
-                            .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
-                            .unwrap_or(true)
-                    }) {
-                        let _ = pr; // just counting
+                    for _ in visible_prs_for_render(&repo.prs, app.active(), *show_all) {
                         logical += 1;
                     }
                 }
@@ -1089,30 +1136,7 @@ fn draw_repo_pr_tree(
             title_cell,
         ]));
         if expanded.contains(&repo.slug) {
-            for pr in repo.prs.iter().filter(|pr| {
-                // 2026-07-24 — 24-hour recency filter. When show_all
-                // is set (user clicked the "[ Show N older ]" footer),
-                // every PR passes. Otherwise anything updated more
-                // than RECENT_WINDOW_HOURS ago is filtered out; those
-                // hidden PRs are counted so the footer can offer to
-                // reveal them.
-                //
-                // 2026-08-21 — bypass the recency filter on the Mine
-                // tab. Mine is inherently narrow (user's OWN open
-                // PRs) — most of a person's PRs sit open for days /
-                // weeks, so a 24h cutoff renders every mine-repo
-                // expansion empty. The filter's real purpose is to
-                // trim the workspace-wide firehose, which the Mine
-                // tab is by construction not.
-                if show_all || tab.spec.mine_only {
-                    return true;
-                }
-                pr.updated_on
-                    .as_deref()
-                    .and_then(crate::app::hours_since)
-                    .map(|h| h <= crate::app::RECENT_WINDOW_HOURS)
-                    .unwrap_or(true)
-            }) {
+            for pr in visible_prs_for_render(&repo.prs, tab, show_all) {
                 let author = pr
                     .author
                     .as_ref()
@@ -1159,17 +1183,16 @@ fn draw_repo_pr_tree(
             }
         }
     }
-    // 2026-07-24 — synthetic "[ Show N older PRs ]" footer row.
-    // Emitted only when show_all is false AND the recency filter
-    // hid at least one PR. Click / Enter on this row toggles
-    // show_all → true (see mouse handler + key handler). Uses
-    // ratatui's default Row::height(1) so the cursor lands on it
-    // exactly like any other row.
-    //
-    // 2026-08-21 — Mine tab bypasses the recency filter (everything
-    // is already visible), so no "Show N older" footer.
-    if !show_all && !tab.spec.mine_only {
-        let hidden = tab.data.hidden_pr_count().unwrap_or(0);
+    // Synthetic "[ Show N older PRs ]" footer row. Emitted when
+    // show_all=false AND the tab's visibility policy hid at least
+    // one PR (recency window on workspace-wide, merged-cap on
+    // Mine). Click / Enter on this row toggles show_all → true.
+    if !show_all {
+        let hidden: usize = rows
+            .iter()
+            .filter(|r| expanded.contains(&r.slug))
+            .map(|r| hidden_pr_count_for_render(&r.prs, tab, show_all))
+            .sum();
         if hidden > 0 {
             table_rows.push(Row::new(vec![
                 Cell::from(""),
@@ -1177,7 +1200,11 @@ fn draw_repo_pr_tree(
                 Cell::from(""),
                 Cell::from(""),
                 Cell::from(""),
-                Cell::from(format!("[ Show {hidden} older PRs ]")).style(
+                Cell::from(format!(
+                    "[ Show {hidden} more {} ]",
+                    if tab.spec.mine_only { "merged" } else { "older" }
+                ))
+                .style(
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
