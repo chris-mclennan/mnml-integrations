@@ -281,6 +281,35 @@ fn draw_detail(f: &mut Frame, area: Rect, queue: Option<&Queue>) {
                 Style::default().fg(Color::Gray),
             )));
         }
+        // #1009 — side-by-side DLQ counts pulled from the
+        // correlation pass. `L` still jumps focus onto the DLQ; the
+        // count here saves a keystroke when you're just monitoring.
+        if let Some(dlq) = q.dlq_stats {
+            let bg = if dlq.visible > 0 {
+                // Non-zero DLQ backlog gets a yellow tint — the
+                // "messages keep going to the DLQ" signal.
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            lines.push(kv(
+                "  DLQ backlog",
+                format!("{} visible, {} in-flight", dlq.visible, dlq.in_flight),
+            ));
+            lines.push(Line::from(Span::styled(
+                "  press L to jump to the DLQ".to_string(),
+                bg,
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  DLQ backlog: (press A to load counts across queues)".to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
     }
 
     // Redrive sources — this queue *is* a DLQ for N others. Empty

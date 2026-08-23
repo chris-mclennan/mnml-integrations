@@ -29,7 +29,9 @@ pub fn install() -> Result<()> {
     let spec = IntegrationSpec {
         id: INTEGRATION_ID.into(),
         label: "SQS queues".into(),
-        description: Some("SQS queues + DLQ correlation (↑/↓ chips)".into()),
+        description: Some(
+            "SQS queues + DLQ correlation (↑/↓ chips, side-by-side main:N · dlq:M counts)".into(),
+        ),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         binary: "mnml-aws-sqs".into(),
         category: Some("aws".into()),

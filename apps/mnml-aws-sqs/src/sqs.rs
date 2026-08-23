@@ -79,10 +79,13 @@ impl QueueAttributes {
         self.get("RedrivePolicy")
     }
 
-    /// `true` if this queue is the DLQ for at least one other queue
-    /// (determined later by the parent app correlating RedrivePolicy
-    /// fields). For now we just expose the redrive policy itself —
-    /// the DLQ-marker correlation is a v0.2 cross-queue analysis.
+    /// `true` if this queue *has* a DLQ configured (its `RedrivePolicy`
+    /// names a `deadLetterTargetArn`). The reverse direction — "is
+    /// this queue a DLQ for others?" — is stored on
+    /// `Queue::redrive_sources` and populated by
+    /// [`App::recompute_redrive_sources`], which also fills in
+    /// [`Queue::dlq_stats`] so `secondary_label` can render the
+    /// side-by-side `main:N · dlq:M` chip. #1009.
     pub fn has_dlq(&self) -> bool {
         self.redrive_policy().is_some()
     }
@@ -94,6 +97,20 @@ pub fn queue_name_from_url(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }
 
+/// #1009 — pre-computed message counts for a queue's paired DLQ.
+/// Filled in by [`App::recompute_redrive_sources`] AFTER the user
+/// has loaded all queues' attributes (`A`) so `secondary_label` can
+/// render a side-by-side `main:N · dlq:M` chip without a second
+/// lookup per row. `None` on any queue that either doesn't have a
+/// DLQ or whose DLQ isn't loaded in the current tab (a DLQ in a
+/// different region / account, or one filtered out of the tab's
+/// prefix scope).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlqStats {
+    pub visible: u64,
+    pub in_flight: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Queue {
     pub url: String,
@@ -103,6 +120,10 @@ pub struct Queue {
     /// has loaded all queues' attributes (the `A` action). Empty when
     /// not yet computed or when no queue references this one as a DLQ.
     pub redrive_sources: Vec<String>,
+    /// #1009 — message counts on this queue's paired DLQ. `None`
+    /// until the correlation pass has run (or when the DLQ isn't
+    /// in the current tab). See [`DlqStats`].
+    pub dlq_stats: Option<DlqStats>,
 }
 
 impl Queue {
@@ -121,11 +142,15 @@ impl Queue {
         let visible = attrs.approximate_messages().unwrap_or(0);
         let in_flight = attrs.approximate_messages_not_visible().unwrap_or(0);
         let delayed = attrs.approximate_messages_delayed().unwrap_or(0);
-        // Two distinct DLQ chips:
+        // Three DLQ signals — all can co-apply (a queue can have a
+        // DLQ AND be a DLQ AND its DLQ can have a non-zero backlog):
         //   ↓ DLQ — this queue *has* a DLQ configured for itself
         //   ↑ DLQ — this queue *is* a DLQ for N other queues
-        // Both can apply simultaneously (rare but valid: a queue with
-        // its own DLQ, which is itself a DLQ target — like a chain).
+        //   dlq:M — the paired DLQ's own message count (side-by-side
+        //   with the queue's own count so a "messages keep going to
+        //   the DLQ" pattern is visible at a glance, without pressing
+        //   L to jump). #1009 — populated by the `A` correlation
+        //   pass; hidden when the DLQ isn't loaded in this tab.
         let down_chip = if attrs.has_dlq() { " · ↓ DLQ" } else { "" };
         let up_chip = if !self.redrive_sources.is_empty() {
             if self.redrive_sources.len() == 1 {
@@ -136,13 +161,28 @@ impl Queue {
         } else {
             String::new()
         };
+        let dlq_chip = match self.dlq_stats {
+            Some(DlqStats {
+                visible: dv,
+                in_flight: df,
+            }) if attrs.has_dlq() => {
+                if df > 0 {
+                    format!(" · dlq:{dv} (+{df} in-flight)")
+                } else {
+                    format!(" · dlq:{dv}")
+                }
+            }
+            _ => String::new(),
+        };
         let fifo_chip = if self.is_fifo() { " · FIFO" } else { "" };
         if delayed > 0 {
             format!(
-                "{visible} msg · {in_flight} in-flight · {delayed} delayed{fifo_chip}{down_chip}{up_chip}"
+                "main:{visible} · {in_flight} in-flight · {delayed} delayed{fifo_chip}{dlq_chip}{down_chip}{up_chip}"
             )
         } else {
-            format!("{visible} msg · {in_flight} in-flight{fifo_chip}{down_chip}{up_chip}")
+            format!(
+                "main:{visible} · {in_flight} in-flight{fifo_chip}{dlq_chip}{down_chip}{up_chip}"
+            )
         }
     }
 
@@ -329,12 +369,14 @@ mod tests {
             url: "https://sqs.us-east-1.amazonaws.com/1/x.fifo".to_string(),
             attributes: None,
             redrive_sources: vec![],
+            dlq_stats: None,
         };
         assert!(q.is_fifo());
         let non = Queue {
             url: "https://sqs.us-east-1.amazonaws.com/1/x".to_string(),
             attributes: None,
             redrive_sources: vec![],
+            dlq_stats: None,
         };
         assert!(!non.is_fifo());
     }
@@ -360,11 +402,99 @@ mod tests {
             url: "https://sqs.us-east-1.amazonaws.com/1/dlq".to_string(),
             attributes: Some(attrs.clone()),
             redrive_sources: vec!["source-a".to_string()],
+            dlq_stats: None,
         };
+        // #1009 — assertion on `↑ DLQ` alone is ambiguous once the
+        // secondary label also carries `↓ DLQ` for queues that have
+        // their own DLQ, so anchor on the up-arrow form specifically.
         assert!(q.secondary_label().contains("↑ DLQ"));
-        assert!(!q.secondary_label().contains("x"));
+        // The plural marker is `↑ DLQ xN`; the singular form must
+        // not carry `xN`. Look for the specific `x3` etc. later.
+        assert!(!q.secondary_label().contains("↑ DLQ x"));
         q.redrive_sources = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         assert!(q.secondary_label().contains("↑ DLQ x3"));
+    }
+
+    // #1009 — the side-by-side `main:N · dlq:M` chip.
+    #[test]
+    fn dlq_stats_chip_renders_when_present() {
+        let attrs = QueueAttributes::from_map(HashMap::from([
+            (
+                "ApproximateNumberOfMessages".to_string(),
+                "5432".to_string(),
+            ),
+            (
+                "ApproximateNumberOfMessagesNotVisible".to_string(),
+                "3".to_string(),
+            ),
+            (
+                "RedrivePolicy".to_string(),
+                r#"{"deadLetterTargetArn":"arn:X","maxReceiveCount":3}"#.to_string(),
+            ),
+        ]));
+        let q = Queue {
+            url: "https://sqs.us-east-1.amazonaws.com/1/main".to_string(),
+            attributes: Some(attrs),
+            redrive_sources: vec![],
+            dlq_stats: Some(DlqStats {
+                visible: 12,
+                in_flight: 0,
+            }),
+        };
+        let label = q.secondary_label();
+        assert!(label.contains("main:5432"), "got {label}");
+        assert!(label.contains("dlq:12"), "got {label}");
+        // The down-arrow chip still lands too so users can see the
+        // relationship at a glance.
+        assert!(label.contains("↓ DLQ"), "got {label}");
+    }
+
+    #[test]
+    fn dlq_stats_chip_hidden_when_stats_none() {
+        // Without stats, only the `↓ DLQ` marker lands (no numeric
+        // chip). Useful when a DLQ lives in a different region /
+        // account and the correlation pass couldn't resolve it.
+        let attrs = QueueAttributes::from_map(HashMap::from([
+            (
+                "ApproximateNumberOfMessages".to_string(),
+                "5432".to_string(),
+            ),
+            (
+                "RedrivePolicy".to_string(),
+                r#"{"deadLetterTargetArn":"arn:X","maxReceiveCount":3}"#.to_string(),
+            ),
+        ]));
+        let q = Queue {
+            url: "https://sqs.us-east-1.amazonaws.com/1/main".to_string(),
+            attributes: Some(attrs),
+            redrive_sources: vec![],
+            dlq_stats: None,
+        };
+        let label = q.secondary_label();
+        assert!(!label.contains("dlq:"), "got {label}");
+        assert!(label.contains("↓ DLQ"), "got {label}");
+    }
+
+    #[test]
+    fn dlq_stats_chip_reports_in_flight_when_present() {
+        let attrs = QueueAttributes::from_map(HashMap::from([
+            ("ApproximateNumberOfMessages".to_string(), "1".to_string()),
+            (
+                "RedrivePolicy".to_string(),
+                r#"{"deadLetterTargetArn":"arn:X","maxReceiveCount":3}"#.to_string(),
+            ),
+        ]));
+        let q = Queue {
+            url: "https://sqs.us-east-1.amazonaws.com/1/main".to_string(),
+            attributes: Some(attrs),
+            redrive_sources: vec![],
+            dlq_stats: Some(DlqStats {
+                visible: 7,
+                in_flight: 2,
+            }),
+        };
+        let label = q.secondary_label();
+        assert!(label.contains("dlq:7 (+2 in-flight)"), "got {label}");
     }
 
     #[test]
@@ -385,6 +515,7 @@ mod tests {
             url: "https://sqs.us-east-1.amazonaws.com/1/x".to_string(),
             attributes: None,
             redrive_sources: vec![],
+            dlq_stats: None,
         };
         assert!(q.secondary_label().contains("attrs not loaded"));
     }

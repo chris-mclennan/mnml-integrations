@@ -153,6 +153,7 @@ impl App {
                         url,
                         attributes: None,
                         redrive_sources: vec![],
+                        dlq_stats: None,
                     })
                     .collect();
                 t.data.selected = t.data.selected.min(count.saturating_sub(1));
@@ -386,16 +387,32 @@ impl App {
 
     /// Walk all loaded queues' RedrivePolicy fields and populate each
     /// queue's `redrive_sources` with the names of queues that point
-    /// AT it as their DLQ. Idempotent — clears and rebuilds.
+    /// AT it as their DLQ, AND (#1009) each queue-with-a-DLQ's
+    /// `dlq_stats` with the message counts on its paired DLQ so the
+    /// side-by-side `main:N · dlq:M` chip renders without a second
+    /// lookup per row. Idempotent — clears and rebuilds both fields.
     pub fn recompute_redrive_sources(&mut self) {
         let idx = self.active_tab;
-        // First pass: build target_arn → [source_name] map.
+        // First pass: build target_arn → [source_name] map, and
+        // arn → (visible, in_flight) so the second pass can populate
+        // dlq_stats without re-scanning.
         let mut by_target: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut counts_by_arn: std::collections::HashMap<String, sqs::DlqStats> =
             std::collections::HashMap::new();
         for q in &self.tabs[idx].data.queues {
             let Some(attrs) = &q.attributes else {
                 continue;
             };
+            if let Some(arn) = attrs.arn() {
+                counts_by_arn.insert(
+                    arn.to_string(),
+                    sqs::DlqStats {
+                        visible: attrs.approximate_messages().unwrap_or(0),
+                        in_flight: attrs.approximate_messages_not_visible().unwrap_or(0),
+                    },
+                );
+            }
             let Some(policy) = attrs.redrive_policy() else {
                 continue;
             };
@@ -407,19 +424,32 @@ impl App {
                 .or_default()
                 .push(q.name().to_string());
         }
-        // Second pass: for each queue, look up its OWN ARN in the map
-        // and copy in the source names.
+        // Second pass: for each queue, look up (a) its OWN ARN in
+        // by_target → sources, and (b) its DLQ target ARN in
+        // counts_by_arn → dlq_stats.
         for q in &mut self.tabs[idx].data.queues {
             let Some(attrs) = &q.attributes else {
                 q.redrive_sources.clear();
+                q.dlq_stats = None;
                 continue;
             };
             let Some(arn) = attrs.arn() else {
                 q.redrive_sources.clear();
+                q.dlq_stats = None;
                 continue;
             };
             q.redrive_sources = by_target.get(arn).cloned().unwrap_or_default();
             q.redrive_sources.sort();
+
+            // DLQ stats — only when this queue has a DLQ AND the
+            // DLQ is loaded (in this tab, in this region). A DLQ
+            // in a different region / account leaves dlq_stats
+            // `None`, which the renderer treats as "hide the chip"
+            // rather than "zero" (see secondary_label).
+            q.dlq_stats = attrs
+                .redrive_policy()
+                .and_then(sqs::dlq_target_arn)
+                .and_then(|target| counts_by_arn.get(&target).copied());
         }
     }
 }
@@ -465,5 +495,104 @@ mod tests {
             region: None,
         };
         assert!(TabSpec::resolve(&t, None).is_err());
+    }
+
+    // #1009 — recompute_redrive_sources populates both directions:
+    // sources for DLQs and dlq_stats for queues that have a DLQ.
+    #[test]
+    fn recompute_populates_dlq_stats_across_queues() {
+        use crate::sqs::{DlqStats, QueueAttributes};
+        use std::collections::HashMap;
+        let cfg = Config {
+            region: Some("us-east-1".into()),
+            refresh_interval_secs: 0,
+            tabs: vec![Tab {
+                name: "all".into(),
+                kind: "all".into(),
+                prefix: None,
+                region: None,
+            }],
+        };
+        // Bypass network by constructing App with cfg + hand-loaded
+        // queues. We don't call `new()` because that would call the
+        // aws CLI.
+        let mut app = App {
+            cfg,
+            tabs: vec![TabState {
+                name: "all".into(),
+                spec: TabSpec::resolve(
+                    &Tab {
+                        name: "all".into(),
+                        kind: "all".into(),
+                        prefix: None,
+                        region: None,
+                    },
+                    Some("us-east-1"),
+                )
+                .unwrap(),
+                data: ItemsTab::empty(),
+            }],
+            active_tab: 0,
+            status: String::new(),
+        };
+        // main queue → DLQ arn:dlq. Loaded main has 5432 visible.
+        let main_attrs = QueueAttributes::from_map(HashMap::from([
+            (
+                "QueueArn".to_string(),
+                "arn:aws:sqs:us-east-1:1:main".to_string(),
+            ),
+            (
+                "ApproximateNumberOfMessages".to_string(),
+                "5432".to_string(),
+            ),
+            (
+                "RedrivePolicy".to_string(),
+                r#"{"deadLetterTargetArn":"arn:aws:sqs:us-east-1:1:dlq","maxReceiveCount":3}"#
+                    .to_string(),
+            ),
+        ]));
+        // dlq queue with 12 visible + 2 in-flight — this is what
+        // the chip should surface.
+        let dlq_attrs = QueueAttributes::from_map(HashMap::from([
+            (
+                "QueueArn".to_string(),
+                "arn:aws:sqs:us-east-1:1:dlq".to_string(),
+            ),
+            ("ApproximateNumberOfMessages".to_string(), "12".to_string()),
+            (
+                "ApproximateNumberOfMessagesNotVisible".to_string(),
+                "2".to_string(),
+            ),
+        ]));
+        app.tabs[0].data.queues = vec![
+            Queue {
+                url: "https://sqs.us-east-1.amazonaws.com/1/main".into(),
+                attributes: Some(main_attrs),
+                redrive_sources: vec![],
+                dlq_stats: None,
+            },
+            Queue {
+                url: "https://sqs.us-east-1.amazonaws.com/1/dlq".into(),
+                attributes: Some(dlq_attrs),
+                redrive_sources: vec![],
+                dlq_stats: None,
+            },
+        ];
+        app.recompute_redrive_sources();
+        // main → learned dlq_stats.
+        assert_eq!(
+            app.tabs[0].data.queues[0].dlq_stats,
+            Some(DlqStats {
+                visible: 12,
+                in_flight: 2
+            })
+        );
+        // dlq → learned it's a source for `main`.
+        assert_eq!(
+            app.tabs[0].data.queues[1].redrive_sources,
+            vec!["main".to_string()]
+        );
+        // dlq itself doesn't have a DLQ, so no dlq_stats on it.
+        assert!(app.tabs[0].data.queues[1].dlq_stats.is_none());
     }
 }
