@@ -404,17 +404,25 @@ async fn event_loop(
                                     app.tabs[app.active_tab].show_jql = true;
                                     app.open_jql_editor();
                                 }
+                                WorkFilterChip::Type => {
+                                    // 2026-08-23 — wire the Work-toolbar
+                                    // Type chip to the same
+                                    // `open_issue_type_picker` the
+                                    // Boards `ChipKind::Type` chip
+                                    // uses. Client-side render filter
+                                    // (`active_issue_types`) — same
+                                    // storage as the Board picker so a
+                                    // filter chosen on either surface
+                                    // shows on both.
+                                    app.open_issue_type_picker();
+                                }
+                                WorkFilterChip::Search => app.open_filter(),
                                 _ => {
-                                    // Placeholder chips (Basic /
-                                    // JQL / Space / Type / MoreFilters
-                                    // / SaveFilter). Search is
-                                    // partially wired — clicking the
-                                    // chip opens the `/` prompt.
-                                    if matches!(kind, WorkFilterChip::Search) {
-                                        app.open_filter();
-                                    } else {
-                                        app.status = "filter not wired yet (round-1 visual)".into();
-                                    }
+                                    // Remaining placeholder chips
+                                    // (Space / MoreFilters /
+                                    // SaveFilter) — visual today,
+                                    // toast a hint on click.
+                                    app.status = "filter not wired yet (round-1 visual)".into();
                                 }
                             }
                             continue;
@@ -1620,12 +1628,17 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
         assignee_active,
         crate::app::WorkFilterChip::Assignee,
     ));
-    // Type — placeholder.
-    entries.push((
-        "Type ▾".to_string(),
-        false,
-        crate::app::WorkFilterChip::Type,
-    ));
+    // 2026-08-23 — Type chip wired to `open_issue_type_picker`
+    // (same picker Boards uses). Uses `tab.issue_type: Option<String>`
+    // as the active-flag source (single-value client-side render
+    // filter — matches the picker's single-choice semantic at
+    // `commit_issue_type_picker`).
+    let tab_cfg = app.cfg.tabs.get(app.active_tab);
+    let (type_label, type_active) = match tab_cfg.and_then(|t| t.issue_type.as_deref()) {
+        Some(t) if !t.is_empty() => (format!("Type ▪ {t} ▾"), true),
+        _ => ("Type ▾".to_string(), false),
+    };
+    entries.push((type_label, type_active, crate::app::WorkFilterChip::Type));
     // Status — wired to work_scope_filter cycle on Work-family
     // tabs. On Fix Versions (which reuses the tree renderer for a
     // fixVersion-scoped view), the Status chip is still meaningful
