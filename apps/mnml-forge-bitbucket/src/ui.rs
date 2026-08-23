@@ -295,25 +295,68 @@ async fn event_loop(
                                     app.refresh_active().await;
                                     last_refresh = Instant::now();
                                 }
+                                // 2026-08-23 — wire the 4 Action* chips
+                                // to open the corresponding Bitbucket
+                                // Cloud pages in the browser. Run /
+                                // Schedules / Caches are repo-scoped
+                                // (skipped with a hint when the tab
+                                // is workspace-only); Usage is
+                                // workspace-level.
+                                FilterChip::ActionRunPipeline
+                                | FilterChip::ActionSchedules
+                                | FilterChip::ActionCaches => {
+                                    let ws = app.active().spec.workspace.clone();
+                                    match app.active().spec.repo.as_deref() {
+                                        Some(repo) if !repo.is_empty() => {
+                                            let url = match kind {
+                                                FilterChip::ActionRunPipeline => format!(
+                                                    "https://bitbucket.org/{ws}/{repo}/pipelines"
+                                                ),
+                                                FilterChip::ActionSchedules => format!(
+                                                    "https://bitbucket.org/{ws}/{repo}/admin/addon/admin/pipelines/schedules"
+                                                ),
+                                                _ => format!(
+                                                    "https://bitbucket.org/{ws}/{repo}/admin/addon/admin/pipelines/caches"
+                                                ),
+                                            };
+                                            match webbrowser::open(&url) {
+                                                Ok(()) => app.status = format!("opened {url}"),
+                                                Err(e) => app.status = format!("open failed: {e}"),
+                                            }
+                                        }
+                                        _ => {
+                                            app.status =
+                                                "repo-scoped action — switch to a repo tab first"
+                                                    .into();
+                                        }
+                                    }
+                                }
+                                FilterChip::ActionUsage => {
+                                    let ws = &app.active().spec.workspace;
+                                    let url = format!(
+                                        "https://bitbucket.org/{ws}/workspace/settings/plans-billing/pipelines-minutes"
+                                    );
+                                    match webbrowser::open(&url) {
+                                        Ok(()) => app.status = format!("opened {url}"),
+                                        Err(e) => app.status = format!("open failed: {e}"),
+                                    }
+                                }
                                 FilterChip::Search
                                 | FilterChip::TargetBranch
                                 | FilterChip::Branch
                                 | FilterChip::PipelineType
-                                | FilterChip::TriggerType
-                                | FilterChip::ActionRunPipeline
-                                | FilterChip::ActionSchedules
-                                | FilterChip::ActionCaches
-                                | FilterChip::ActionUsage => {
+                                | FilterChip::TriggerType => {
                                     // Visual placeholders — no click
                                     // action yet. Follow-up: Search =
-                                    // free-text `/` prompt; Author =
-                                    // account picker; TargetBranch /
-                                    // Branch = branch picker;
+                                    // free-text `/` prompt (needs a
+                                    // filter-editor overlay first);
+                                    // TargetBranch / Branch = branch
+                                    // picker (needs the branch cache
+                                    // to be tab-agnostic);
                                     // PipelineType / TriggerType =
-                                    // enum picker; Run pipeline /
-                                    // Schedules / Caches / Usage =
-                                    // navigate to Bitbucket Cloud in
-                                    // the browser.
+                                    // enum picker (needs the fetch
+                                    // side to accept a client-side
+                                    // filter).
                                     app.status = "filter not wired yet (round-1 visual)".into();
                                 }
                             }
