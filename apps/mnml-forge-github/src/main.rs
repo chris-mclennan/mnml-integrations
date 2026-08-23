@@ -122,6 +122,17 @@ async fn main() -> Result<()> {
             token.len()
         );
         println!("refresh_interval_secs: {}", cfg.refresh_interval_secs);
+        println!("owner: {:?}", cfg.owner);
+        println!(
+            "scope: {} (recent_window_days={})",
+            cfg.scope, cfg.recent_window_days
+        );
+        if !cfg.repos.is_empty() {
+            println!("repos allowlist: {}", cfg.repos.join(", "));
+        }
+        if !cfg.hidden_repos.is_empty() {
+            println!("hidden_repos: {}", cfg.hidden_repos.join(", "));
+        }
         for (i, t) in cfg.tabs.iter().enumerate() {
             match t.kind.as_str() {
                 "actions" => println!(
@@ -130,6 +141,14 @@ async fn main() -> Result<()> {
                     t.name,
                     t.repo,
                     t.branch
+                ),
+                "workspace_open_prs" | "workspace_merged_prs" | "workspace_actions" => println!(
+                    "  tab {} ({}): {} owner={:?} mine_only={}",
+                    i + 1,
+                    t.name,
+                    t.kind,
+                    t.owner.as_deref().unwrap_or(cfg.owner.as_str()),
+                    t.mine_only
                 ),
                 _ => println!("  tab {} ({}): issues query={:?}", i + 1, t.name, t.query),
             }
@@ -172,6 +191,14 @@ async fn run_diag(cfg: &config::Config, client: &github::Client, token_len: usiz
     println!("Config");
     println!("  ├─ path: {}", config::config_path().display());
     println!("  ├─ refresh_interval_secs: {}", cfg.refresh_interval_secs);
+    println!("  ├─ owner: {:?}", cfg.owner);
+    println!(
+        "  ├─ scope: {} (recent_window_days={})",
+        cfg.scope, cfg.recent_window_days
+    );
+    if !cfg.repos.is_empty() {
+        println!("  ├─ repos allowlist: {}", cfg.repos.join(", "));
+    }
     println!("  └─ tabs: {}", cfg.tabs.len());
     for (i, t) in cfg.tabs.iter().enumerate() {
         let shape = match t.kind.as_str() {
@@ -179,6 +206,12 @@ async fn run_diag(cfg: &config::Config, client: &github::Client, token_len: usiz
                 "actions repo={:?} branch={:?}",
                 t.repo.as_deref().unwrap_or(""),
                 t.branch.as_deref().unwrap_or("")
+            ),
+            "workspace_open_prs" | "workspace_merged_prs" | "workspace_actions" => format!(
+                "{} owner={:?} mine_only={}",
+                t.kind,
+                t.owner.as_deref().unwrap_or(cfg.owner.as_str()),
+                t.mine_only
             ),
             _ => format!("issues query={:?}", t.query.as_deref().unwrap_or("")),
         };

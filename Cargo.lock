@@ -1540,13 +1540,14 @@ dependencies = [
 
 [[package]]
 name = "mnml-forge-github"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "crossterm",
  "dirs",
+ "futures",
  "mnml-bridge",
  "ratatui",
  "reqwest",
