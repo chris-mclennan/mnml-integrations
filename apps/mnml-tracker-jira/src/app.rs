@@ -189,8 +189,10 @@ pub enum WorkFilterChip {
     FixVersionPicker,
 }
 
-/// 2026-08-07 — kanban toolbar chip kind. Each maps to an existing
-/// action or a "coming soon" toast.
+/// Kanban toolbar chip kind. Each maps to an action; every ChipKind
+/// arm in `handle_chip_click` now routes to a real picker (as of
+/// task #1004/#1110/#1029, mid-2026-08). The historical
+/// "coming soon" toasts have been fully replaced by working handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipKind {
     Board,
