@@ -4,8 +4,10 @@ mod clipboard;
 mod config;
 mod install;
 mod keys;
+mod picker;
 mod s3;
 mod ui;
+mod upload;
 
 use anyhow::Result;
 use clap::Parser;

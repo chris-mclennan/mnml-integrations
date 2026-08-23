@@ -119,9 +119,12 @@ pub fn download(bucket: &str, key: &str, dest: &Path, region: Option<&str>) -> R
     Ok(dest.to_path_buf())
 }
 
-/// Upload a local file to `s3://bucket/key` via `aws s3 cp`.
-/// Wired to the `u` key in v0.2 (upload-prompt UI is the held-back
-/// piece — the actual S3 call is ready).
+/// Upload a local file to `s3://bucket/key` via `aws s3 cp`. Retained
+/// as the small-file / diagnostic path — the interactive upload UI
+/// (#1047 progress bar + #1048 multi-select) now runs through
+/// `crate::upload::spawn_upload`, which pipes progress back on a
+/// channel while the same `aws s3 cp` binary does the PUT + automatic
+/// multipart under the hood.
 #[allow(dead_code)]
 pub fn upload(local: &Path, bucket: &str, key: &str, region: Option<&str>) -> Result<()> {
     let uri = format!("s3://{bucket}/{key}");

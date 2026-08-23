@@ -125,8 +125,48 @@ SSO → instance role) is what authenticates the call. That means:
 | `Y` | Yank presigned URL (5-min TTL) to OS clipboard |
 | `o` | Open S3 console URL in browser (anchored at current prefix) |
 | `d` | Delete focused object (asks for `y` to confirm) |
+| `u` | Open the upload picker (see [Uploads](#uploads)) |
 | `r` | Refresh active tab |
 | `q` / `Esc` / `Ctrl+C` | Quit |
+
+## Uploads
+
+Press `u` to open the multi-file upload picker rooted at your
+current working directory:
+
+```
+┌ Upload → s3://my-app-logs/2026/06/ ────────────────────────────┐
+│ cwd  /Users/you/logs/june                                      │
+│ ────────────────────────────────────────────────────────────── │
+│ ▸   📁 archives                                                │
+│   ✓ 📄 build.log             1.2 MB     2026-06-06             │
+│   ✓ 📄 deploy.log            842 KB     2026-06-06             │
+│     📄 raw.tar               2.1 GB     2026-06-05             │
+│ ────────────────────────────────────────────────────────────── │
+│  2 selected · Space toggle · Enter upload all · C clear · Esc  │
+└────────────────────────────────────────────────────────────────┘
+```
+
+- `Space` toggles the focused file into the selection.
+- `Enter` on a directory descends; on a file with no selection,
+  uploads just that file; with a selection, uploads all selected.
+- `A` selects every file in the current directory.
+- `C` clears the selection.
+- `←` / `Backspace` / `h` goes up one directory.
+- `Esc` cancels.
+
+After firing, the overlay switches to a progress panel with one
+row per file — a live gauge (percent + `12.4 MiB / 45.7 MiB · 3.2
+MiB/s`), a state badge (queued / running / done / failed), and the
+target key. Up to four files upload concurrently — the rest wait
+in `queued`. Files larger than the AWS CLI's multipart threshold
+(8 MiB by default) automatically split into parallel parts —
+`aws s3 cp` handles that under the hood, so uploads scale up to
+S3's 5 TiB per-object cap without any extra config.
+
+Hitting `Esc` while uploads are running hides the overlay but
+leaves the workers running in the background; the listing
+auto-refreshes when the batch finishes.
 
 ## File-open handoff — v0.1, v0.2, v0.3
 
@@ -191,26 +231,33 @@ Setting `[[ui.integration_icon]]` **replaces** the built-in
 defaults, so copy the defaults from `mnml/src/config.rs` into
 your config first if you want to extend rather than replace.
 
-## What stays out of v0.1
+## What stays out
 
-The TUI is intentionally minimal. Held back for v0.2+:
+The TUI is intentionally minimal. Held back:
 
-- Upload prompt (the `u` key — the underlying `aws s3 cp` call
-  is implemented; the prompt UI is what's deferred)
-- Multi-bucket parallel listing
-- Glacier / IA tier visibility (column hidden by default)
-- Versioning support (latest only)
-- Encryption metadata
-- Recursive operations (download whole prefix as zip)
-- Multi-select for batch ops
-- The OpenFile blit-host event (see "File-open handoff" above)
+- Drag-drop from mnml's file tree onto the S3 chip (#1046 —
+  waiting on mnml-bridge to grow a host→sibling inbox
+  channel; the sibling's picker is the interim path).
+- Multi-bucket parallel listing.
+- Glacier / IA tier visibility (column hidden by default).
+- Versioning support (latest only).
+- Encryption metadata.
+- Recursive operations (upload / download whole prefix as
+  zip — the picker only enqueues individual files today).
+- The OpenFile blit-host event (see "File-open handoff" above).
 
 ## Status
 
-**v0.1 (this release)** — Bucket tabs, prefix navigation,
-download to cache, URI yank, presigned URL yank, S3 console
-open, delete with confirmation. `aws` CLI shell-out auth.
-Standalone TUI + blit-host mode.
+**v0.3 (this release)** — Multi-file upload picker (`u`),
+per-file progress bar with live rate + concurrency cap of 4,
+background workers that survive an `Esc`-away.
+
+**v0.2** — Single-path upload prompt (`u`).
+
+**v0.1** — Bucket tabs, prefix navigation, download to cache,
+URI yank, presigned URL yank, S3 console open, delete with
+confirmation. `aws` CLI shell-out auth. Standalone TUI +
+blit-host mode.
 
 ## Source
 

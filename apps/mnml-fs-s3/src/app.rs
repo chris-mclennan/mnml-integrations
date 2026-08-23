@@ -3,11 +3,20 @@
 //! tick to drain results.
 
 use crate::config::{Bucket, Config};
+use crate::picker::FilePicker;
 use crate::s3::{self, Entry};
+use crate::upload::{self, UploadEvent};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
+use std::time::Instant;
+
+/// Max simultaneous uploads. Above this, tasks wait in `Queued`.
+/// Keeps a 100-file batch from hammering the AWS TPS bucket (default
+/// 3500 PUT/s per prefix) and matches `aws s3 cp --recursive`'s
+/// default.
+const UPLOAD_CONCURRENCY: usize = 4;
 
 #[derive(Debug)]
 pub struct TabState {
@@ -42,16 +51,62 @@ pub struct App {
     /// `d` to delete. The UI surfaces "delete <key>? y/N" and the
     /// next key press resolves it.
     pub pending_confirm: Option<PendingConfirm>,
-    /// Active upload prompt — set when the user presses `u`. The
-    /// UI surfaces a single-line text input; on submit, we upload
-    /// the typed local path to the current prefix.
-    pub upload_prompt: Option<UploadPrompt>,
+    /// The upload overlay — a two-phase modal: pick files, then watch
+    /// them upload with per-file progress.
+    pub upload_overlay: Option<UploadOverlay>,
+    /// Auto-incrementing id for new upload tasks. Used as a stable key
+    /// so the UI can re-associate progress ticks even when tasks
+    /// finish out of order.
+    upload_next_id: u64,
+}
+
+/// The upload overlay is either the file picker (before firing) or a
+/// progress panel (after firing). Kept separate so the picker doesn't
+/// need to know about progress and vice versa.
+#[derive(Debug)]
+pub enum UploadOverlay {
+    Pick(FilePicker),
+    Progress(UploadProgress),
+}
+
+#[derive(Debug)]
+pub struct UploadProgress {
+    /// Bucket + prefix uploads are heading to (locked at fire time).
+    pub bucket: String,
+    pub prefix: String,
+    pub tasks: Vec<UploadTask>,
+    /// True after every task finishes (successfully or otherwise), so
+    /// the UI can flip to a "close with any key" state.
+    pub all_done: bool,
+}
+
+#[derive(Debug)]
+pub struct UploadTask {
+    /// Stable id — reserved for future selective retry / cancel by
+    /// task; the UI keys off Vec position today.
+    #[allow(dead_code)]
+    pub id: u64,
+    pub local: PathBuf,
+    pub name: String,
+    pub key: String,
+    pub total: u64,
+    pub done: u64,
+    pub rate_bps: u64,
+    pub state: UploadState,
+    /// The receiver, present while the task is Running. `Queued` tasks
+    /// have None here until we promote them.
+    pending: Option<Receiver<UploadEvent>>,
+    /// When the task went from Queued → Running.
+    #[allow(dead_code)]
+    started_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
-pub struct UploadPrompt {
-    /// In-progress path the user is typing.
-    pub buffer: String,
+pub enum UploadState {
+    Queued,
+    Running,
+    Done,
+    Failed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +129,8 @@ impl App {
             active_tab: 0,
             status: String::new(),
             pending_confirm: None,
-            upload_prompt: None,
+            upload_overlay: None,
+            upload_next_id: 1,
         };
         app.refresh_active();
         Ok(app)
@@ -139,6 +195,13 @@ impl App {
     /// Drain background channels — call from the main loop each
     /// tick. Returns true if anything changed (redraw).
     pub fn drain(&mut self) -> bool {
+        let mut any = self.drain_listings();
+        any |= self.drain_uploads();
+        any |= self.promote_queued_uploads();
+        any
+    }
+
+    fn drain_listings(&mut self) -> bool {
         let mut any = false;
         for tab in self.tabs.iter_mut() {
             let Some(rx) = tab.pending.take() else {
@@ -153,7 +216,6 @@ impl App {
                         tab.items = items;
                         tab.loading = false;
                         tab.last_error = None;
-                        // Keep selection in range across re-list.
                         if tab.selected >= tab.items.len() {
                             tab.selected = tab.items.len().saturating_sub(1);
                         }
@@ -180,6 +242,133 @@ impl App {
             if !done {
                 tab.pending = Some(rx);
             }
+        }
+        any
+    }
+
+    fn drain_uploads(&mut self) -> bool {
+        // Scope the mutable borrow on `self.upload_overlay` so we can
+        // call `self.refresh_active()` afterwards without a conflict.
+        let (any, just_finished, succ, fail, same_bucket) = {
+            let Some(UploadOverlay::Progress(progress)) = self.upload_overlay.as_mut() else {
+                return false;
+            };
+            let mut any = false;
+            for task in progress.tasks.iter_mut() {
+                let Some(rx) = task.pending.take() else {
+                    continue;
+                };
+                let mut keep = true;
+                loop {
+                    match rx.try_recv() {
+                        Ok(UploadEvent::Progress {
+                            done,
+                            total,
+                            rate_bps,
+                        }) => {
+                            any = true;
+                            task.done = done;
+                            if total > 0 {
+                                task.total = total;
+                            }
+                            task.rate_bps = rate_bps;
+                        }
+                        Ok(UploadEvent::Completed) => {
+                            any = true;
+                            task.state = UploadState::Done;
+                            task.done = task.total.max(task.done);
+                            task.rate_bps = 0;
+                            keep = false;
+                        }
+                        Ok(UploadEvent::Failed(msg)) => {
+                            any = true;
+                            task.state = UploadState::Failed(msg);
+                            task.rate_bps = 0;
+                            keep = false;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            // Channel closed but no terminal event —
+                            // treat as failure so the row doesn't
+                            // spin forever.
+                            if matches!(task.state, UploadState::Running) {
+                                task.state = UploadState::Failed("dropped".into());
+                            }
+                            keep = false;
+                            break;
+                        }
+                    }
+                }
+                if keep {
+                    task.pending = Some(rx);
+                }
+            }
+            let all_done = progress
+                .tasks
+                .iter()
+                .all(|t| matches!(t.state, UploadState::Done | UploadState::Failed(_)));
+            let just_finished = all_done && !progress.all_done;
+            if just_finished {
+                progress.all_done = true;
+                any = true;
+            }
+            let succ = progress
+                .tasks
+                .iter()
+                .filter(|t| matches!(t.state, UploadState::Done))
+                .count();
+            let fail = progress.tasks.len() - succ;
+            let idx = self.active_tab;
+            let same_bucket = self.tabs[idx].bucket == progress.bucket
+                && self.tabs[idx].prefix == progress.prefix;
+            (any, just_finished, succ, fail, same_bucket)
+        };
+        if just_finished {
+            if same_bucket {
+                self.refresh_active();
+            }
+            self.status = if fail == 0 {
+                format!("uploaded {succ} file(s)")
+            } else {
+                format!("uploaded {succ}, {fail} failed")
+            };
+        }
+        any
+    }
+
+    /// Move Queued tasks to Running until we hit the concurrency cap.
+    fn promote_queued_uploads(&mut self) -> bool {
+        let Some(UploadOverlay::Progress(progress)) = self.upload_overlay.as_mut() else {
+            return false;
+        };
+        let region = self.tabs[self.active_tab].region.clone();
+        let bucket = progress.bucket.clone();
+        let running = progress
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.state, UploadState::Running))
+            .count();
+        let mut any = false;
+        let mut slots = UPLOAD_CONCURRENCY.saturating_sub(running);
+        for task in progress.tasks.iter_mut() {
+            if slots == 0 {
+                break;
+            }
+            if !matches!(task.state, UploadState::Queued) {
+                continue;
+            }
+            let rx = upload::spawn_upload(
+                task.local.clone(),
+                bucket.clone(),
+                task.key.clone(),
+                region.clone(),
+                task.total,
+            );
+            task.pending = Some(rx);
+            task.state = UploadState::Running;
+            task.started_at = Some(Instant::now());
+            slots -= 1;
+            any = true;
         }
         any
     }
@@ -218,84 +407,94 @@ impl App {
         }
     }
 
-    /// `u` — start the single-line upload prompt. UI captures all
-    /// keys until the user hits Enter (submit) or Esc (cancel).
+    /// `u` — open the file picker rooted at the user's cwd. Space
+    /// toggles selection; Enter with selections (or on a file with no
+    /// selections) fires the uploads.
     pub fn start_upload_prompt(&mut self) {
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        self.upload_overlay = Some(UploadOverlay::Pick(FilePicker::new(cwd)));
         let (bucket, prefix) = {
             let tab = self.active();
             (tab.bucket.clone(), tab.prefix.clone())
         };
-        self.upload_prompt = Some(UploadPrompt {
-            buffer: String::new(),
-        });
         self.status = format!(
-            "upload to s3://{bucket}/{prefix} — type local path, Enter to send, Esc to cancel"
+            "upload picker · target s3://{bucket}/{prefix} · Space toggle · Enter upload · Esc cancel"
         );
     }
 
-    /// Append a character to the in-progress upload prompt.
-    pub fn upload_append(&mut self, c: char) {
-        if let Some(p) = self.upload_prompt.as_mut() {
-            p.buffer.push(c);
-        }
-    }
-
-    /// Backspace — drop the trailing character from the upload prompt.
-    pub fn upload_backspace(&mut self) {
-        if let Some(p) = self.upload_prompt.as_mut() {
-            p.buffer.pop();
-        }
-    }
-
-    /// Submit the upload — read the path, do `aws s3 cp <local>
-    /// s3://bucket/prefix/<basename>`, refresh the listing.
-    pub fn upload_submit(&mut self) {
-        let Some(prompt) = self.upload_prompt.take() else {
-            return;
-        };
-        let local_str = prompt.buffer.trim().to_string();
-        if local_str.is_empty() {
-            self.status = "upload cancelled (empty path)".to_string();
-            return;
-        }
-        let local_path = PathBuf::from(shellexpand_tilde(&local_str));
-        if !local_path.is_file() {
-            self.status = format!("upload failed: {} is not a file", local_path.display());
-            return;
-        }
-        let filename = local_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("upload")
-            .to_string();
-        let idx = self.active_tab;
-        let (bucket, prefix, region) = {
-            let t = &self.tabs[idx];
-            (t.bucket.clone(), t.prefix.clone(), t.region.clone())
-        };
-        let key = format!("{prefix}{filename}");
-        self.status = format!("uploading {local_str} → s3://{bucket}/{key}…");
-        match s3::upload(&local_path, &bucket, &key, region.as_deref()) {
-            Ok(()) => {
-                self.status = format!("uploaded s3://{bucket}/{key}");
-                self.refresh_active();
-            }
-            Err(e) => self.status = format!("upload failed: {e}"),
-        }
-    }
-
-    /// Esc — cancel the upload prompt.
+    /// Cancel the upload overlay. If uploads are in flight, they keep
+    /// running (the worker threads are detached); we just hide the UI.
     pub fn upload_cancel(&mut self) {
-        if self.upload_prompt.take().is_some() {
+        if self.upload_overlay.take().is_some() {
             self.status = "upload cancelled".into();
         }
+    }
+
+    /// Access the picker for the keys layer to dispatch into.
+    pub fn picker_mut(&mut self) -> Option<&mut FilePicker> {
+        match self.upload_overlay.as_mut() {
+            Some(UploadOverlay::Pick(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// True iff the overlay is showing progress (not the picker).
+    pub fn is_upload_running(&self) -> bool {
+        matches!(self.upload_overlay, Some(UploadOverlay::Progress(_)))
+    }
+
+    /// Called by the picker's Enter action when it decided to fire —
+    /// flip the overlay from Pick to Progress and enqueue tasks.
+    pub fn upload_fire(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            self.status = "upload cancelled (no files)".into();
+            self.upload_overlay = None;
+            return;
+        }
+        let idx = self.active_tab;
+        let (bucket, prefix) = {
+            let t = &self.tabs[idx];
+            (t.bucket.clone(), t.prefix.clone())
+        };
+        let mut tasks = Vec::with_capacity(paths.len());
+        for local in paths {
+            let total = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);
+            let name = local
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("upload")
+                .to_string();
+            let key = format!("{prefix}{name}");
+            let id = self.upload_next_id;
+            self.upload_next_id += 1;
+            tasks.push(UploadTask {
+                id,
+                local,
+                name,
+                key,
+                total,
+                done: 0,
+                rate_bps: 0,
+                state: UploadState::Queued,
+                pending: None,
+                started_at: None,
+            });
+        }
+        let count = tasks.len();
+        self.upload_overlay = Some(UploadOverlay::Progress(UploadProgress {
+            bucket: bucket.clone(),
+            prefix: prefix.clone(),
+            tasks,
+            all_done: false,
+        }));
+        self.status = format!("uploading {count} file(s) to s3://{bucket}/{prefix}…");
     }
 
     /// Backspace / `h` — go up one prefix level.
     pub fn pop_prefix(&mut self) {
         let tab = self.active_mut();
         let Some(prev) = tab.prefix_stack.pop() else {
-            // Already at the bucket root.
             return;
         };
         tab.prefix = prev;
@@ -442,23 +641,6 @@ fn tab_from_config(b: &Bucket) -> TabState {
     }
 }
 
-/// Expand a leading `~` to the user's home dir; otherwise pass
-/// through unchanged. Same behaviour as `shellexpand::tilde` but
-/// without the dep.
-fn shellexpand_tilde(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest).to_string_lossy().to_string();
-    }
-    if s == "~"
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.to_string_lossy().to_string();
-    }
-    s.to_string()
-}
-
 fn cache_path_for(bucket: &str, key: &str) -> PathBuf {
     let mut p = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     p.push("mnml-fs-s3");
@@ -512,5 +694,69 @@ mod tests {
         assert!(p.to_string_lossy().contains("mnml-fs-s3"));
         assert!(p.to_string_lossy().contains("my-bucket"));
         assert!(p.to_string_lossy().ends_with("a/b/c.txt"));
+    }
+
+    fn empty_app() -> App {
+        // Build a minimal App without letting the constructor kick off
+        // a live S3 refresh (which would fork a thread and try `aws`).
+        App {
+            tabs: vec![TabState {
+                name: "t".into(),
+                bucket: "b".into(),
+                region: None,
+                prefix: "p/".into(),
+                prefix_stack: Vec::new(),
+                items: Vec::new(),
+                selected: 0,
+                last_error: None,
+                loading: false,
+                pending: None,
+            }],
+            active_tab: 0,
+            status: String::new(),
+            pending_confirm: None,
+            upload_overlay: None,
+            upload_next_id: 1,
+        }
+    }
+
+    #[test]
+    fn upload_fire_enqueues_tasks_with_keys_scoped_to_prefix() {
+        let mut app = empty_app();
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, b"hello").unwrap();
+        std::fs::write(&b, b"world!").unwrap();
+        app.upload_fire(vec![a, b]);
+        let Some(UploadOverlay::Progress(pg)) = &app.upload_overlay else {
+            panic!("expected Progress overlay");
+        };
+        assert_eq!(pg.tasks.len(), 2);
+        assert_eq!(pg.tasks[0].key, "p/a.txt");
+        assert_eq!(pg.tasks[1].key, "p/b.log");
+        assert_eq!(pg.tasks[0].total, 5);
+        assert_eq!(pg.tasks[1].total, 6);
+        // Initial state — before any drain/promote — must be Queued.
+        assert!(matches!(pg.tasks[0].state, UploadState::Queued));
+    }
+
+    #[test]
+    fn upload_cancel_hides_overlay() {
+        let mut app = empty_app();
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("x");
+        std::fs::write(&f, b"x").unwrap();
+        app.upload_fire(vec![f]);
+        assert!(app.upload_overlay.is_some());
+        app.upload_cancel();
+        assert!(app.upload_overlay.is_none());
+    }
+
+    #[test]
+    fn upload_fire_empty_leaves_no_overlay() {
+        let mut app = empty_app();
+        app.upload_fire(vec![]);
+        assert!(app.upload_overlay.is_none());
     }
 }
