@@ -25,10 +25,19 @@ pub const LIST_CAP: usize = 500;
 // ── Graph client ────────────────────────────────────────────────
 
 /// Holds the current token + a lazy display-name cache for user ids.
+///
+/// The cache is populated two ways: (a) opportunistically from every
+/// message's `from.user` field (id + display_name pairs land for free,
+/// no extra HTTPS), and (b) on-demand via [`GraphClient::user_display_name`]
+/// when an `<at id="X">` mention has no inline content. Rendering code
+/// snapshots this via [`GraphClient::mention_snapshot`] each tick so
+/// the render pass is lock-free.
+///
+/// #1006 (2026-08-22) — activated. Was `#[allow(dead_code)]` since
+/// v0.1 while the mention-resolution UX was designed.
 pub struct GraphClient {
     pub token: RwLock<Token>,
     http: Client,
-    #[allow(dead_code)] // exposed via `user_display_name` — UI wires in v0.2
     user_cache: Mutex<HashMap<String, String>>,
 }
 
@@ -152,7 +161,16 @@ impl GraphClient {
     }
 
     /// Lookup display name by user id, cached for the session.
-    #[allow(dead_code)] // wired by UI in v0.2 (mention resolution path)
+    ///
+    /// #1006 — the render-time path uses [`Self::mention_snapshot`]
+    /// (lock-free clone of the cache) and only falls back to `@<id>`
+    /// on miss, because a synchronous Graph call from the TUI render
+    /// loop would block on HTTPS. This on-demand fetcher is here for
+    /// non-render callers (a future `resolve-user` CLI subcommand,
+    /// or a background loader-thread prefetch pass) — the seeding
+    /// path already covers every user id that shows up as a message
+    /// author in the current session.
+    #[allow(dead_code)]
     pub fn user_display_name(&self, id: &str) -> Result<String> {
         if let Ok(cache) = self.user_cache.lock()
             && let Some(v) = cache.get(id)
@@ -167,6 +185,36 @@ impl GraphClient {
             cache.insert(id.to_string(), name.clone());
         }
         Ok(name)
+    }
+
+    /// Prime the mention cache with `(user_id, display_name)` pairs
+    /// harvested from message `from.user` fields. Zero-network — just
+    /// stashes the pairs already on the wire. Used by the loader
+    /// thread after each `channel_messages` / `chat_messages` /
+    /// `search_messages` result.
+    pub fn seed_mention_cache<I>(&self, pairs: I)
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        if let Ok(mut cache) = self.user_cache.lock() {
+            for (id, name) in pairs {
+                if id.is_empty() || name.is_empty() {
+                    continue;
+                }
+                cache.entry(id).or_insert(name);
+            }
+        }
+    }
+
+    /// Snapshot of the mention cache — a tiny clone the renderer uses
+    /// to resolve `<at id="X">` mentions without holding the mutex.
+    /// Called at most once per detail-repaint (cheap even at hundreds
+    /// of entries).
+    pub fn mention_snapshot(&self) -> HashMap<String, String> {
+        self.user_cache
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
     }
 
     // ── Teams ───────────────────────────────────────────────────
@@ -211,6 +259,26 @@ impl GraphClient {
 
     pub fn chat_messages(&self, chat_id: &str) -> Result<Vec<Message>> {
         let url = format!("{GRAPH_BASE}/me/chats/{chat_id}/messages?$top=30");
+        let req = self.req(Method::GET, &url)?;
+        let resp: ValueArray<Message> = self.send_json(req)?;
+        Ok(resp.value)
+    }
+
+    /// `GET /teams/{team-id}/channels/{channel-id}/messages/{message-id}/replies`.
+    /// #1006 — powers the threads tab. Returns the reply chain
+    /// beneath a channel's top-level message (Graph's own name for
+    /// what Teams' UI calls a "thread"). Newest-first; the UI
+    /// reverses for chronological scrollback, matching the channel
+    /// scrollback convention in [`render_messages`].
+    pub fn channel_message_replies(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        message_id: &str,
+    ) -> Result<Vec<Message>> {
+        let url = format!(
+            "{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies?$top=30"
+        );
         let req = self.req(Method::GET, &url)?;
         let resp: ValueArray<Message> = self.send_json(req)?;
         Ok(resp.value)
@@ -404,7 +472,8 @@ pub struct Chat {
 pub struct ChatMember {
     #[serde(default)]
     pub display_name: Option<String>,
-    #[allow(dead_code)] // used by `user_display_name` cache path in v0.2
+    /// #1006 — used to seed the mention cache from chat-member
+    /// rosters (a cheap prefetch beyond message-author seeding).
     #[serde(default)]
     pub user_id: Option<String>,
 }
@@ -443,7 +512,8 @@ pub struct MessageFrom {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFromUser {
-    #[allow(dead_code)] // available for the user_display_name cache path
+    /// #1006 — read by the mention-cache seeder so `<at id="X">`
+    /// mentions inside a channel's scrollback resolve to a name.
     pub id: Option<String>,
     pub display_name: Option<String>,
 }

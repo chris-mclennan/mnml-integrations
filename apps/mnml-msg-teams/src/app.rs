@@ -204,6 +204,41 @@ pub struct App {
     pending: Option<(usize, DetailKind)>,
     /// `true` between sending a Detail job and receiving its result.
     pub detail_loading: bool,
+    /// #1006 — most-recently-viewed channel thread. Populated by
+    /// [`Self::view_thread`] and rendered on the `threads` tab.
+    /// `None` before the user has requested a thread; then the
+    /// threads tab shows its onboarding hint.
+    pub focused_thread: Option<ThreadView>,
+    /// `true` between sending a ChannelReplies job and receiving its
+    /// result. Renders a "(loading thread…)" line in the threads tab.
+    pub thread_loading: bool,
+}
+
+/// #1006 — a channel thread the user has opened. The parent
+/// message is the top-level channel post; `replies` are the direct
+/// replies underneath it (Graph returns them newest-first — the
+/// renderer reverses for chronological order, matching the channel
+/// scrollback convention).
+#[derive(Debug, Clone)]
+pub struct ThreadView {
+    pub team_id: String,
+    pub channel_id: String,
+    pub parent: Message,
+    pub replies: Vec<Message>,
+}
+
+impl ThreadView {
+    /// `(team_id, channel_id, parent_id)` — the tuple `reply_in_channel`
+    /// needs to post into this thread. Kept as a method so callers on
+    /// the threads tab can post replies without touching the channel
+    /// detail pane (which is on a different tab).
+    pub fn reply_target(&self) -> (String, String, String) {
+        (
+            self.team_id.clone(),
+            self.channel_id.clone(),
+            self.parent.id.clone(),
+        )
+    }
 }
 
 /// Job sent from the TUI event loop to the background loader thread.
@@ -219,6 +254,15 @@ enum LoadJob {
     ChatMessages {
         tab_idx: usize,
         chat_id: String,
+        graph: Arc<GraphClient>,
+    },
+    /// #1006 — replies for a top-level channel message. `parent`
+    /// travels with the job so the result can render "Thread: <parent
+    /// snippet>" without a second Graph round-trip.
+    ChannelReplies {
+        team_id: String,
+        channel_id: String,
+        parent: Box<Message>,
         graph: Arc<GraphClient>,
     },
 }
@@ -237,6 +281,13 @@ enum LoadResult {
         tab_idx: usize,
         chat_id: String,
         messages: Vec<Message>,
+        error: Option<String>,
+    },
+    ChannelReplies {
+        team_id: String,
+        channel_id: String,
+        parent: Box<Message>,
+        replies: Vec<Message>,
         error: Option<String>,
     },
 }
@@ -266,6 +317,7 @@ fn spawn_loader(
                             Ok(m) => (m, None),
                             Err(e) => (Vec::new(), Some(e.to_string())),
                         };
+                        graph.seed_mention_cache(harvest_mention_pairs(&messages));
                         let _ = res_tx.send(LoadResult::ChannelMessages {
                             tab_idx,
                             team_id,
@@ -283,6 +335,7 @@ fn spawn_loader(
                             Ok(m) => (m, None),
                             Err(e) => (Vec::new(), Some(e.to_string())),
                         };
+                        graph.seed_mention_cache(harvest_mention_pairs(&messages));
                         let _ = res_tx.send(LoadResult::ChatMessages {
                             tab_idx,
                             chat_id,
@@ -290,10 +343,52 @@ fn spawn_loader(
                             error,
                         });
                     }
+                    LoadJob::ChannelReplies {
+                        team_id,
+                        channel_id,
+                        parent,
+                        graph,
+                    } => {
+                        let (replies, error) = match graph.channel_message_replies(
+                            &team_id,
+                            &channel_id,
+                            &parent.id,
+                        ) {
+                            Ok(m) => (m, None),
+                            Err(e) => (Vec::new(), Some(e.to_string())),
+                        };
+                        graph.seed_mention_cache(harvest_mention_pairs(&replies));
+                        let _ = res_tx.send(LoadResult::ChannelReplies {
+                            team_id,
+                            channel_id,
+                            parent,
+                            replies,
+                            error,
+                        });
+                    }
                 }
             }
         })
         .expect("spawn loader thread");
+}
+
+/// Extract `(user_id, display_name)` pairs from a batch of messages
+/// — cheap prefetch for the mention cache. Zero-network; both fields
+/// are already on the wire for every non-system message with a user
+/// author.
+fn harvest_mention_pairs(msgs: &[Message]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for m in msgs {
+        let Some(from) = &m.from else { continue };
+        let Some(user) = &from.user else { continue };
+        if let (Some(id), Some(name)) = (user.id.as_deref(), user.display_name.as_deref())
+            && !id.is_empty()
+            && !name.is_empty()
+        {
+            out.push((id.to_string(), name.to_string()));
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +434,8 @@ impl App {
             loader_rx: res_rx,
             pending: None,
             detail_loading: false,
+            focused_thread: None,
+            thread_loading: false,
         };
         app.refresh_active();
         Ok(app)
@@ -389,6 +486,42 @@ impl App {
                         }
                     }
                     self.clear_pending_if(tab_idx);
+                    changed = true;
+                }
+                Ok(LoadResult::ChannelReplies {
+                    team_id,
+                    channel_id,
+                    parent,
+                    replies,
+                    error,
+                }) => {
+                    self.thread_loading = false;
+                    if let Some(e) = error {
+                        self.status = format!("error: {e}");
+                    } else {
+                        let n = replies.len();
+                        self.focused_thread = Some(ThreadView {
+                            team_id,
+                            channel_id,
+                            parent: *parent,
+                            replies,
+                        });
+                        self.status = if n == 0 {
+                            "thread has no replies yet".into()
+                        } else {
+                            format!(
+                                "loaded thread ({n} repl{})",
+                                if n == 1 { "y" } else { "ies" }
+                            )
+                        };
+                        // If a `threads` tab is configured, jump to
+                        // it so the view is immediately visible;
+                        // otherwise leave focus alone (the user can
+                        // still switch manually).
+                        if let Some(idx) = self.tabs.iter().position(|t| t.spec.kind == "threads") {
+                            self.active_tab = idx;
+                        }
+                    }
                     changed = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -533,13 +666,36 @@ impl App {
                     })
                     .collect()
             }),
-            "chats" => g
-                .list_chats()
-                .map(|cs| cs.into_iter().map(Item::Chat).collect()),
+            "chats" => g.list_chats().map(|cs| {
+                // #1006 — chat members carry `(user_id, display_name)`
+                // pairs on the `$expand=members` wire; seed the mention
+                // cache with them so a subsequent `<at id="…">` in a
+                // channel or search body resolves without a Graph
+                // round-trip.
+                let pairs = cs.iter().flat_map(|c| {
+                    c.members
+                        .iter()
+                        .filter_map(|m| Some((m.user_id.clone()?, m.display_name.clone()?)))
+                });
+                g.seed_mention_cache(pairs);
+                cs.into_iter().map(Item::Chat).collect()
+            }),
             "search" => Ok(vec![Item::SearchPrompt]),
-            "threads" => Ok(vec![Item::Placeholder(
-                "threads tab — v0.1 stub (todo: focused thread view)".into(),
-            )]),
+            "threads" => {
+                // #1006 — the threads tab renders `focused_thread`
+                // when set; the item list stays empty because the
+                // renderer paints its own layout. The placeholder
+                // below is only visible when the user opens the
+                // tab without having pressed `v` on a channel
+                // message yet.
+                if self.focused_thread.is_some() {
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![Item::Placeholder(
+                        "press `v` on a channel message to load its thread".into(),
+                    )])
+                }
+            }
             _ => unreachable!("validated in TabSpec::resolve"),
         };
 
@@ -556,7 +712,8 @@ impl App {
                     "teams" => "teams",
                     "chats" => "chats",
                     "search" => "ready (press / )",
-                    "threads" => "(stub)",
+                    "threads" if self.focused_thread.is_some() => "focused thread",
+                    "threads" => "no thread loaded",
                     _ => "items",
                 };
                 self.status = format!("{name}: {count} {kind_label}");
@@ -704,6 +861,7 @@ impl App {
         match self.graph.search_messages(&q) {
             Ok(msgs) => {
                 let count = msgs.len();
+                self.graph.seed_mention_cache(harvest_mention_pairs(&msgs));
                 self.tabs[idx].data.items = msgs.into_iter().map(Item::Message).collect();
                 self.tabs[idx].data.selected = 0;
                 self.tabs[idx].data.last_loaded = Some(Instant::now());
@@ -742,20 +900,66 @@ impl App {
         self.status = "post: type message, Ctrl+S send, Esc cancel".into();
     }
 
-    /// `T` — threaded reply. v0.1: channels only. (Chat-level threads
-    /// aren't a Graph concept; chat replies are just more messages.)
-    pub fn start_thread_reply(&mut self) {
+    /// `v` — view thread. #1006. Fetches the reply chain for the
+    /// newest message in the focused channel's scrollback and
+    /// populates [`Self::focused_thread`]. Renders on the threads
+    /// tab (auto-switching if the manifest ships one). No-op on
+    /// chat detail — Graph doesn't model chat threads.
+    pub fn view_thread(&mut self) {
         let Some(m_in_chan) = self.focused_message_in_channel() else {
             self.status =
-                "`T` only works on a message in a channel scrollback (focus a channel first)"
+                "`v` needs a channel scrollback (focus a channel first, then press v)".into();
+            return;
+        };
+        // Look up the actual parent Message object in the detail
+        // pane — we want its body_text for the thread header. The
+        // detail pane holds up to ~30 messages; we take the newest
+        // (first, matching `focused_message_in_channel`).
+        let parent = self
+            .active()
+            .data
+            .detail_messages
+            .first()
+            .cloned()
+            .expect("focused_message_in_channel guarantees this");
+        self.thread_loading = true;
+        self.status = "loading thread…".into();
+        let _ = self.loader_tx.send(LoadJob::ChannelReplies {
+            team_id: m_in_chan.team_id,
+            channel_id: m_in_chan.channel_id,
+            parent: Box::new(parent),
+            graph: self.graph.clone(),
+        });
+    }
+
+    /// `T` — threaded reply. v0.1: channels only. (Chat-level threads
+    /// aren't a Graph concept; chat replies are just more messages.)
+    /// #1006 — also works on the threads tab: replies to the focused
+    /// thread's parent even when the underlying channel isn't the
+    /// visible detail pane.
+    pub fn start_thread_reply(&mut self) {
+        let target = if self.active().spec.kind == "threads"
+            && let Some(thread) = &self.focused_thread
+        {
+            let (team_id, channel_id, message_id) = thread.reply_target();
+            PostMode::ChannelReply {
+                team_id,
+                channel_id,
+                message_id,
+            }
+        } else if let Some(m_in_chan) = self.focused_message_in_channel() {
+            PostMode::ChannelReply {
+                team_id: m_in_chan.team_id,
+                channel_id: m_in_chan.channel_id,
+                message_id: m_in_chan.message_id,
+            }
+        } else {
+            self.status =
+                "`T` only works on a channel scrollback or the threads tab (with a thread loaded)"
                     .into();
             return;
         };
-        self.post_mode = Some(PostMode::ChannelReply {
-            team_id: m_in_chan.team_id,
-            channel_id: m_in_chan.channel_id,
-            message_id: m_in_chan.message_id,
-        });
+        self.post_mode = Some(target);
         self.post_buffer.clear();
         self.status = "thread reply: type, Ctrl+S send, Esc cancel".into();
     }
@@ -940,5 +1144,83 @@ mod tests {
     #[test]
     fn short_ts_extracts_md_hm() {
         assert_eq!(super::short_ts("2026-06-07T12:34:56.789Z"), "06-07 12:34");
+    }
+
+    // #1006 — mention-cache seeding harvests `(user_id, display_name)`
+    // pairs from message `from.user` fields, drops empty rows, and
+    // is a no-op when either half is missing.
+    #[test]
+    fn harvest_mention_pairs_extracts_id_name() {
+        use crate::teams::{Message, MessageFrom, MessageFromUser};
+        let msg = Message {
+            id: "m1".into(),
+            created_date_time: None,
+            message_type: None,
+            web_url: None,
+            body: None,
+            from: Some(MessageFrom {
+                user: Some(MessageFromUser {
+                    id: Some("u1".into()),
+                    display_name: Some("Alice".into()),
+                }),
+                application: None,
+            }),
+            reactions: vec![],
+            chat_id: None,
+        };
+        let pairs = harvest_mention_pairs(&[msg]);
+        assert_eq!(pairs, vec![("u1".to_string(), "Alice".to_string())]);
+    }
+
+    #[test]
+    fn harvest_mention_pairs_skips_incomplete_users() {
+        use crate::teams::{Message, MessageFrom, MessageFromUser};
+        let m = |id: Option<&str>, name: Option<&str>| Message {
+            id: "m".into(),
+            created_date_time: None,
+            message_type: None,
+            web_url: None,
+            body: None,
+            from: Some(MessageFrom {
+                user: Some(MessageFromUser {
+                    id: id.map(str::to_string),
+                    display_name: name.map(str::to_string),
+                }),
+                application: None,
+            }),
+            reactions: vec![],
+            chat_id: None,
+        };
+        let msgs = vec![
+            m(Some(""), Some("no-id")),
+            m(Some("id-only"), None),
+            m(None, Some("name-only")),
+        ];
+        assert!(harvest_mention_pairs(&msgs).is_empty());
+    }
+
+    #[test]
+    fn thread_view_reply_target_is_the_ids_tuple() {
+        use crate::teams::Message;
+        let parent = Message {
+            id: "p1".into(),
+            created_date_time: None,
+            message_type: None,
+            web_url: None,
+            body: None,
+            from: None,
+            reactions: vec![],
+            chat_id: None,
+        };
+        let tv = ThreadView {
+            team_id: "T1".into(),
+            channel_id: "C1".into(),
+            parent,
+            replies: vec![],
+        };
+        assert_eq!(
+            tv.reply_target(),
+            ("T1".to_string(), "C1".to_string(), "p1".to_string())
+        );
     }
 }

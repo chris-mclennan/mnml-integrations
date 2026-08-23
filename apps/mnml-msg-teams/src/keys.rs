@@ -20,6 +20,9 @@ pub enum Action {
     StartSearch,
     StartPost,
     StartThreadReply,
+    /// #1006 — pull the reply chain for the newest message in the
+    /// focused channel and land on the threads tab.
+    ViewThread,
     StartReact,
     InputChar(char),
     InputBackspace,
@@ -64,6 +67,7 @@ pub fn handle(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('/') => Some(Action::StartSearch),
         KeyCode::Char('p') => Some(Action::StartPost),
         KeyCode::Char('T') => Some(Action::StartThreadReply),
+        KeyCode::Char('v') => Some(Action::ViewThread),
         KeyCode::Char('R') => Some(Action::StartReact),
         KeyCode::Char('r') => Some(Action::Refresh),
         KeyCode::Tab => Some(Action::NextTab),
@@ -101,6 +105,7 @@ pub fn apply(action: Action, app: &mut App) -> bool {
         Action::StartSearch => app.start_search(),
         Action::StartPost => app.start_post(),
         Action::StartThreadReply => app.start_thread_reply(),
+        Action::ViewThread => app.view_thread(),
         Action::StartReact => {
             // v0.1: liking is the most common; pick by sub-key in a
             // follow-up. Status hint shows the picker keys.

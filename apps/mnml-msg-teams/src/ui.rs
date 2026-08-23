@@ -1,6 +1,6 @@
 //! ratatui rendering + the main event loop.
 
-use crate::app::{App, DetailKind, Item, TabState, short_ts};
+use crate::app::{App, DetailKind, Item, TabState, ThreadView, short_ts};
 use crate::keys;
 use crate::teams::Message;
 use anyhow::Result;
@@ -71,8 +71,18 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(chunks[1]);
-    draw_list(f, body[0], app.active());
-    draw_detail(f, body[1], app);
+    // #1006 — the threads tab has its own two-column layout: left =
+    // the reply list, right = the parent message. The generic
+    // list/detail pair below only fits the tabs (teams / chats /
+    // search) that keep a per-tab item list — threads renders from
+    // App::focused_thread instead.
+    if app.active().spec.kind == "threads" {
+        draw_thread_list(f, body[0], app);
+        draw_thread_detail(f, body[1], app);
+    } else {
+        draw_list(f, body[0], app.active());
+        draw_detail(f, body[1], app);
+    }
     draw_status(f, chunks[2], app);
 }
 
@@ -234,7 +244,8 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
 
     // Render last ~30 messages (or whatever the API returned).
     // Each message → `HH:MM · username · body`. System messages dim.
-    let lines: Vec<Line> = render_messages(&tab.data.detail_messages);
+    let mentions = app.graph.mention_snapshot();
+    let lines: Vec<Line> = render_messages(&tab.data.detail_messages, &mentions);
 
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
@@ -246,7 +257,7 @@ fn instructions_for_post() -> &'static str {
     "(Ctrl+S to send, Esc to cancel — single-line v0.1)"
 }
 
-fn render_messages(msgs: &[Message]) -> Vec<Line<'static>> {
+fn render_messages(msgs: &[Message], mentions: &HashMap<String, String>) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Graph returns newest-first; reverse for chronological scrollback.
     let ordered: Vec<&Message> = msgs.iter().rev().collect();
@@ -275,7 +286,7 @@ fn render_messages(msgs: &[Message]) -> Vec<Line<'static>> {
             .unwrap_or_default();
         let author = m.author();
         let body = m.body_text();
-        let resolved = resolve_mentions(&body);
+        let resolved = resolve_mentions(&body, mentions);
 
         let header = Line::from(vec![
             Span::styled(
@@ -342,38 +353,190 @@ fn strip_to_one_line(s: &str) -> String {
     truncate(first, 80)
 }
 
-/// Resolve `<at id="...">@Display Name</at>` spans inline. Best-effort
-/// — when the body is already plain text (or HTML was already
-/// stripped) the regex won't match and the string passes through.
-fn resolve_mentions(body: &str) -> String {
-    // After strip_html, `<at>` tags are already gone. As a safety
-    // net, re-strip any leftover `<at>...</at>` shapes.
+/// Resolve `<at id="X">Display Name</at>` spans inline against the
+/// mention cache. #1006. In practice, `strip_html` above has
+/// already normalised Teams' HTML message bodies into plain text
+/// (the inner "Display Name" survives, the tag is dropped) — so
+/// this function's real job is to catch two edge cases:
+///
+/// * Bodies whose `contentType` is `"text"` — Teams occasionally
+///   emits raw `<at id="X"></at>` (empty content) inside plain-text
+///   bodies. Without cache lookup that would render as `""`.
+/// * Bodies where the inner span was stripped by an upstream
+///   sanitizer, leaving `@X` (the raw id).
+///
+/// Missing ids fall back to `@<id>` so the reader still sees a
+/// mention shape rather than a silent blank.
+fn resolve_mentions(body: &str, cache: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '<' {
-            let mut tag = String::new();
-            while let Some(&p) = chars.peek() {
-                if p == '>' {
-                    chars.next();
-                    break;
-                }
-                if tag.len() < 8 {
-                    tag.push(p);
-                }
-                chars.next();
-            }
-            // drop the tag silently
-            let _ = tag;
-        } else {
-            out.push(c);
+    let mut i = 0;
+    let bytes = body.as_bytes();
+    while i < bytes.len() {
+        // Fast path: look for the literal "<at " opener; anything
+        // else passes through byte-for-byte. Teams' `<at>` spans
+        // always carry an `id` attribute so this is the only prefix
+        // we care about here.
+        if bytes[i] == b'<'
+            && bytes.get(i + 1..i + 4) == Some(b"at ")
+            && let Some((consumed, id, inner)) = parse_at_tag(&body[i..])
+        {
+            let resolved = if !inner.is_empty() {
+                // Prefer the inline display name — Teams typically
+                // writes it into the tag body.
+                inner
+            } else if let Some(name) = cache.get(&id) {
+                format!("@{name}")
+            } else {
+                format!("@{id}")
+            };
+            out.push_str(&resolved);
+            i += consumed;
+            continue;
         }
+        // Not a mention we recognise — push one char and advance.
+        let ch = body[i..].chars().next().unwrap_or('\u{FFFD}');
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
 
+/// Parse a single `<at id="X">inner</at>` starting at `s[0]`.
+/// Returns `(bytes_consumed, id, inner_text)` when a full tag pair
+/// matches; None when the input doesn't look like one (unclosed tag,
+/// malformed, or a bare `<at` that turned out to be something else).
+///
+/// v0.2 lookahead — no regex crate; the parser is intentionally
+/// permissive on attribute ordering (`id="…"` may sit alongside
+/// `mentionId="0"`, which Teams also emits).
+fn parse_at_tag(s: &str) -> Option<(usize, String, String)> {
+    let open_end = s.find('>')?;
+    let attrs = &s[3..open_end];
+    // Extract id="X" (or id='X') — Teams emits double-quoted.
+    let id_start = attrs.find("id=")?;
+    let after_eq = attrs.get(id_start + 3..)?;
+    let (quote, quoted) = match after_eq.chars().next()? {
+        '"' => ('"', &after_eq[1..]),
+        '\'' => ('\'', &after_eq[1..]),
+        _ => return None,
+    };
+    let id_end = quoted.find(quote)?;
+    let id = quoted[..id_end].to_string();
+    // Find `</at>` after the open tag.
+    let rest = &s[open_end + 1..];
+    let close_start = rest.find("</at>")?;
+    let inner = rest[..close_start].to_string();
+    let total = open_end + 1 + close_start + "</at>".len();
+    Some((total, id, inner))
+}
+
+/// #1006 — threads-tab left column: parent snippet + list of
+/// replies. Selection is decorative in v0.2 (the tab renders from
+/// `App::focused_thread`, not from an item list), but keeps the
+/// same visual grammar as the other tabs' left columns.
+fn draw_thread_list(f: &mut Frame, area: Rect, app: &App) {
+    let Some(thread) = &app.focused_thread else {
+        // No focused thread — reuse the standard list path so the
+        // configured placeholder hint renders.
+        draw_list(f, area, app.active());
+        return;
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" ▸ thread ({} repl.) ", thread.replies.len()),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    // body_text() returns a String; keep it alive until truncate
+    // finishes copying by binding it before slicing.
+    let parent_body = thread.parent.body_text();
+    let parent_snip = truncate(parent_body.lines().next().unwrap_or(""), 60);
+    lines.push(Line::from(Span::styled(
+        format!("   {parent_snip}"),
+        Style::default().fg(Color::White),
+    )));
+    if app.thread_loading {
+        lines.push(Line::from(Span::styled(
+            "   (loading replies…)",
+            Style::default().fg(crate::theme::remap(Color::DarkGray)),
+        )));
+    } else if thread.replies.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   (no replies yet — press p on the parent to reply)",
+            Style::default().fg(crate::theme::remap(Color::DarkGray)),
+        )));
+    } else {
+        // Newest-first from Graph; reverse for chronological order.
+        for r in thread.replies.iter().rev() {
+            let author = r.author();
+            let ts = r
+                .created_date_time
+                .as_deref()
+                .map(short_ts)
+                .unwrap_or_default();
+            let reply_body = r.body_text();
+            let snip = truncate(reply_body.lines().next().unwrap_or(""), 44);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {ts} "),
+                    Style::default().fg(crate::theme::remap(Color::DarkGray)),
+                ),
+                Span::styled(
+                    format!("{author}: "),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(snip, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" thread "));
+    f.render_widget(p, area);
+}
+
+/// #1006 — threads-tab right column: full parent message + all
+/// replies rendered as scrollback, matching the channel-detail
+/// layout. Mention resolution reuses the same cache-driven path
+/// as the channel scrollback (`render_messages`).
+fn draw_thread_detail(f: &mut Frame, area: Rect, app: &App) {
+    let Some(thread) = &app.focused_thread else {
+        // Same fallback as the list column — reuse the generic
+        // detail hint.
+        draw_detail(f, area, app);
+        return;
+    };
+    let mentions = app.graph.mention_snapshot();
+    // Show parent as the first block, then replies chronologically.
+    let combined = build_thread_scrollback(thread);
+    let lines = render_messages(&combined, &mentions);
+    let title = " thread scrollback ";
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(p, area);
+}
+
+/// Assemble [parent, ...replies-newest-first] so `render_messages`'
+/// existing reverse-for-chronological pass presents them
+/// oldest→newest with the parent at the top. Cheap — clones a few
+/// `Message`s.
+fn build_thread_scrollback(thread: &ThreadView) -> Vec<Message> {
+    // render_messages reverses the slice. To get [parent, replies-oldest-first]
+    // in the output, feed it [replies-oldest-first-reversed = replies-newest-first, parent]
+    // then reverse → [parent, replies-oldest-first].
+    let mut out = thread.replies.clone();
+    // Graph gave newest-first; that's already what we want here so
+    // the reverse in render_messages lands them oldest-first.
+    out.push(thread.parent.clone());
+    out
+}
+
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let hint = " 1-9 tab · ↑↓/jk move · Enter open · / search · p post · R react · T thread · y permalink · r refresh · q quit ";
+    let hint = " 1-9 tab · ↑↓/jk move · Enter open · / search · p post · R react · T thread · v view thread · y permalink · r refresh · q quit ";
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.status),
@@ -445,5 +608,55 @@ mod tests {
         assert_eq!(reaction_glyph("like"), "👍");
         assert_eq!(reaction_glyph("heart"), "❤");
         assert_eq!(reaction_glyph("unknown"), "•");
+    }
+
+    // #1006 — mention-cache-driven resolution.
+
+    #[test]
+    fn parse_at_tag_extracts_id_and_inner() {
+        let (n, id, inner) = parse_at_tag(r#"<at id="42">Alice</at> hi"#).unwrap();
+        assert_eq!(id, "42");
+        assert_eq!(inner, "Alice");
+        // consumed = `<at id="42">Alice</at>` = 22 chars.
+        assert_eq!(n, r#"<at id="42">Alice</at>"#.len());
+    }
+
+    #[test]
+    fn parse_at_tag_handles_extra_attrs() {
+        // Teams sometimes writes `<at id="0" mentionId="0">Bob</at>`.
+        let (_, id, inner) = parse_at_tag(r#"<at id="0" mentionId="0">Bob</at>"#).unwrap();
+        assert_eq!(id, "0");
+        assert_eq!(inner, "Bob");
+    }
+
+    #[test]
+    fn parse_at_tag_rejects_malformed() {
+        assert!(parse_at_tag(r#"<at>Anon</at>"#).is_none()); // no id
+        assert!(parse_at_tag(r#"<at id="X">unclosed"#).is_none()); // no </at>
+    }
+
+    #[test]
+    fn resolve_mentions_keeps_inline_display_name() {
+        let out = resolve_mentions(r#"ping <at id="42">Alice</at> for lunch"#, &HashMap::new());
+        assert_eq!(out, "ping Alice for lunch");
+    }
+
+    #[test]
+    fn resolve_mentions_uses_cache_when_inner_empty() {
+        let cache: HashMap<String, String> = [("u1".into(), "Carol".into())].into_iter().collect();
+        let out = resolve_mentions(r#"hi <at id="u1"></at>"#, &cache);
+        assert_eq!(out, "hi @Carol");
+    }
+
+    #[test]
+    fn resolve_mentions_falls_back_to_raw_id_on_miss() {
+        let out = resolve_mentions(r#"hi <at id="u1"></at>"#, &HashMap::new());
+        assert_eq!(out, "hi @u1");
+    }
+
+    #[test]
+    fn resolve_mentions_leaves_non_mention_text_intact() {
+        let out = resolve_mentions("just a plain line & <b>tag</b>", &HashMap::new());
+        assert_eq!(out, "just a plain line & <b>tag</b>");
     }
 }
