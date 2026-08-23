@@ -39,9 +39,12 @@ pub struct App {
     pub filter: Option<FilterState>,
     /// #1115 (2026-08-21) — JQL text editor prompt state. `Some` while
     /// the pencil overlay is open; commit rewrites the active tab's
-    /// `jql` and triggers `refresh_active`. Same FilterState shape as
-    /// `filter` so we can share text-input keys later; today the
-    /// keyboard path is TODO — mouse-driven only for the first slice.
+    /// `jql` and triggers `refresh_active`. Same `FilterState` shape
+    /// as `filter` — the greedy-mode keyboard handler at
+    /// `keys.rs:233-273` covers printable input, Esc / Enter,
+    /// Backspace / Delete, cursor motion (arrows + Home/End +
+    /// Ctrl-A / Ctrl-E), word-boundary Alt-arrow / Ctrl-Backspace,
+    /// and readline kill (Ctrl-U / Ctrl-K / Ctrl-W).
     pub jql_editor: Option<FilterState>,
     /// Status-transition overlay for the focused ticket. Opened by
     /// `t`. `Some` ⇒ greedy modal — keys go to the picker (digits to
@@ -202,10 +205,12 @@ pub enum ChipKind {
     /// board picker + epic filter will wire downstream.
     #[allow(dead_code)]
     Team,
-    /// #1103 f/u8 (2026-08-20) — Assignee chip. Placeholder for the
-    /// avatar-cluster multi-select filter Jira Cloud shows between
-    /// Search and Version. Click opens (TODO) an assignee picker;
-    /// visual for now.
+    /// #1103 f/u8 (2026-08-20) — Assignee chip. Legacy placeholder
+    /// slot that #1110 (2026-08-20) replaced with the avatar-cluster
+    /// row + `AssigneeOverflow` picker. This variant is kept for
+    /// enum exhaustiveness and for stale-rect fallback (the click
+    /// arm in `ui.rs` toasts a hint pointing the user at the
+    /// avatars). No new construction path.
     #[allow(dead_code)]
     Assignee,
     Version,
