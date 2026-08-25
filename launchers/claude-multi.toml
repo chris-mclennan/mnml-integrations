@@ -29,7 +29,10 @@ description = "Wrap claude with --add-dir flags for sibling-repo access"
 category = "ai"
 
 [chip]
-glyph = ""
+# Claude spark (F1E00) — same icon as the built-in claude_code
+# chip. Safe universally: mnml core bakes F1E00 into
+# MnmlSymbols.ttf on every startup, no install-time bake needed.
+glyph = "\U000F1E00"
 fallback = "CC"
 color = "orange"
 enabled = true
