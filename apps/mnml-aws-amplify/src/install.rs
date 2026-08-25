@@ -6,7 +6,7 @@
 //! the sibling owns its own registration.
 //!
 //! 2026-08-16 — chip defaults fixed. Two changes:
-//!   * `glyph_codepoint`: `F1B00` → `F1C0E`. F1B00 was colliding
+//!   * `glyph_codepoint`: `F1C0E` → `F1C0E`. F1C0E was colliding
 //!     with something else in users' local MnmlSymbols.ttf bakes
 //!     (the amplify chip rendered as an unrelated icon). F1C0E is
 //!     the codepoint mnml-core's marketplace `catalog_lookup` uses

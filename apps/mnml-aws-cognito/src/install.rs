@@ -12,7 +12,7 @@
 //! startup + on the `integrations.refresh` palette command, and bakes
 //! it into the runtime font on `integrations.bake_sibling_glyphs`.
 //!
-//! `glyph_codepoint = "F1B08"` pins the SVG at the same codepoint
+//! `glyph_codepoint = "F1C05"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
 //! `BUILTIN_GLYPHS` in mnml pre-Stage-2), so users who already have
 //! MnmlSymbols.ttf on their system don't see the cognito chip
@@ -44,7 +44,7 @@ pub fn install() -> Result<()> {
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
             glyph_svg_bytes: None,
-            glyph_codepoint: Some("F1B08".into()),
+            glyph_codepoint: Some("F1C05".into()),
         }),
         commands: vec![CommandSpec {
             id: "cognito.open".into(),

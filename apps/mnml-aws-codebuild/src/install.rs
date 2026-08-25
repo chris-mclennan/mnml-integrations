@@ -11,7 +11,7 @@
 //! mnml bakes at next startup + deletes the pending file — no
 //! permanent glyph SVG anywhere under `~/.config/mnml/`.
 //!
-//! `glyph_codepoint = "F1B0A"` pins the SVG at the same codepoint
+//! `glyph_codepoint = "F1C04"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
 //! `BUILTIN_GLYPHS` in mnml pre-Stage-2), so users who already have
 //! MnmlSymbols.ttf on their system don't see the codebuild chip
@@ -43,7 +43,7 @@ pub fn install() -> Result<()> {
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
             glyph_svg_bytes: Some(CODEBUILD_SVG.to_vec()),
-            glyph_codepoint: Some("F1B0A".into()),
+            glyph_codepoint: Some("F1C04".into()),
         }),
         commands: vec![CommandSpec {
             id: "codebuild.open".into(),
