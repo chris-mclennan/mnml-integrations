@@ -38,7 +38,7 @@ pub fn install() -> Result<()> {
             // codepoint once the SVG is discovered.
             glyph: String::new(),
             fallback: "EC".into(),
-            color: "orange".into(),
+            color: "#ED7100".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),

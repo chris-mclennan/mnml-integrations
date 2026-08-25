@@ -46,7 +46,7 @@ pub fn install() -> Result<()> {
             // via merge_integration_manifests's three-tier resolver.
             glyph: String::new(),
             fallback: "Am".into(),
-            color: "red".into(),
+            color: "#DD344C".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
