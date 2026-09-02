@@ -36,6 +36,7 @@ members = [
     # bb_ratelimit.py. Consumed by integrations that share a per-IP
     # API budget (Bitbucket, Jira) via path-dep; publishable to
     # crates.io later so community integrations can opt in.
+    "crates/mnml-chrome",
     "crates/mnml-ratelimit",
 ]
 

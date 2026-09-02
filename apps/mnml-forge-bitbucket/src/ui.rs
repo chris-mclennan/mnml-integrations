@@ -863,7 +863,9 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
         TabKind::Branches => (
             vec![("\u{f0349} Search".to_string(), false, FilterChip::Search)],
             vec![(
-                "\u{f0450} Refresh".to_string(),
+                mnml_chrome::refresh::chip(mnml_chrome::refresh::Mode::Expanded, false, "Refresh")
+                    .trim()
+                    .to_string(),
                 false,
                 FilterChip::ActionRefresh,
             )],
@@ -889,7 +891,13 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                 ("Caches".to_string(), false, FilterChip::ActionCaches),
                 ("Usage".to_string(), false, FilterChip::ActionUsage),
                 (
-                    "\u{f0450} Refresh".to_string(),
+                    mnml_chrome::refresh::chip(
+                        mnml_chrome::refresh::Mode::Expanded,
+                        false,
+                        "Refresh",
+                    )
+                    .trim()
+                    .to_string(),
                     false,
                     FilterChip::ActionRefresh,
                 ),
@@ -942,7 +950,13 @@ fn draw_filter_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
                 // still surfaces on column headers with ▲/▼ direction
                 // indicators (follow-up).
                 vec![(
-                    "\u{f0450} Refresh".to_string(),
+                    mnml_chrome::refresh::chip(
+                        mnml_chrome::refresh::Mode::Expanded,
+                        false,
+                        "Refresh",
+                    )
+                    .trim()
+                    .to_string(),
                     false,
                     FilterChip::ActionRefresh,
                 )],

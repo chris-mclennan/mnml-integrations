@@ -1492,6 +1492,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnml-chrome"
+version = "0.1.0"
+
+[[package]]
 name = "mnml-forge-azdevops"
 version = "0.1.1"
 dependencies = [
@@ -1525,6 +1529,7 @@ dependencies = [
  "dirs",
  "futures",
  "mnml-bridge",
+ "mnml-chrome",
  "mnml-ratelimit",
  "ratatui",
  "regex",
@@ -1825,6 +1830,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "mnml-bridge",
+ "mnml-chrome",
  "mnml-ratelimit",
  "ratatui",
  "reqwest",

@@ -22,6 +22,7 @@ path = "src/main.rs"
 [dependencies]
 mnml-bridge = "0.7"
 mnml-ratelimit = { path = "../../crates/mnml-ratelimit" }
+mnml-chrome = { path = "../../crates/mnml-chrome" }
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"

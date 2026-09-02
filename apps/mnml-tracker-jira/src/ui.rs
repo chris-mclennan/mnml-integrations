@@ -1677,7 +1677,8 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let mut cursor_x: u16 = title_area.x;
     // #1116 audit SEV-2 (2026-08-21) — reserve space for the
     // right-aligned Refresh pill so a wide left-chip run can't overlap
-    // it. The refresh label width is fixed (` ⟳ Refresh ` = 11 cells)
+    // it. The refresh label width is fixed (` \u{EB37} Refresh ` = 11
+    // cells — unchanged by the 2026-09 glyph unification)
     // + the 2-cell gap the render site already guards with.
     let refresh_reserve: u16 = 11 + 2;
     let left_budget = title_area
@@ -1751,7 +1752,12 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     let _ = cursor_x; // suppress unused warning after last append
     f.render_widget(Paragraph::new(Line::from(spans)), title_area);
     // Right-aligned refresh chip (pre-existing).
-    let refresh_label = " ⟳ Refresh ";
+    // Was a hard-coded " \u{27F3} Refresh " — a glyph nothing else in
+    // the family used. Expanded mode: this toolbar has room for the
+    // word.
+    let refresh_label =
+        mnml_chrome::refresh::chip(mnml_chrome::refresh::Mode::Expanded, false, "Refresh");
+    let refresh_label = refresh_label.as_str();
     let refresh_w = refresh_label.chars().count() as u16;
     let refresh_rect: Option<Rect> = if title_area.width > refresh_w + 2 {
         let x = title_area.x + title_area.width - refresh_w;

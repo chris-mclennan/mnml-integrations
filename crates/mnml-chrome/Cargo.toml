@@ -1,0 +1,8 @@
+[package]
+name = "mnml-chrome"
+version = "0.1.0"
+edition = "2024"
+description = "Shared visual constants for mnml integration apps — one source of truth for chrome the family must agree on."
+license = "MIT"
+
+[dependencies]
