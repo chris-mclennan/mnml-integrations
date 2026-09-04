@@ -12,7 +12,7 @@
 //! startup + on the `integrations.refresh` palette command, and bakes
 //! it into the runtime font on `integrations.bake_sibling_glyphs`.
 //!
-//! `glyph_codepoint = "F1B02"` pins the SVG at the same codepoint
+//! `glyph_codepoint = "F1C08"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
 //! `BUILTIN_GLYPHS` in mnml pre-Stage-2), so users who already have
 //! MnmlSymbols.ttf on their system don't see the ecs chip change
@@ -38,13 +38,13 @@ pub fn install() -> Result<()> {
             // codepoint once the SVG is discovered.
             glyph: String::new(),
             fallback: "EC".into(),
-            color: "green".into(),
+            color: "#ED7100".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
             glyph_svg_bytes: None,
-            glyph_codepoint: Some("F1B02".into()),
+            glyph_codepoint: Some("F1C08".into()),
         }),
         commands: vec![CommandSpec {
             id: "ecs.open".into(),

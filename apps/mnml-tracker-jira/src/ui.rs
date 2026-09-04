@@ -427,6 +427,32 @@ async fn event_loop(
                             }
                             continue;
                         }
+                        // 2026-09-04 — ticket action buttons, checked
+                        // BEFORE the row model. They sit inside a row,
+                        // so the row handler would otherwise swallow
+                        // the click — which is precisely what used to
+                        // happen: clicking [ Implement ] selected the
+                        // row and did nothing (user report).
+                        //
+                        // Routes through `dispatch_ticket_action`, the
+                        // same call the keyboard chords make, so there
+                        // is one behaviour rather than two that drift.
+                        if let Some((_, kind)) = app
+                            .rects
+                            .ticket_action_buttons
+                            .iter()
+                            .find(|(r, _)| rect_hit(*r, m.column, m.row))
+                            .cloned()
+                        {
+                            // Select the row first, so the action and
+                            // the highlight cannot disagree about
+                            // which ticket is being acted on.
+                            if let Some(row_idx) = table_row_at(m.row, app) {
+                                app.active_mut().selected = row_idx;
+                            }
+                            app.dispatch_ticket_action(&kind);
+                            continue;
+                        }
                         // Non-kanban tabs: original flat/tree row model.
                         let Some(row_idx) = table_row_at(m.row, app) else {
                             continue;
@@ -1799,7 +1825,52 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // `tab` binding has ended). The legacy single-chip rects
     // (`work_scope_chip` / `version_chip`) are superseded by the
     // filter toolbar's chip registry and stay as degenerate rects.
+    // 2026-09-04 — ticket ACTION button rects, computed while `tab`
+    // is still borrowed and assigned below with the other deferred
+    // rects (same reason: the `&app` borrow has to end first).
+    //
+    // Geometry: the summary is the last column, so its x is the four
+    // fixed widths plus ratatui's default 1-cell spacing.
+    // `dispatch::button_layout` owns the offsets WITHIN the cell and
+    // the painter above uses the same function — one source, so a
+    // button cannot be painted in one place and hit-tested in another.
+    let pending_button_rects: Vec<(Rect, String)> = {
+        const SUMMARY_X: u16 = 18 + 1 + 14 + 1 + 20 + 1 + 12 + 1;
+        let mut out = Vec::new();
+        for (i, vr) in rows.iter().enumerate() {
+            let crate::tree::VisibleRow::Ticket { issue_idx, .. } = vr else {
+                continue;
+            };
+            let Some(issue) = tab.issues.get(*issue_idx) else {
+                continue;
+            };
+            let y = body_area.y + 1 + i as u16;
+            if y >= body_area.y + body_area.height {
+                break;
+            }
+            for (kind, off, w) in crate::dispatch::button_layout(issue) {
+                let x = body_area.x + SUMMARY_X + off;
+                // A button past the right edge is not clickable —
+                // registering it would put a live target over whatever
+                // is actually painted there.
+                if x + w > body_area.x + body_area.width {
+                    break;
+                }
+                out.push((
+                    Rect {
+                        x,
+                        y,
+                        width: w,
+                        height: 1,
+                    },
+                    kind.to_string(),
+                ));
+            }
+        }
+        out
+    };
     app.rects.work_filter_chips = pending_chip_rects;
+    app.rects.ticket_action_buttons = pending_button_rects;
     app.rects.work_scope_chip = Some(chip_rect);
     app.rects.version_chip = Some(chip_rect);
     app.rects.refresh_chip = refresh_rect;
@@ -1905,11 +1976,20 @@ fn tree_row_for<'a>(
             } else {
                 Style::default()
             };
-            // 2026-07-25 — trailing action buttons (bracketed
-            // words) after the summary. 2026-07-26 — each button
-            // rendered as a styled Span with its own color (green
-            // Implement / red Fix / yellow Triage) so they read
-            // as actionable chips rather than plain text.
+            // Trailing action buttons after the summary.
+            //
+            // 2026-09-04 — FILLED pills (dark text on the slot colour,
+            // one space of padding each side) instead of coloured
+            // `[ bracketed ]` text. Two reasons. They are genuinely
+            // clickable now, and a filled shape is what everything
+            // else clickable in the family looks like — mnml's
+            // `action_button` chips, the panel sort chips. Coloured
+            // text reads as a status, not a control.
+            //
+            // Their rects are recorded below so a click can find
+            // them: they were painted as buttons and hit-tested as
+            // nothing, so clicking one selected the row and did
+            // nothing else (user report 2026-09-03).
             let buttons = crate::dispatch::buttons_for_ticket(issue);
             let summary_cell = if buttons.is_empty() {
                 Cell::from(issue.fields.summary.clone())
@@ -1927,9 +2007,14 @@ fn tree_row_for<'a>(
                         "yellow" => Color::Yellow,
                         _ => Color::Cyan,
                     };
+                    // Dark text ON the colour, not the colour as
+                    // text — the filled shape is the affordance.
                     spans.push(Span::styled(
-                        b.label().to_string(),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        format!(" {} ", b.label()),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(color)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
                 Cell::from(Line::from(spans))

@@ -12,7 +12,7 @@
 //! startup + on the `integrations.refresh` palette command, and bakes
 //! it into the runtime font on `integrations.bake_sibling_glyphs`.
 //!
-//! `glyph_codepoint = "F1B05"` pins the SVG at the same codepoint
+//! `glyph_codepoint = "F1C0D"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
 //! `BUILTIN_GLYPHS` in mnml pre-Stage-2), so users who already have
 //! MnmlSymbols.ttf on their system don't see the sqs chip change
@@ -40,13 +40,13 @@ pub fn install() -> Result<()> {
             // codepoint once the SVG is discovered.
             glyph: String::new(),
             fallback: "Sq".into(),
-            color: "yellow".into(),
+            color: "#E7157B".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
             // 2026-08-01 — mnml-bridge 0.4 sibling-icons SDK.
             glyph_svg_bytes: None,
-            glyph_codepoint: Some("F1B05".into()),
+            glyph_codepoint: Some("F1C0D".into()),
         }),
         commands: vec![CommandSpec {
             id: "sqs.open".into(),

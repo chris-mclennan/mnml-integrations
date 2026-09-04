@@ -9,7 +9,7 @@
 //! mnml bakes at next startup + deletes the pending file — no
 //! permanent glyph SVG anywhere under `~/.config/mnml/`.
 //!
-//! `glyph_codepoint = "F1B0B"` pins the SVG at the same codepoint
+//! `glyph_codepoint = "F1C09"` pins the SVG at the same codepoint
 //! mnml core used to bake it at (see `src/glyph_builder.rs`'s
 //! `BUILTIN_GLYPHS` in mnml pre-Stage-2), so users who already have
 //! MnmlSymbols.ttf on their system don't see the eventbridge chip
@@ -36,7 +36,7 @@ pub fn install() -> Result<()> {
             // codepoint once the SVG is discovered.
             glyph: String::new(),
             fallback: "EB".into(),
-            color: "pink".into(),
+            color: "#E7157B".into(),
             enabled: true,
             in_palette_bar: false,
             badge_key: Some(INTEGRATION_ID.into()),
@@ -45,7 +45,7 @@ pub fn install() -> Result<()> {
             // Pin to the codepoint mnml core used to bake
             // eventbridge at, so upgrading users don't see the chip
             // move.
-            glyph_codepoint: Some("F1B0B".into()),
+            glyph_codepoint: Some("F1C09".into()),
         }),
         commands: vec![CommandSpec {
             id: "eventbridge.open".into(),
