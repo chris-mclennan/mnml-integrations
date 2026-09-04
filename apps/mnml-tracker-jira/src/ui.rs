@@ -1508,7 +1508,10 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             .add_modifier(Modifier::BOLD),
     );
 
-    let table_rows: Vec<Row> = rows.iter().map(|vr| tree_row_for(vr, tab, app)).collect();
+    let table_rows: Vec<Row> = rows
+        .iter()
+        .map(|vr| tree_row_for(vr, tab, app, area.width.saturating_sub(SUMMARY_X)))
+        .collect();
 
     let widths = [
         Constraint::Length(18),
@@ -1835,7 +1838,6 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
     // the painter above uses the same function — one source, so a
     // button cannot be painted in one place and hit-tested in another.
     let pending_button_rects: Vec<(Rect, String)> = {
-        const SUMMARY_X: u16 = 18 + 1 + 14 + 1 + 20 + 1 + 12 + 1;
         let mut out = Vec::new();
         for (i, vr) in rows.iter().enumerate() {
             let crate::tree::VisibleRow::Ticket { issue_idx, .. } = vr else {
@@ -1848,7 +1850,11 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
             if y >= body_area.y + body_area.height {
                 break;
             }
-            for (kind, off, w) in crate::dispatch::button_layout(issue) {
+            // Same fit the painter used, so rects and pills agree.
+            let (fitted, compact) =
+                crate::dispatch::fit_ticket_row(issue, body_area.width.saturating_sub(SUMMARY_X));
+            let sum_chars = fitted.chars().count() as u16;
+            for (kind, off, w) in crate::dispatch::button_layout(issue, sum_chars, compact) {
                 let x = body_area.x + SUMMARY_X + off;
                 // A button past the right edge is not clickable —
                 // registering it would put a live target over whatever
@@ -1898,10 +1904,25 @@ fn draw_tree_table(f: &mut Frame, area: Rect, app: &mut App, tab_cfg: &crate::co
 /// Build one ratatui Row for a single `VisibleRow`. Styling reflects
 /// the row type — headers are BOLD cyan, tickets get the standard
 /// column cells, PR sub-rows are indented and dim-styled.
+/// Where the summary column starts, in cells from the row's left edge.
+///
+/// The four fixed columns (18/14/20/12) plus ratatui's default 1-cell
+/// spacing between each. Derived from the `widths` array below — if
+/// that changes, this must too, and the layout test will say so.
+///
+/// One const because THREE things need it: the painter's summary
+/// budget, the click-rect x, and the fit calculation. They were
+/// separate numbers before the buttons became clickable, which is how
+/// a rect ends up one column off.
+const SUMMARY_X: u16 = 18 + 1 + 14 + 1 + 20 + 1 + 12 + 1;
+
 fn tree_row_for<'a>(
     vr: &crate::tree::VisibleRow,
     tab: &'a crate::app::TabState,
     app: &'a App,
+    // Cells available to the summary column — the row width minus the
+    // four fixed columns. The buttons live inside this budget.
+    summary_w: u16,
 ) -> Row<'a> {
     use crate::tree::VisibleRow;
     match vr {
@@ -1995,8 +2016,14 @@ fn tree_row_for<'a>(
                 Cell::from(issue.fields.summary.clone())
             } else {
                 use ratatui::text::{Line, Span};
-                let mut spans: Vec<Span> =
-                    vec![Span::raw(issue.fields.summary.clone()), Span::raw("   ")];
+                // 2026-09-04 — the SUMMARY yields so the buttons always
+                // fit. A button pushed past the right edge is painted
+                // and unclickable ("how will i click the button?"), and
+                // the summary is readable in full in the detail modal.
+                // Below a floor the labels drop to glyphs rather than
+                // the text vanishing entirely.
+                let (text, compact) = crate::dispatch::fit_ticket_row(issue, summary_w);
+                let mut spans: Vec<Span> = vec![Span::raw(text), Span::raw("   ")];
                 for (i, b) in buttons.iter().enumerate() {
                     if i > 0 {
                         spans.push(Span::raw(" "));
@@ -2009,8 +2036,13 @@ fn tree_row_for<'a>(
                     };
                     // Dark text ON the colour, not the colour as
                     // text — the filled shape is the affordance.
+                    let face = if compact {
+                        crate::dispatch::compact_glyph(b.kind()).to_string()
+                    } else {
+                        b.label().to_string()
+                    };
                     spans.push(Span::styled(
-                        format!(" {} ", b.label()),
+                        format!(" {face} "),
                         Style::default()
                             .fg(Color::Black)
                             .bg(color)
