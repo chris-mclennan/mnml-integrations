@@ -291,6 +291,99 @@ pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
     }
 }
 
+/// Decide how a ticket row lays out in `summary_w` cells.
+///
+/// Returns `(summary_text, compact)` — the summary TRUNCATED so the
+/// buttons always fit, and whether the buttons must drop to glyphs.
+///
+/// The summary is what yields. The buttons are the only interactive
+/// thing in the row, and a button pushed off the right edge is painted
+/// and unclickable — the user's report was exactly "how will i click
+/// the button?". The summary is readable in full in the detail modal.
+///
+/// Order of sacrifice: full labels first, then the summary shrinks to
+/// its floor, then the labels drop to glyphs. Losing the words is worse
+/// than losing summary characters, so it happens last.
+pub fn fit_ticket_row(issue: &Issue, summary_w: u16) -> (String, bool) {
+    /// Never truncate the summary below this — a row that is all
+    /// buttons and no text says nothing about which ticket it is.
+    const MIN_SUMMARY: u16 = 12;
+    const GAP: u16 = 3;
+
+    let summary = &issue.fields.summary;
+    let (expanded, compact_w) = row_widths(issue);
+    if expanded == 0 {
+        return (summary.clone(), false);
+    }
+
+    let fits = |need: u16| summary_w.saturating_sub(need + GAP);
+    // Room for the summary if the buttons stay expanded.
+    let room_expanded = fits(expanded);
+    if room_expanded >= summary.chars().count() as u16 {
+        return (summary.clone(), false); // everything fits as-is
+    }
+    if room_expanded >= MIN_SUMMARY {
+        return (truncate(summary, room_expanded), false);
+    }
+    // Expanded no longer leaves a readable summary — go compact.
+    let room_compact = fits(compact_w);
+    let text = if room_compact >= summary.chars().count() as u16 {
+        summary.clone()
+    } else {
+        truncate(summary, room_compact.max(1))
+    };
+    (text, true)
+}
+
+/// Truncate to `w` CHARS with a trailing ellipsis when it actually
+/// cut something — a cut summary that looks complete is worse than an
+/// obviously-cut one.
+fn truncate(s: &str, w: u16) -> String {
+    let w = w as usize;
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    s.chars().take(w.saturating_sub(1)).collect::<String>() + "\u{2026}"
+}
+
+/// Cells a button row needs, expanded and compact.
+///
+/// Compact is the glyph alone: `" x "`, three cells, no label.
+pub fn row_widths(issue: &Issue) -> (u16, u16) {
+    const PAD: u16 = 2;
+    const SEP: u16 = 1;
+    let b = buttons_for_ticket(issue);
+    if b.is_empty() {
+        return (0, 0);
+    }
+    let n = b.len() as u16;
+    let expanded: u16 = b
+        .iter()
+        .map(|x| x.label().chars().count() as u16 + PAD)
+        .sum::<u16>()
+        + SEP * (n - 1);
+    // Compact: one glyph + the same padding, per button.
+    let compact: u16 = n * (1 + PAD) + SEP * (n - 1);
+    (expanded, compact)
+}
+
+/// A one-char stand-in for the label when the row is too narrow to
+/// spell it out. Distinct per action so a compact row still says WHICH
+/// action each pill is.
+pub fn compact_glyph(kind: &str) -> &'static str {
+    match kind {
+        "implement" => "\u{f0674}", // hammer-wrench
+        "fix" => "\u{f0a3a}",       // bug-check
+        "triage" => "\u{f0b0c}",    // clipboard-search
+        "test" => "\u{f0a30}",      // test-tube
+        "review" => "\u{f06d0}",    // eye-check
+        _ => "\u{f04b}",
+    }
+}
+
 /// Where each action button sits within the summary cell.
 ///
 /// Returns `(kind, char_offset, char_width)` per button, measured from
@@ -300,17 +393,28 @@ pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
 /// drift. They were separate concerns before only because the buttons
 /// were never clickable — and a rect computed by a second copy of this
 /// arithmetic is exactly how a button ends up one cell off.
-pub fn button_layout(issue: &Issue) -> Vec<(&'static str, u16, u16)> {
+pub fn button_layout(
+    issue: &Issue,
+    summary_chars: u16,
+    compact: bool,
+) -> Vec<(&'static str, u16, u16)> {
     const GAP_AFTER_SUMMARY: u16 = 3;
     const PAD: u16 = 2; // one space each side of the label
     const SEP: u16 = 1; // between buttons
     let mut out = Vec::new();
-    let mut x = issue.fields.summary.chars().count() as u16 + GAP_AFTER_SUMMARY;
+    // Measured from the (possibly TRUNCATED) summary, not the original
+    // — otherwise every rect on a narrow row sits where the untruncated
+    // text would have pushed it.
+    let mut x = summary_chars + GAP_AFTER_SUMMARY;
     for (i, b) in buttons_for_ticket(issue).iter().enumerate() {
         if i > 0 {
             x += SEP;
         }
-        let w = b.label().chars().count() as u16 + PAD;
+        let w = if compact {
+            1 + PAD
+        } else {
+            b.label().chars().count() as u16 + PAD
+        };
         out.push((b.kind(), x, w));
         x += w;
     }
@@ -418,6 +522,84 @@ mod tests {
         }
     }
 
+    /// The whole point: a button must NEVER extend past the row.
+    ///
+    /// User report 2026-09-04 — "some of the buttons go off screen,
+    /// that should not happen, how will i click the button?". An
+    /// earlier fix skipped the click rect for an off-screen button,
+    /// which is worse: still painted, so it looks clickable and is not.
+    ///
+    /// Swept across widths so a single lucky number cannot pass.
+    #[test]
+    fn buttons_never_overflow_the_summary_column() {
+        let long = "a summary long enough to crowd the buttons right off the end of the row";
+        let i = issue("TE-1", "To Do", "Story", long);
+        for w in 20u16..=160 {
+            let (text, compact) = fit_ticket_row(&i, w);
+            let lay = button_layout(&i, text.chars().count() as u16, compact);
+            if let Some((kind, off, bw)) = lay.last() {
+                assert!(
+                    off + bw <= w,
+                    "at width {w}, button {kind} ends at {} — past the {w}-cell row \
+                     (compact={compact}, summary={:?})",
+                    off + bw,
+                    text
+                );
+            }
+        }
+    }
+
+    /// The summary must stay readable — a row that is all buttons and
+    /// no text says nothing about which ticket it is. Below the floor
+    /// the LABELS go, not the summary.
+    #[test]
+    fn a_narrow_row_drops_labels_before_it_erases_the_summary() {
+        let i = issue("TE-1", "To Do", "Story", "some ticket summary here");
+
+        // 42 cells still leaves 19 for the summary with full labels —
+        // readable, so it should NOT compact. (My first version of this
+        // test asserted the opposite and the implementation was right.)
+        let (wide, compact_wide) = fit_ticket_row(&i, 42);
+        assert!(!compact_wide, "compacted while the summary still had room");
+        assert!(wide.chars().count() >= 12, "summary below its floor at 42");
+
+        // 30 cells cannot leave a readable summary with labels, so the
+        // LABELS go — not the summary.
+        let (text, compact) = fit_ticket_row(&i, 30);
+        assert!(compact, "labels survived a 30-cell row");
+        assert!(
+            text.chars().count() >= 8,
+            "summary was starved to {:?} instead of compacting the buttons",
+            text
+        );
+    }
+
+    /// A truncated summary must SAY it was cut. A clipped summary that
+    /// looks complete is a different ticket as far as the reader knows.
+    #[test]
+    fn a_truncated_summary_is_marked() {
+        let i = issue(
+            "TE-1",
+            "To Do",
+            "Story",
+            "a fairly long ticket summary that will not fit",
+        );
+        let (text, _) = fit_ticket_row(&i, 60);
+        assert!(
+            text.ends_with('\u{2026}'),
+            "cut summary has no ellipsis: {text:?}"
+        );
+    }
+
+    /// A short summary on a wide row is left completely alone.
+    #[test]
+    fn a_row_with_room_is_untouched() {
+        let i = issue("TE-1", "To Do", "Story", "short");
+        let (text, compact) = fit_ticket_row(&i, 200);
+        assert_eq!(text, "short");
+        assert!(!compact);
+    }
+
     /// The button rects and the painted pills must agree.
     ///
     /// These were painted to look like buttons with NO rect at all —
@@ -429,7 +611,7 @@ mod tests {
     fn button_layout_matches_the_painted_text() {
         // "abc" + three-space gap, then " Implement " and " Triage ".
         let i = issue("TE-1", "To Do", "Story", "abc");
-        let lay = button_layout(&i);
+        let lay = button_layout(&i, i.fields.summary.chars().count() as u16, false);
         let btns = buttons_for_ticket(&i);
         assert_eq!(lay.len(), btns.len(), "a button lost its rect");
 
