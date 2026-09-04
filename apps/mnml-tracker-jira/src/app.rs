@@ -124,6 +124,15 @@ pub struct Rects {
     /// Used by wheel-scroll on hover to know which column to scroll.
     pub kanban_cols: [Option<Rect>; 4],
     /// Detail modal's close button (`×`).
+    /// Ticket action buttons (Implement / Fix / Triage / …) in the
+    /// work-tree rows: `(rect, kind)`. Kind matches
+    /// `TicketButton::kind()` and feeds `dispatch_ticket_action`.
+    ///
+    /// 2026-09-04 — these were painted to look like buttons and had
+    /// no rect at all, so a click fell through to row selection and
+    /// nothing happened (user report). The keyboard path always
+    /// worked; the mouse had nothing to hit.
+    pub ticket_action_buttons: Vec<(Rect, String)>,
     pub modal_close: Option<Rect>,
     /// Show-more PR row rects → issue key. Bumps that key's
     /// `pr_show_count` by 3.

@@ -291,6 +291,32 @@ pub fn buttons_for_ticket(issue: &Issue) -> Vec<TicketButton> {
     }
 }
 
+/// Where each action button sits within the summary cell.
+///
+/// Returns `(kind, char_offset, char_width)` per button, measured from
+/// the start of the summary cell.
+///
+/// ONE function owns this so the painter and the hit-test cannot
+/// drift. They were separate concerns before only because the buttons
+/// were never clickable — and a rect computed by a second copy of this
+/// arithmetic is exactly how a button ends up one cell off.
+pub fn button_layout(issue: &Issue) -> Vec<(&'static str, u16, u16)> {
+    const GAP_AFTER_SUMMARY: u16 = 3;
+    const PAD: u16 = 2; // one space each side of the label
+    const SEP: u16 = 1; // between buttons
+    let mut out = Vec::new();
+    let mut x = issue.fields.summary.chars().count() as u16 + GAP_AFTER_SUMMARY;
+    for (i, b) in buttons_for_ticket(issue).iter().enumerate() {
+        if i > 0 {
+            x += SEP;
+        }
+        let w = b.label().chars().count() as u16 + PAD;
+        out.push((b.kind(), x, w));
+        x += w;
+    }
+    out
+}
+
 /// One action-button variant. Label + dispatch kind derive from
 /// the variant via the impl below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,14 +336,24 @@ pub enum TicketButton {
 }
 
 impl TicketButton {
-    /// Display label including brackets (e.g. `"[ Implement ]"`).
+    /// The button's text, WITHOUT decoration.
+    ///
+    /// 2026-09-04 — these used to carry their own `[ … ]` brackets,
+    /// because a bracketed word was the only way to look like a button
+    /// in plain spans. They are filled pills now (dark text on the
+    /// slot colour, one space of padding each side), matching mnml's
+    /// own `action_button` chips, so the brackets would be decoration
+    /// on top of decoration.
+    ///
+    /// Keeping the label plain also means the click rect can be
+    /// derived from the label width without unpicking punctuation.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Implement => "[ Implement ]",
-            Self::Fix => "[ Fix ]",
-            Self::Triage => "[ Triage ]",
-            Self::Test => "[ Test ]",
-            Self::Review => "[ Review ]",
+            Self::Implement => "Implement",
+            Self::Fix => "Fix",
+            Self::Triage => "Triage",
+            Self::Test => "Test",
+            Self::Review => "Review",
         }
     }
 
@@ -379,6 +415,60 @@ mod tests {
                 labels: Vec::new(),
                 extras: std::collections::BTreeMap::new(),
             },
+        }
+    }
+
+    /// The button rects and the painted pills must agree.
+    ///
+    /// These were painted to look like buttons with NO rect at all —
+    /// a click fell through to row selection and nothing happened
+    /// (user report 2026-09-03). Now that they are clickable, the
+    /// layout is the thing that can silently be one cell off, so it
+    /// gets pinned rather than eyeballed.
+    #[test]
+    fn button_layout_matches_the_painted_text() {
+        // "abc" + three-space gap, then " Implement " and " Triage ".
+        let i = issue("TE-1", "To Do", "Story", "abc");
+        let lay = button_layout(&i);
+        let btns = buttons_for_ticket(&i);
+        assert_eq!(lay.len(), btns.len(), "a button lost its rect");
+
+        // First button starts after the summary + the 3-space gap.
+        assert_eq!(lay[0].1, 3 + 3, "first button offset moved");
+        // Width is the label plus one space of padding each side —
+        // the same string the painter formats.
+        for ((kind, _, w), b) in lay.iter().zip(btns.iter()) {
+            assert_eq!(*kind, b.kind());
+            assert_eq!(
+                *w as usize,
+                format!(" {} ", b.label()).chars().count(),
+                "rect width disagrees with the painted pill for {kind}"
+            );
+        }
+        // Buttons must not overlap: each starts at or after the
+        // previous one's end.
+        for w in lay.windows(2) {
+            assert!(
+                w[1].1 >= w[0].1 + w[0].2,
+                "buttons overlap: {:?} then {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    /// The labels carry no brackets any more — they are filled pills,
+    /// and a `[` in the label would be decoration on decoration AND
+    /// would widen every rect by two cells.
+    #[test]
+    fn labels_are_plain_text() {
+        for b in buttons_for_ticket(&issue("TE-1", "To Do", "Bug", "s")) {
+            let l = b.label();
+            assert!(
+                !l.contains('[') && !l.contains(']'),
+                "label {l:?} still carries brackets"
+            );
+            assert_eq!(l.trim(), l, "label {l:?} carries its own padding");
         }
     }
 
